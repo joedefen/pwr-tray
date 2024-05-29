@@ -6,6 +6,19 @@ A GTK Tray Applet for Power/Energy Saving and System/DE Controls
 * Basically: `pipx install pwr-tray`
 * Plus, various executables.
 * Manually run as `pwr-tray` to create config (in `~/.config/pwr-tray/config.ini`)
+#### System Python Modules are needed
+* On Debian:
+    * gir1.2-appindicator3-0.1 python3-gi
+    * python3-gi-cairo gir1.2-gtk-3.0 libappindicator3-1
+* On Debian 12 and others?, if the above is not working, try:
+    * gir1.2-ayatanaappindicator3-0.1 gir1.2-notify-0.7
+    * python3-gi python3-gi-cairo gir1.2-gtk-3.0 ayatanalibappindicator3-1
+
+* On Arch:
+    * libappindicator-gtk3 python-gobject python-cairo
+
+
+
 
 ### Manual Launch
 - For foreground in terminal, run `pwr-tray`

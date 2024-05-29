@@ -22,7 +22,7 @@ Also depends on:
   - systemd (i.e., systemctl, loginctl, xset, systemd-inhibit)
   - qdbus: in particular, this must work:
     - qdbus org.freedesktop.ScreenSaver /ScreenSaver GetSessionIdleTime
-    
+
 TODO:
  - and battery detection
  - add dimming controls (only if on battery)
@@ -32,13 +32,16 @@ TODO:
 """
 # pylint: disable=invalid-name,wrong-import-position,missing-function-docstring
 # pylint: disable=broad-except,too-many-instance-attributes
-# pylint: disable=global-statement,consider-using-with
+# pylint: disable=global-statement,consider-using-with,too-many-lines
 # pylint: disable=too-many-statements,too-few-public-methods
 # pylint: disable=too-many-branches,too-many-public-methods
 
-import signal
 import os
 import sys
+needed = '/usr/lib/python3/dist-packages'
+if needed not in sys.path:
+    sys.path.append(needed) # pick up external dependencies
+import signal
 import time
 import stat
 import subprocess
@@ -46,12 +49,11 @@ import threading
 import json
 import shutil
 import inspect
-import copy
-import pkg_resources
 from types import SimpleNamespace
 from datetime import datetime
 from io import StringIO
 import configparser
+import pkg_resources
 
 import gi
 gi.require_version('Gtk', '3.0')
@@ -163,20 +165,22 @@ def restart_self():
 
     # Use subprocess to run the script with the same arguments
     subprocess.run([sys.executable, script_name] + script_args, check=True)
-    
+
 class SwayIdleManager:
+    """ TBD """
     def __init__(self, applet):
         self.process = None
-        self.applet = None
+        self.applet = applet
         self.current_cmd = ''
         self.clauses = SimpleNamespace(
             leader="""exec swayidle""",
             locker="""\\\n timeout [lock_s] 'exec [screenlock] [lockopts]'""",
             blanker="""\\\n timeout [blank_s] 'swaymsg "output * dpms off"'""",
             sleeper="""\\\n timeout [sleep_s] 'systemctl suspend'""",
-            dimmer="""\\\n timeout [dim_s] 'brightnessctl set 50%'""", # may need perms (video group)
+            dimmer="""\\\n timeout [dim_s] 'brightnessctl set 50%'""", # perms?
             before_sleep="""\\\n before-sleep 'exec [screenlock] [lockopts]'""",
-            after_resume="""\\\n after-resume 'pgrep -x copyq || copyq --start-server hide;"""
+            after_resume="""\\\n after-resume"""
+                        + """ 'pgrep -x copyq || copyq --start-server hide;"""
                         + """ pgrep -x nm-applet || nm-applet [undim][dpmsOn]'""",
             undim = """; brightnessctl set 100%""",
             screenlock = """swaylock --ignore-empty-password --show-failed-attempts""",
@@ -185,33 +189,31 @@ class SwayIdleManager:
 
 
     def build_cmd(self, mode=None):
-        
-        lock_s, lockopts, sleep_s, blank_s, dim_s = None, '', None, None
+
+        lock_s, lockopts, sleep_s, blank_s, dim_s = None, '', None, None, None
         mode = self.applet.mode if mode else mode
-        til_sleep, til_blank = None, None
-        if self.mode in ('LockOnly', 'SleepAfterLock'):
+        til_sleep_s = None
+        if mode in ('LockOnly', 'SleepAfterLock'):
             lock_s = self.applet.lock_mins * 60
-            til_sleep = lock_s
+            til_sleep_s = lock_s
             if self.applet.opts.turn_off_monitors:
                 blank_s = 20 + lock_s
-        if self.mode in ('SleepAfterLock', ):
+        if mode in ('SleepAfterLock', ):
             sleep_s = self.applet.sleep_mins * 60
-            til_sleep += sleep_s
+            til_sleep_s += sleep_s
 
-        
-
-        til_sleep, sleeping, blanking, dimming = 0, False, False, False
+        til_sleep_s, sleeping, blanking, dimming = 0, False, False, False
         cmd = self.clauses.leader
         if isinstance(lock_s, (int,float)) and lock_s >= 0:
-            til_sleep += lock_s
+            til_sleep_s += lock_s
             cmd += self.clauses.locker.replace(
                 "[lock_s]", str(lock_s)).replace(
                 '[lockopts]', lockopts).replace(
                 '[screenlock]', self.clauses.screenlock)
-        if sleep_s is not None:
+        if sleeping:
             sleeping = True
-            til_sleep += sleep_s
-            cmd += self.clauses.sleeper.replace("[sleep_s]", str(til_sleep))
+            til_sleep_s += sleep_s
+            cmd += self.clauses.sleeper.replace("[sleep_s]", str(til_sleep_s))
         if blank_s is not None:
             blanking = True
             cmd += self.clauses.blanker.replace('[blank_s]', str(blank_s))
@@ -219,7 +221,7 @@ class SwayIdleManager:
             dimming = True
             cmd += self.clauses.dimmer.replace('[dim_s]', str(dim_s))
         cmd += self.clauses.before_sleep.replace(
-             "[sleep_s]", str(til_sleep)).replace(
+             "[sleep_s]", str(til_sleep_s)).replace(
                  '[lockopts]', lockopts).replace(
                  '[screenlock]', self.clauses.screenlock)
         cmd += self.clauses.after_resume.replace(
@@ -227,13 +229,11 @@ class SwayIdleManager:
         cmd += self.clauses.after_resume.replace(
              "[unblank]", self.clauses.unblank if blanking else '')
 
-            
         rv, self.current_cmd = bool(cmd != self.current_cmd), cmd
         return rv # whether updated
 
-    def start(self, lock_s=None, lockopts='', sleep_s=None, dim_s=None):
-        updated = self.build_cmd(lock_s=lock_s, lockopts=lockopts,
-             sleep_s=sleep_s, dim_s=dim_s)
+    def start(self):
+        updated = self.build_cmd()
         if self.process and updated:
             self.stop()
 
@@ -246,7 +246,7 @@ class SwayIdleManager:
         self.process.terminate()
         self.process.wait()
         self.process = None
-    
+
     def checkup(self):
         if self.process.poll() is not None:
             self.start()
@@ -276,16 +276,16 @@ class InhIndicator:
         if 'kde' in desktop_session or 'plasma' in xdg_current_desktop:
             if wayland_display:
                 return 'kde-wayland'
-            elif display:
+            if display:
                 return 'kde-x11'
         if 'gnome' in desktop_session:
             if wayland_display:
                 return 'gnome-wayland'
-            elif display:
+            if display:
                 return 'gnome-x11'
         # Default case: no known environment detected
         assert False, 'cannot determine if i3/sway/kde-(x11|wayland)'
-    
+
     default_variables = {
         'suspend': 'systemctl suspend',
         'poweroff': 'systemctl poweroff',
@@ -297,8 +297,8 @@ class InhIndicator:
         'reset_idle': '',
         'reload_wm': '',
         'restart_wm': '',
-        'must_haves': 'systemctl'.split(),
-        
+        'must_haves': 'systemctl brightnessctl'.split(),
+
     }
     overides = {
         'x11': {
@@ -312,7 +312,7 @@ class InhIndicator:
             'reload_wm': 'swaymsg reload',
             'logoff': 'swaymsg exit',
             # 'locker': 'i3lock -c 300000 --ignore-empty-password --show-failed-attempt',
-            'must_haves': 'sway-msg i3lock'.split(),
+            'must_haves': 'swaymsg i3lock'.split(),
 
         }, 'i3': {
             'reload_wm': 'i3-msg reload',
@@ -401,19 +401,29 @@ class InhIndicator:
         self.restore_picks()
         if quick:
             self.opts.lock_min_list = [1, 2, 4, 8, 32, 128]
-            self.opts.sleep_min_list = self.opts.lock_min_list 
+            self.opts.sleep_min_list = self.opts.lock_min_list
             self.lock_mins = self.sleep_mins = 1
 
         # self.down_state = self.opts.down_state
-        
+
         self.graphical = self.get_environment()
         self.variables = self.default_variables
+        must_haves = self.default_variables['must_haves']
         if self.graphical in ('i3', 'kde-x11'):
             self.variables.update(self.overides['x11'])
+            must_haves += self.default_variables['must_haves']
+
         self.variables.update(self.overides[self.graphical])
+        must_haves += self.variables['must_haves']
         if self.graphical == 'i3' and self.opts.i3lock_args:
             self.variables['locker'] += f' {self.opts.i3lock_args}'
             
+
+        for must_have in set(must_haves):
+            assert shutil.which(must_have), f'ERROR: command {must_have!r} not found'
+            print(f'GOT: {must_have!r}')
+            
+
         self.idle_manager = SwayIdleManager(self) if self.graphical == 'sway' else None
 
         self.indicator = appindicator.Indicator.new(APPINDICATOR_ID,
@@ -425,7 +435,7 @@ class InhIndicator:
         if self.idle_manager:
             self.idle_manager_start()
         self.on_timeout()
-        
+
     def reconfig(self):
         """ update/fix config """
         self.config.update_config()
@@ -759,19 +769,13 @@ class InhIndicator:
     def idle_manager_start(self):
         """ For any mode, get the idle manager started"""
         if self.idle_manager:
-            if self.mode == 'Presentation':
-                self.idle_manager.start()
-            elif self.mode == 'LockOnly':
-                self.idle_manager.start(lock_s=self.lock_mins*60)
-            elif self.mode == 'SleepAfterLock':
-                self.idle_manager.start(lock_s=self.lock_mins*60,
-                            sleep_s=self.sleep_mins*60)
+            self.idle_manager.start()
             prt(f'{self.idle_manager.current_cmd}')
 
     @staticmethod
     def dummy(_):
         """TBD"""
-        
+
     @staticmethod
     def run_command(key):
         this = InhIndicator.singleton
@@ -1042,7 +1046,7 @@ def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     # os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-    PyKill().kill_loop(os.path.basename(__file__))
+    PyKill().kill_loop('pwr-tray')
     os.environ['DISPLAY'] = ':0'
     parser = argparse.ArgumentParser()
     parser.add_argument('-D', '--debug', action='store_true',
