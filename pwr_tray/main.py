@@ -112,7 +112,7 @@ prt_to_init = True
 def prt(*args, **kwargs):
     """ Our custom print routine ...
      - use instead of print() to get time stamps.
-     - unless stdout is a tty, say for debugging, ~/.gtk-power-app.log is used for stdout
+     - unless stdout is a tty, say for debugging, ~/.config/pwr-tray/debug.log is used for stdout
      - if we create a log file, its size is limited to 512K and then it is truncated
      """
     def check_stdout():
@@ -254,7 +254,7 @@ class SwayIdleManager:
 APPINDICATOR_ID = 'PowerInhibitIndicator'
 
 class InhIndicator:
-    """ gtk-power-app class.
+    """ pwr-tray main class.
     NOTES:
      - when icons are moved/edited, rename them or reboot to avoid cache confusion
     """
@@ -970,7 +970,7 @@ class Params:
                 'log_kb': 0,
             }
         }
-        self.folder = os.path.expanduser("~/.config/gtk-power-app")
+        self.folder = os.path.expanduser("~/.config/pwr-tray")
         self.ini_path =  os.path.join(self.folder, "config.ini")
         self.config = configparser.ConfigParser()
         self.last_mod_time = None

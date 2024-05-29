@@ -2,18 +2,19 @@
 A GTK Tray Applet for Power/Energy Saving and System/DE Controls 
 
 ### Install
-- Install prerequisites; see top of `gtk-power-app`
-    - Run by hand in terminal, and check that actions work
-- Copy `gtk-power-app` to ~/.local/bin
-- Add to autostart
+**Details TBD**
+* Basically: `pipx install pwr-tray`
+* Plus, various executables.
+* Manually run as `pwr-tray` to create config (in `~/.config/pwr-tray/config.ini`)
 
 ### Manual Launch
-- For foreground in terminal, run `gtk-power-app`
-- In background, run `setsid gtk-power-app >/dev/null 2>&1 &`
+- For foreground in terminal, run `pwr-tray`
+- In background, run `setsid pwr-tray >/dev/null 2>&1 &`
 
 ### Output for Debugging 
-- unless stdout is a tty, say for debugging, ~/.gtk-power-app.log is used for stdout
+- unless stdout is a tty, say for debugging, ~/.config/pwr-tray/debug.log is used instead of stdout
 - if we create a log file, its size is limited to 512K and then it is truncated
+- TBD: more info (`tail -F`, `ssh`, whatever)
 
 ### Menu Options
 Choose from three *major power modes* (to limit the effect of timeouts):
