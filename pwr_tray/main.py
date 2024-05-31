@@ -137,6 +137,9 @@ def prt(*args, **kwargs):
         def reopen():
             global prt_to_init
             sys.stdout = open(prt_path, "a+", encoding='utf-8')
+            sys.stderr = sys.stdout
+            os.dup2(sys.stdout.fileno(), 1)
+            os.dup2(sys.stderr.fileno(), 2)
             prt_to_init = False
 
         if prt_kb > 0 and prt_path: # non-positive disables stdout "tuning"
@@ -297,6 +300,8 @@ class InhIndicator:
         'suspend': 'systemctl suspend',
         'poweroff': 'systemctl poweroff',
         'reboot': 'systemctl reboot',
+        'dimmer': 'brightnessctl set {percent}%',
+        'undim': 'brightnessctl set 100%',
         'logoff': '',
         'monitors_off': '',
         'locker': '',
@@ -311,8 +316,8 @@ class InhIndicator:
         'x11': {
             'reset_idle': 'xset s reset',
             'get_idle_ms': 'xprintidle',
-            'must_haves': 'xset xprintidle'.split(),
             'monitors_off': 'sleep 1.0; exec xset dpms force off',
+            'must_haves': 'xset xprintidle'.split(),
         }, 'sway': {
             # swayidle timeout 300 'swaylock' resume 'swaymsg "exec kill -USR1 $(pgrep swayidle)"' &
             # kill -USR1 $(pgrep swayidle)
@@ -327,6 +332,7 @@ class InhIndicator:
             'logoff': 'i3-msg exit',
             'locker': 'i3lock -c 300000 --ignore-empty-password --show-failed-attempt',
             'must_haves': 'i3-msg i3lock'.split(),
+
         }, 'kde-xll': {
         }, 'kde-wayland': {
             # sudo apt-get install xdg-utils
@@ -350,6 +356,7 @@ class InhIndicator:
             'must_haves': 'loginctl qdbus'.split(),
 
         }, 'gnome-x11': {
+
         }, 'gnome-wayland': {
             # sudo apt-get install xdg-utils
             'reset_idle': ('gdbus call --session --dest org.gnome.ScreenSaver --object-path'
@@ -365,8 +372,8 @@ class InhIndicator:
             'locker': 'loginctl lock-session',
             'must_haves': 'qdbus gnome-screensaver-command'.split(),
 
-            }
         }
+    }
 
     def __init__(self, ini_tool, quick=False):
         InhIndicator.singleton = self
@@ -424,8 +431,8 @@ class InhIndicator:
 
         self.variables.update(self.overides[self.graphical])
         must_haves += self.variables['must_haves']
-        if self.graphical == 'i3' and self.params.i3lock_args:
-            self.variables['locker'] += f' {self.params.i3lock_args}'
+#       if self.graphical == 'i3' and self.params.i3lock_args:
+#           self.variables['locker'] += f' {self.params.i3lock_args}'
 
         dont_haves = []
         for must_have in set(must_haves):
@@ -445,7 +452,7 @@ class InhIndicator:
         if self.idle_manager:
             self.idle_manager_start()
         self.on_timeout()
-        
+
     def get_lock_mins(self, plugged=None):
         """TBD"""
         plugged = self.battery.plugged if plugged is None else plugged
@@ -496,9 +503,9 @@ class InhIndicator:
             for plugged, key in enumerate('OnBattery Settings'.split()):
                 for attr in 'lock_mins sleep_mins'.split():
                     getattr(self.ini_tool, attr)[plugged] = picks[key][attr]
-                    
-            self.ini_tool.set_effective_params(self.plugged)
-            prt('restored Picks OK:', vars(picks))
+
+            self.ini_tool.set_effective_params(self.battery.plugged)
+            prt('restored Picks OK:', picks)
             return True
 
         except Exception as e:
@@ -631,12 +638,18 @@ class InhIndicator:
             lock_secs = self.get_lock_mins()*60
             down_secs = self.get_sleep_mins()*60 + lock_secs
             blank_secs = 5 if self.quick else 20
+            if 0 <= int(self.params.dim_pct_brightness) < 100:
+                dim_secs = int(round(lock_secs * int(self.params.dim_pct_lock_min) / 100, 0))
+            else:
+                dim_secs = 2000 + lock_secs * 2  # make it never happen
 
             emit = f'idle_s={self.running_idle_s} state={self.state.name},{self.state.when}s'
             if self.mode in ('LockOnly', 'SleepAfterLock'):
                 emit += f' @{self.get_lock_mins()}m'
             if self.mode in ('SleepAfterLock', ):
                 emit += f'+{self.get_sleep_mins()}m'
+            if not self.battery.plugged:
+                emit += ' unplugged'
             prt(emit)
 
             if self.running_idle_s > min(50, lock_secs*0.40) and (
@@ -651,8 +664,12 @@ class InhIndicator:
                     self.suspend(None)
 
             elif (self.running_idle_s >= lock_secs and self.mode not in ('Presentation',)
-                    and self.state.name in ('Awake',)):
+                    and self.state.name in ('Awake', 'Dim')):
                 self.lock_screen(None)
+
+            elif (self.running_idle_s >= dim_secs and self.mode not in ('Presentation',)
+                    and self.state.name in ('Awake',)):
+                self.dimmer(None)
 
             elif (self.running_idle_s >= self.state.when + blank_secs
                     and self.params.turn_off_monitors
@@ -684,7 +701,6 @@ class InhIndicator:
         self.rebuild_menu = True
 
     def _lock_rotate_next(self, advance=True):
-        # TODO: resume fixing here
         mins0 = self.get_lock_mins()
         if len(self.params.lock_min_list) < 1:
             return mins0
@@ -692,7 +708,7 @@ class InhIndicator:
         idx1 = (idx0+1) % len(self.params.lock_min_list)
         next_mins = self.params.lock_min_list[idx1]
         if advance:
-            self.ini_tool.lock_mins[self.plugged] = next_mins
+            self.ini_tool.lock_mins[self.battery.plugged] = next_mins
             prt(f'picked lock_mins={self.get_lock_mins()}')
             self.rebuild_menu = bool(idx0 != idx1)
             self.save_picks()
@@ -713,7 +729,7 @@ class InhIndicator:
         idx1 = (idx0+1) % len(self.params.sleep_min_list)
         next_mins = self.params.sleep_min_list[idx1]
         if advance:
-            self.ini_tool.sleep_mins[self.plugged] = next_mins
+            self.ini_tool.sleep_mins[self.battery.plugged] = next_mins
             prt(f'picked sleep_mins={self.get_sleep_mins()}')
             self.rebuild_menu = bool(idx0 != idx1)
             self.save_picks()
@@ -840,8 +856,19 @@ class InhIndicator:
     def run_command(key):
         this = InhIndicator.singleton
         command = this.variables.get(key, None)
+        if key == 'locker' and this.graphical in ('i3', 'sway'):
+            append = this.params.i3lock_args
+            if not append:
+                file = get_resource_path('lockpaper.png')
+                if file:
+                    append = f'-t -i {file}'
+            command += ' ' + append
+        elif key == 'dimmer':
+            percent = int(round(int(this.params.dim_pct_brightness), 0))
+            command = command.replace('{percent}', str(percent))
+
         if command:
-            prt('+ command')
+            prt(f'+ {command}')
             subprocess.run(command.split(), check=False)
 
     @staticmethod
@@ -878,6 +905,16 @@ class InhIndicator:
         InhIndicator.run_command('reboot')
 
     @staticmethod
+    def dimmer(_):
+        """TBD"""
+        InhIndicator.run_command('dimmer')
+
+    @staticmethod
+    def undim(_):
+        """TBD"""
+        InhIndicator.run_command('undim')
+
+    @staticmethod
     def lock_screen(_, before=''):
         this = InhIndicator.singleton
         # NOTE: loginctl works for most systems, but at least on KDE Neon, the Desktop Session
@@ -887,6 +924,8 @@ class InhIndicator:
         # cmd = 'exec i3lock -c 200020 --ignore-empty-password --show-failed-attempt'
         InhIndicator.run_command('locker')
         this.update_running_idle_s()
+        if 0 <= int(this.params.dim_pct_brightness) < 100:
+            this.undim(None)
         this.set_state('Locked')
 
     def blank_primitive(self, lock_screen=False):
@@ -1028,7 +1067,7 @@ class IniTool:
     def __init__(self):
         self.defaults = {
             'Settings': {
-                'i3lock_args': '-c resources/lockpaper.jpg',
+                'i3lock_args': '',
             #   'i3lock_args': '-c 200020',
                 'debug_mode': False,
                 'power_down': False,
@@ -1125,15 +1164,15 @@ class IniTool:
         params = copy.deepcopy(vars(self.section_params['Settings']))
         if not plugged:
             params.update(copy.deepcopy(vars(self.section_params['OnBattery'])))
-        for plugged, key in enumerate('OnBattery Settings'.split()):
+        for plug, key in enumerate('OnBattery Settings'.split()):
             for pick, array in [
                     'lock_mins lock_min_list'.split(),
                     'sleep_mins sleep_min_list'.split()
                     ]:
                 picks = getattr(self, pick)
                 choices = getattr(self.section_params[key], array)
-                if picks[plugged] not in choices:
-                    picks[plugged] = choices[0]
+                if picks[plug] not in choices:
+                    picks[plug] = choices[0]
         self.params = SimpleNamespace(**params)
 
 
@@ -1150,11 +1189,20 @@ def main():
             help='log to stdout (if a tty)')
     parser.add_argument('-f', '--follow-log', action='store_true',
             help='exec tail -f on log file')
+    parser.add_argument('-e', '--edit-config', action='store_true',
+            help='exec ${EDITOR:-vim} on config.ini file')
     parser.add_argument('-q', '--quick', action='store_true',
             help='quick mode (1m lock + 1m sleep')
     opts = parser.parse_args()
 
     ini_tool = IniTool()
+    if opts.edit_config:
+        editor = os.getenv('EDITOR', 'vim')
+        args = [editor, ini_tool.ini_path]
+        print(f'RUNNING: {args}')
+        os.execvp(editor, args)
+        sys.exit(1) # just in case ;-)
+
     if opts.follow_log:
         args = ['tail', '-f', ini_tool.log_path]
         print(f'RUNNING: {args}')
