@@ -34,12 +34,12 @@
 # HOW TO PUBLISH...
 # PUBLIC Build and deploy (from project directory):
 #   ## BUMP the version (below in [project])
-#   rm -r dist; python3 -m build; ls dist/.
+#   rm -rf dist; python3 -m build; ls dist/.
 #   python3 -m twine upload dist/* # keyring --disable # may be required
 #     ## Enter __token__ and the saved TOKEN (in bitwarden)
-#   pipx upgrade my-snaps || pipx install my-snaps # >= python3.11
-#   --OR-- sudo python3 -m pip install my-snaps # <= python3.10
-#   ## VISIT  https://pypi.org/project/my-snaps and delete old versions
+#   pipx upgrade pwr-tray || pipx install pwr-tray # >= python3.11
+#   --OR-- sudo python3 -m pip install pwr-tray # <= python3.10
+#   ## VISIT  https://pypi.org/project/pwr-tray and delete old versions
 #
 # TEST Build and test (from project directory):
 #   ## BUMP the version (below in [project])
@@ -47,7 +47,7 @@
 #   python3 -m twine upload --repository testpypi dist/* # keyring --disable # may be required
 #     ## Enter __token__ and the saved TOKEN (in bitwarden)
 #   sudo python3 -m pip install --upgrade --index-url https://test.pypi.org/simple/ --no-deps --break-system-packages my-sna
-#   ## VISIT  https://test.pypi.org/project/my-snaps and delete old versions
+#   ## VISIT  https://test.pypi.org/project/pwr-tray and delete old versions
 
 [build-system]
 requires = ["setuptools>=42", "wheel"]
@@ -73,6 +73,7 @@ classifiers = [
 ]
 dependencies = [
     'importlib-metadata; python_version<"3.8"',
+    'psutil>=5.9',
 ]
 
 [project.urls]

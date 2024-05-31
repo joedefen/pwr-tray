@@ -51,3 +51,5 @@ Or choose new controls values:
 
 **Notes:**
 - only the menu options that can have effect are shown (e.g., you cannot see "Presentation Mode" if in "Presentation Mode", you cannot see "Chg Screen Idle" if there is only one possibility, etc).
+
+

@@ -47,13 +47,17 @@ import stat
 import subprocess
 import threading
 import json
+import copy
 import shutil
 import inspect
+import atexit
+import traceback
 from types import SimpleNamespace
 from datetime import datetime
 from io import StringIO
 import configparser
 import pkg_resources
+import psutil
 
 import gi
 gi.require_version('Gtk', '3.0')
@@ -108,7 +112,7 @@ def where(above=0):
 
 
 prt_kb = 512
-prt_folder = ''
+prt_path = ''
 prt_to_init = True
 
 def prt(*args, **kwargs):
@@ -117,7 +121,7 @@ def prt(*args, **kwargs):
      - unless stdout is a tty, say for debugging, ~/.config/pwr-tray/debug.log is used for stdout
      - if we create a log file, its size is limited to 512K and then it is truncated
      """
-    def check_stdout():
+    def check_stdout(use_stdout=None):
         global prt_to_init
         def is_tty():
             try:
@@ -130,24 +134,27 @@ def prt(*args, **kwargs):
                 return stat.S_ISREG(os.fstat(sys.stdout.fileno()).st_mode)
             except Exception:
                 return False
-        def prt_path():
-            return os.path.join(prt_folder, 'debug.log')
         def reopen():
             global prt_to_init
-            prt_path = os.path.join(prt_folder, 'debug.log')
             sys.stdout = open(prt_path, "a+", encoding='utf-8')
             prt_to_init = False
 
-        if prt_kb > 0 and prt_folder: # non-positive disables stdout "tuning"
-            if prt_to_init and sys.stdout.closed: # Check if stdout is closed
+        if prt_kb > 0 and prt_path: # non-positive disables stdout "tuning"
+            if use_stdout is False:
+                reopen()
+            elif prt_to_init and sys.stdout.closed: # Check if stdout is closed
                 reopen()
             elif prt_to_init and not is_tty() and not is_reg():
                 reopen()
             if os.fstat(sys.stdout.fileno()).st_size > prt_kb*1024:
-                shutil.move(prt_path(), f'{prt_path()}1')
+                shutil.move(prt_path, f'{prt_path}1')
                 reopen()
 
-    check_stdout()
+    to_stdout = None
+    if 'to_stdout' in kwargs:
+        to_stdout = bool(kwargs['to_stdout'])
+        del kwargs['to_stdout']
+    check_stdout(to_stdout)
 
     dt = datetime.now().strftime('%m-%d^%H:%M:%S')
     s = StringIO()
@@ -361,13 +368,15 @@ class InhIndicator:
             }
         }
 
-    def __init__(self, config, quick=False):
+    def __init__(self, ini_tool, quick=False):
         InhIndicator.singleton = self
-        self.config = config
-        self.opts, self.lock_mins, self.sleep_mins = None, None, None
+        self.ini_tool = ini_tool
+        # self.params, self.lock_mins, self.sleep_mins = None, None, None
+        self.params = None
+        self.battery = SimpleNamespace(present=None, plugged=1, percent=100)
         self.reconfig()
-        self.lock_mins = self.opts.lock_min_list[0]
-        self.sleep_mins = self.opts.sleep_min_list[0]
+        ## self.lock_mins = self.params.lock_min_list[0]
+        ## self.sleep_mins = self.params.sleep_min_list[0]
         self.quick = quick
 
         self.loop = 0
@@ -396,12 +405,12 @@ class InhIndicator:
         self.lock_began_secs = None   # TBD: remove
         self.inh_lock_began_secs = False # TBD: refactor?
         self.rebuild_menu = False
-        self.picks_file = os.path.join(prt_folder, 'picks.json')
+        self.picks_file = ini_tool.picks_path
 
         self.restore_picks()
         if quick:
-            self.opts.lock_min_list = [1, 2, 4, 8, 32, 128]
-            self.opts.sleep_min_list = self.opts.lock_min_list
+            self.params.lock_min_list = [1, 2, 4, 8, 32, 128]
+            self.params.sleep_min_list = self.params.lock_min_list
             self.lock_mins = self.sleep_mins = 1
 
         # self.down_state = self.opts.down_state
@@ -415,14 +424,15 @@ class InhIndicator:
 
         self.variables.update(self.overides[self.graphical])
         must_haves += self.variables['must_haves']
-        if self.graphical == 'i3' and self.opts.i3lock_args:
-            self.variables['locker'] += f' {self.opts.i3lock_args}'
-            
+        if self.graphical == 'i3' and self.params.i3lock_args:
+            self.variables['locker'] += f' {self.params.i3lock_args}'
 
+        dont_haves = []
         for must_have in set(must_haves):
-            assert shutil.which(must_have), f'ERROR: command {must_have!r} not found'
-            print(f'GOT: {must_have!r}')
-            
+            if shutil.which(must_have) is None:
+                dont_haves.append(must_have)
+        assert not dont_haves, f'commands NOT on $PATH: {dont_haves}'
+
 
         self.idle_manager = SwayIdleManager(self) if self.graphical == 'sway' else None
 
@@ -435,23 +445,39 @@ class InhIndicator:
         if self.idle_manager:
             self.idle_manager_start()
         self.on_timeout()
+        
+    def get_lock_mins(self, plugged=None):
+        """TBD"""
+        plugged = self.battery.plugged if plugged is None else plugged
+        return self.ini_tool.lock_mins[plugged]
+
+    def get_sleep_mins(self, plugged=None):
+        """TBD"""
+        plugged = self.battery.plugged if plugged is None else plugged
+        return self.ini_tool.sleep_mins[plugged]
 
     def reconfig(self):
         """ update/fix config """
-        self.config.update_config()
-        self.opts = self.config.params
-        if self.lock_mins not in self.opts.lock_min_list:
-            self.lock_mins = self.opts.lock_min_list[0]
-        if self.sleep_mins not in self.opts.sleep_min_list:
-            self.sleep_mins = self.opts.sleep_min_list[0]
+        self.ini_tool.update_config(self.battery.plugged)
+        self.params = self.ini_tool.params
+#       if self.lock_mins not in self.params.lock_min_list:
+#           self.lock_mins = self.params.lock_min_list[0]
+#       if self.sleep_mins not in self.params.sleep_min_list:
+#           self.sleep_mins = self.params.sleep_min_list[0]
 
     @staticmethod
     def save_picks():
         this = InhIndicator.singleton
         if this and not this.quick:
             picks = { 'mode': this.mode,
-                      'lock_mins': this.lock_mins,
-                      'sleep_mins': this.sleep_mins,
+                      'Settings': {
+                          'lock_mins': this.get_lock_mins(1),
+                          'sleep_mins': this.get_sleep_mins(1),
+                      },
+                      'OnBattery': {
+                          'lock_mins': this.get_lock_mins(0),
+                          'sleep_mins': this.get_sleep_mins(0),
+                      },
                 }
             try:
                 with open(this.picks_file, 'w', encoding='utf-8') as f:
@@ -466,26 +492,25 @@ class InhIndicator:
         try:
             with open(self.picks_file, 'r', encoding='utf-8') as handle:
                 picks = json.load(handle)
-            picks = SimpleNamespace(**picks)
-            self.mode = picks.mode
-            lock_mins = picks.lock_mins
-            if lock_mins in self.opts.lock_min_list:
-                self.lock_mins = lock_mins
-            sleep_mins = picks.sleep_mins
-            if sleep_mins in self.opts.sleep_min_list:
-                self.sleep_mins = sleep_mins
+            self.mode = picks['mode']
+            for plugged, key in enumerate('OnBattery Settings'.split()):
+                for attr in 'lock_mins sleep_mins'.split():
+                    getattr(self.ini_tool, attr)[plugged] = picks[key][attr]
+                    
+            self.ini_tool.set_effective_params(self.plugged)
             prt('restored Picks OK:', vars(picks))
             return True
 
         except Exception as e:
             prt(f'restored picks FAILED: {e}')
-            prt(f'mode=self.mode lock_mins={self.lock_mins} sleep_mins={self.sleep_mins}')
+            prt(f'mode=self.mode lock_mins={self.get_lock_mins()}'
+                f' sleep_mins={self.get_sleep_mins()}')
             return True
 
 
 
     def _get_down_state(self):
-        return 'PowerDown' if self.opts.power_down else 'Suspend'
+        return 'PowerDown' if self.params.power_down else 'Suspend'
 
     def update_running_idle_s(self):
         """ Update the running idle seconds (called after each regular timeout) """
@@ -498,7 +523,7 @@ class InhIndicator:
 
     def DB(self):
         """ is debug on? """
-        rv = self.opts.debug_mode
+        rv = self.params.debug_mode
         return rv
 
     def check_inhibited(self):
@@ -549,6 +574,30 @@ class InhIndicator:
         self.was_output = output
         return rows, bool(was_output != output)
 
+    def update_battery_status(self):
+        if not self.battery.present:
+            return
+        battery = psutil.sensors_battery()
+        if battery is None:
+            self.battery.present = False
+            return
+        was_plugged = self.battery.plugged
+
+        self.battery.plugged = 1 if battery.power_plugged else 0
+        self.battery.percent = battery.percent
+        if was_plugged != self.battery.plugged:
+            self.ini_tool.set_effective_params(self.battery.plugged)
+#   IF WANTING TIME LEFT
+#       secsleft = battery.secsleft
+#       if secsleft == psutil.POWER_TIME_UNLIMITED:
+#           time_left = "Calculating..."
+#       elif secsleft == psutil.POWER_TIME_UNKNOWN:
+#           time_left = "Unknown"
+#       else:
+#           hours, remainder = divmod(secsleft, 3600)
+#           minutes, seconds = divmod(remainder, 60)
+#           time_left = f"{hours:02}:{minutes:02}"
+
     def reset_xidle_ms(self):
         """ TBD"""
         self.run_command('reset_idle')
@@ -578,15 +627,16 @@ class InhIndicator:
 
         if self.loop >= self.loop_sample:
             self.update_running_idle_s()
-            lock_secs = self.lock_mins*60
-            down_secs = self.sleep_mins*60 + lock_secs
+            self.update_battery_status()
+            lock_secs = self.get_lock_mins()*60
+            down_secs = self.get_sleep_mins()*60 + lock_secs
             blank_secs = 5 if self.quick else 20
 
             emit = f'idle_s={self.running_idle_s} state={self.state.name},{self.state.when}s'
             if self.mode in ('LockOnly', 'SleepAfterLock'):
-                emit += f' @{self.lock_mins}m'
+                emit += f' @{self.get_lock_mins()}m'
             if self.mode in ('SleepAfterLock', ):
-                emit += f'+{self.sleep_mins}m'
+                emit += f'+{self.get_sleep_mins()}m'
             prt(emit)
 
             if self.running_idle_s > min(50, lock_secs*0.40) and (
@@ -605,7 +655,7 @@ class InhIndicator:
                 self.lock_screen(None)
 
             elif (self.running_idle_s >= self.state.when + blank_secs
-                    and self.opts.turn_off_monitors
+                    and self.params.turn_off_monitors
                     and self.mode not in ('Presentation',)
                     and self.state.name in ('Locked',)):
                 self.blank_primitive()
@@ -627,48 +677,53 @@ class InhIndicator:
             poll_ms = int(self.poll_s * 1000)
         glib.timeout_add(poll_ms, self.on_timeout)
 
-    def _screen_rotate_next(self, advance=True):
-        mins0 = self.lock_mins
-        if len(self.opts.lock_min_list) < 1:
+    def _toggle_battery(self, _=None):
+        # TODO: this is temporary for testing
+        self.battery.plugged = 0 if self.battery.plugged else 1
+        self.ini_tool.set_effective_params(self.battery.plugged)
+        self.rebuild_menu = True
+
+    def _lock_rotate_next(self, advance=True):
+        # TODO: resume fixing here
+        mins0 = self.get_lock_mins()
+        if len(self.params.lock_min_list) < 1:
             return mins0
-        idx0 = self.opts.lock_min_list.index(mins0)
-        idx1 = (idx0+1) % len(self.opts.lock_min_list)
-        next_mins = self.opts.lock_min_list[idx1]
+        idx0 = self.params.lock_min_list.index(mins0)
+        idx1 = (idx0+1) % len(self.params.lock_min_list)
+        next_mins = self.params.lock_min_list[idx1]
         if advance:
-            self.lock_mins = next_mins
-            prt(f'picked {self.lock_mins=}')
+            self.ini_tool.lock_mins[self.plugged] = next_mins
+            prt(f'picked lock_mins={self.get_lock_mins()}')
             self.rebuild_menu = bool(idx0 != idx1)
             self.save_picks()
             self.idle_manager_start()
         return next_mins
 
-    def _screen_rotate_str(self):
-        mins0 = self.lock_mins
-        mins1 = self._screen_rotate_next(False)
+    def _lock_rotate_str(self):
+        mins0 = self.get_lock_mins()
+        mins1 = self._lock_rotate_next(False)
         rv = f'{mins0}m' + ('' if mins0 == mins1 else f'->{mins1}m')
-        # prt(f'str={rv}')
         return rv
 
     def _sleep_rotate_next(self, advance=True):
-        mins0 = self.sleep_mins
-        if len(self.opts.sleep_min_list) < 1:
+        mins0 = self.get_sleep_mins()
+        if len(self.params.sleep_min_list) < 1:
             return mins0
-        idx0 = self.opts.sleep_min_list.index(mins0)
-        idx1 = (idx0+1) % len(self.opts.sleep_min_list)
-        next_mins = self.opts.sleep_min_list[idx1]
+        idx0 = self.params.sleep_min_list.index(mins0)
+        idx1 = (idx0+1) % len(self.params.sleep_min_list)
+        next_mins = self.params.sleep_min_list[idx1]
         if advance:
-            self.sleep_mins = next_mins
-            prt(f'{self.sleep_mins=}')
+            self.ini_tool.sleep_mins[self.plugged] = next_mins
+            prt(f'picked sleep_mins={self.get_sleep_mins()}')
             self.rebuild_menu = bool(idx0 != idx1)
             self.save_picks()
             self.idle_manager_start()
         return next_mins
 
     def _sleep_rotate_str(self):
-        mins0 = self.sleep_mins
+        mins0 = self.get_sleep_mins()
         mins1 = self._sleep_rotate_next(False)
         rv = f'{mins0}m' + ('' if mins0 == mins1 else f'->{mins1}m')
-        # prt(f'str={rv}')
         return rv
 
     def build_menu(self, rows=None):
@@ -707,7 +762,7 @@ class InhIndicator:
         item.connect('activate', self.lock_screen)
         menu.append(item)
 
-        if self.opts.turn_off_monitors:
+        if self.params.turn_off_monitors:
             item = gtk.MenuItem(label='▷ Blank Monitors')
             item.connect('activate', self.blank_quick)
             menu.append(item)
@@ -738,15 +793,20 @@ class InhIndicator:
         item.connect('activate', self.poweroff)
         menu.append(item)
 
+        item = gtk.MenuItem(label=
+                '🔌 Plugged In' if self.battery.plugged else f'🔋 Battery {self.battery.percent}%')
+        item.connect('activate', self._toggle_battery)
+        menu.append(item)
+
         # if self.mode not in ('Presentation',) and len(self.opts.lock_min_list) > 1:
-        if len(self.opts.lock_min_list) > 1:
-            item = gtk.MenuItem(label= f'♺ Lock: {self._screen_rotate_str()}')
-            item.connect('activate', self._screen_rotate_next)
+        if len(self.params.lock_min_list) > 1:
+            item = gtk.MenuItem(label= f'  ♺ Lock: {self._lock_rotate_str()}')
+            item.connect('activate', self._lock_rotate_next)
             menu.append(item)
 
         # if self.mode in ('SleepAfterLock',) and len(self.opts.sleep_min_list) > 1:
-        if len(self.opts.sleep_min_list) > 1:
-            item = gtk.MenuItem(label=f'♺ Sleep (after Lock): {self._sleep_rotate_str()}')
+        if len(self.params.sleep_min_list) > 1:
+            item = gtk.MenuItem(label=f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}')
             item.connect('activate', self._sleep_rotate_next)
             menu.append(item)
 
@@ -831,7 +891,7 @@ class InhIndicator:
 
     def blank_primitive(self, lock_screen=False):
         """TBD"""
-        if self.opts.turn_off_monitors:
+        if self.params.turn_off_monitors:
             if lock_screen:
                 self.lock_screen(None, before='sleep 1.5; ')
             cmd = self.variables['monitors_off']
@@ -906,6 +966,9 @@ class InhIndicator:
                 prt('acpi event:', line)
                 # Reset idle timer
                 this.reset_xidle_ms()
+    @staticmethod
+    def goodbye(message=''):
+        prt(f'ENDED {message}')
 
 #######
 ####### ####### ####### ####### PyKill
@@ -960,24 +1023,39 @@ class PyKill:
             prt(f'INFO: gone: {target} [sig={self.last_sig.get(target, None)}]')
         return not bool(self.alive)
 
-class Params:
+class IniTool:
     """ Configued Params for this class"""
     def __init__(self):
         self.defaults = {
             'Settings': {
-                'i3lock_args': '-c 200020',
+                'i3lock_args': '-c resources/lockpaper.jpg',
+            #   'i3lock_args': '-c 200020',
                 'debug_mode': False,
                 'power_down': False,
                 'turn_off_monitors': False,
-                'lock_min_list': '[30, 10]',
+                'lock_min_list': '[15, 30, 2, 1]',
                 'sleep_min_list': '[10, 1]',
-                'log_kb': 0,
+                'dim_pct_brightness': 100,
+                'dim_pct_lock_min': 100,
+            },
+            'OnBattery': {
+                'down_percent': 10,
+                'power_down': True,
+                'lock_min_list': '[10, 20, 1]',
+                'sleep_min_list': '[5, 1]',
+                'dim_pct_brightness': 50,
+                'dim_pct_lock_min': 70,
             }
         }
+        self.lock_mins = [10, 15] # indexed by int(plugged)
+        self.sleep_mins = [5, 10] # indexed by int(plugged)
         self.folder = os.path.expanduser("~/.config/pwr-tray")
         self.ini_path =  os.path.join(self.folder, "config.ini")
+        self.log_path =  os.path.join(self.folder, "debug.log")
+        self.picks_path =  os.path.join(self.folder, "picks.json")
         self.config = configparser.ConfigParser()
         self.last_mod_time = None
+        self.section_params = {'Settings': {}, 'OnBattery': {}}
         self.params = SimpleNamespace()
         self.ensure_ini_file()
 
@@ -990,7 +1068,7 @@ class Params:
             with open(self.ini_path, 'w', encoding='utf-8') as configfile:
                 self.config.write(configfile)
 
-    def update_config(self):
+    def update_config(self, plugged):
         """ Check if the file has been modified since the last read """
         def to_array(val_str):
             rv = []
@@ -1010,34 +1088,53 @@ class Params:
             return vals
 
         current_mod_time = os.path.getmtime(self.ini_path)
-        if current_mod_time != self.last_mod_time:
-            # Re-read the configuration file if it has changed
-            self.config.read(self.ini_path)
-            self.last_mod_time = current_mod_time
+        if current_mod_time == self.last_mod_time or not self.params:
+            return False
+        # Re-read the configuration file if it has changed
+        self.config.read(self.ini_path)
+        self.last_mod_time = current_mod_time
 
-            # Access the configuration values
-            for key in self.defaults['Settings']:
+        # Access the configuration values
+        for section in 'Settings OnBattery'.split():
+            section_params = SimpleNamespace(**self.section_params[section])
+            for key in self.defaults[section]:
                 try:
-                    value = self.config.get('Settings', key)
+                    value = self.config.get(section, key)
                     # print(key, repr(value), type(value))
                     if isinstance(value, str):
                         if value.lower() == 'true':
                             value = True
                         elif value.lower() == 'false':
                             value = False
-                    setattr(self.params, key, value)
+                    setattr(section_params, key, value)
                 except Exception:
                     if not hasattr(self.params, key):
-                        setattr(self.params, key, self.defaults[key])
+                        value = self.defaults[section].get(key, None)
+                        if value is not None:
+                            setattr(section_params, key, value)
 
             for key in ('lock_min_list', 'sleep_min_list'):
-                array = to_array(getattr(self.params, key))
-                setattr(self.params, key, array)
+                array = to_array(getattr(section_params, key))
+                setattr(section_params, key, array)
+            self.section_params[section] = section_params
 
-            global prt_kb, prt_folder
-            prt_kb = int(self.params.log_kb)
-            prt_folder = self.folder
-            prt('Updated params:', vars(self.params))
+        self.set_effective_params(plugged)
+
+    def set_effective_params(self, plugged):
+        """ Set the effective parameters based on state of battery """
+        params = copy.deepcopy(vars(self.section_params['Settings']))
+        if not plugged:
+            params.update(copy.deepcopy(vars(self.section_params['OnBattery'])))
+        for plugged, key in enumerate('OnBattery Settings'.split()):
+            for pick, array in [
+                    'lock_mins lock_min_list'.split(),
+                    'sleep_mins sleep_min_list'.split()
+                    ]:
+                picks = getattr(self, pick)
+                choices = getattr(self.section_params[key], array)
+                if picks[plugged] not in choices:
+                    picks[plugged] = choices[0]
+        self.params = SimpleNamespace(**params)
 
 
 def main():
@@ -1046,26 +1143,52 @@ def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     # os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-    PyKill().kill_loop('pwr-tray')
-    os.environ['DISPLAY'] = ':0'
     parser = argparse.ArgumentParser()
     parser.add_argument('-D', '--debug', action='store_true',
             help='override debug_mode from .ini initially')
+    parser.add_argument('-o', '--stdout', action='store_true',
+            help='log to stdout (if a tty)')
+    parser.add_argument('-f', '--follow-log', action='store_true',
+            help='exec tail -f on log file')
     parser.add_argument('-q', '--quick', action='store_true',
             help='quick mode (1m lock + 1m sleep')
     opts = parser.parse_args()
 
-    config = Params()
+    ini_tool = IniTool()
+    if opts.follow_log:
+        args = ['tail', '-f', ini_tool.log_path]
+        print(f'RUNNING: {args}')
+        os.execvp('tail', args)
+        sys.exit(1) # just in case ;-)
 
-    prt('START-UP')
+    os.environ['DISPLAY'] = ':0'
+
+    global prt_path
+    prt_path = ini_tool.log_path
+    prt('START-UP', to_stdout=opts.stdout)
+    prt('Initial Params:', vars(ini_tool.params))
+    PyKill().kill_loop('pwr-tray')
+    atexit.register(InhIndicator.goodbye)
 
     # Start ACPI event listener in a separate thread: TODL make conditional
     threading.Thread(target=InhIndicator.acpi_event_listener, daemon=True).start()
     # Start the applet
     if opts.debug:
-        config.params.debug_mode = True # one-time override
-    _ = InhIndicator(config=config, quick=opts.quick)
+        ini_tool.params.debug_mode = True # one-time override
+    _ = InhIndicator(ini_tool=ini_tool, quick=opts.quick)
     gtk.main()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+        sys.exit(0)
+
+    ###### AppIndicator3 is catching most of these so may not get many exceptions
+    except KeyboardInterrupt:
+        prt("Shutdown requested, so exiting ...")
+        sys.exit(1)
+
+    except Exception as exc:
+        prt("Caught exception running main(), so exiting ...\n",
+            traceback.format_exc(limit=24))
+        sys.exit(9)
