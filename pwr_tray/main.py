@@ -45,7 +45,7 @@ import signal
 import time
 import stat
 import subprocess
-import threading
+# import threading
 import json
 import copy
 import shutil
@@ -1005,6 +1005,10 @@ class InhIndicator:
                 prt('acpi event:', line)
                 # Reset idle timer
                 this.reset_xidle_ms()
+            elif this:
+                prt('UNSELECTED acpi event:', line)
+                # Reset idle timer
+                this.reset_xidle_ms()
     @staticmethod
     def goodbye(message=''):
         prt(f'ENDED {message}')
@@ -1219,7 +1223,8 @@ def main():
     atexit.register(InhIndicator.goodbye)
 
     # Start ACPI event listener in a separate thread: TODL make conditional
-    threading.Thread(target=InhIndicator.acpi_event_listener, daemon=True).start()
+    # requires "acpid" which causes other issue
+    # threading.Thread(target=InhIndicator.acpi_event_listener, daemon=True).start()
     # Start the applet
     if opts.debug:
         ini_tool.params.debug_mode = True # one-time override
