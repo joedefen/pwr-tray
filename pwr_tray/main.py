@@ -582,7 +582,7 @@ class InhIndicator:
         return rows, bool(was_output != output)
 
     def update_battery_status(self):
-        if not self.battery.present:
+        if self.battery.present is False:
             return
         battery = psutil.sensors_battery()
         if battery is None:
@@ -591,9 +591,10 @@ class InhIndicator:
         was_plugged = self.battery.plugged
 
         self.battery.plugged = 1 if battery.power_plugged else 0
-        self.battery.percent = battery.percent
+        self.battery.percent = round(battery.percent, 1)
         if was_plugged != self.battery.plugged:
             self.ini_tool.set_effective_params(self.battery.plugged)
+            self.rebuild_menu = True
 #   IF WANTING TIME LEFT
 #       secsleft = battery.secsleft
 #       if secsleft == psutil.POWER_TIME_UNLIMITED:
@@ -625,6 +626,7 @@ class InhIndicator:
         self.reconfig()
         if self.idle_manager:
             self.idle_manager.checkup()
+        self.update_battery_status()
 
         rows, updated = self.check_inhibited()
         if updated or self.rebuild_menu:
@@ -634,7 +636,6 @@ class InhIndicator:
 
         if self.loop >= self.loop_sample:
             self.update_running_idle_s()
-            self.update_battery_status()
             lock_secs = self.get_lock_mins()*60
             down_secs = self.get_sleep_mins()*60 + lock_secs
             blank_secs = 5 if self.quick else 20
