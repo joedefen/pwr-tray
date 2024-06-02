@@ -53,3 +53,17 @@ Or choose new controls values:
 - only the menu options that can have effect are shown (e.g., you cannot see "Presentation Mode" if in "Presentation Mode", you cannot see "Chg Screen Idle" if there is only one possibility, etc).
 
 
+### i3wm Specific Notes
+* Uninstall or disable all competing energy saving programs (e.g., `xscreensaver`, `xfce4-power-manage`, etc.) which running `i3` whether started by `systemd` or `i3/config` or whatever.
+* Edit `/etc/system/logind.conf` and uncomment `HandlePowerKey=`, `HandlePowerKey=`, `HandlePowerKey=`, and `HandlePowerKey=`, and set the action to `suspend` (reboot or restart `systemd-logind`).  That enables `xss-switch` to handle those keys.
+* In `~/.config/i3/config`, configure something like:
+```
+set $screenlock i3lock -t -i ~/.config/pwr-tray/lockpaper.png --ignore-empty-password --show-failed-attempts
+exec --no-startup-id xss-lock --transfer-sleep-lock -- $screenlock --nofork
+            
+```
+That creates handlers for those special key presses that is compatible with `pwr-tray` defaults. Vary if needed (but you might start with this suggestion).
+
+### KDE (X11) Specific Notes
+* In Settings/Energy Saving, disable "Screen Energy Saving", "Suspend session", etc., except keep the "Button events handling" and make it as you wish (e.g., "When power button pressed", "Sleep").
+

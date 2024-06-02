@@ -89,9 +89,7 @@ def get_resource_path(resource_name):
     if os.path.exists(possible_path):
         return possible_path
     # Fallback to package resources (useful when installed)
-    return pkg_resources.resource_filename('my_package', f'resources/{resource_name}')
-
-
+    return pkg_resources.resource_filename('pwr_tray', f'resources/{resource_name}')
 
 def where(above=0):
     """Get the file and line of the caller. Arguments:
@@ -187,12 +185,12 @@ class SwayIdleManager:
             locker="""\\\n timeout [lock_s] 'exec [screenlock] [lockopts]'""",
             blanker="""\\\n timeout [blank_s] 'swaymsg "output * dpms off"'""",
             sleeper="""\\\n timeout [sleep_s] 'systemctl suspend'""",
-            dimmer="""\\\n timeout [dim_s] 'brightnessctl set 50%'""", # perms?
+            # dimmer="""\\\n timeout [dim_s] 'brightnessctl set 50%'""", # perms?
             before_sleep="""\\\n before-sleep 'exec [screenlock] [lockopts]'""",
             after_resume="""\\\n after-resume"""
                         + """ 'pgrep -x copyq || copyq --start-server hide;"""
                         + """ pgrep -x nm-applet || nm-applet [undim][dpmsOn]'""",
-            undim = """; brightnessctl set 100%""",
+            # undim = """; brightnessctl set 100%""",
             screenlock = """swaylock --ignore-empty-password --show-failed-attempts""",
             unblank="""; swaymsg 'output * dpms on'""",
         )
@@ -200,7 +198,8 @@ class SwayIdleManager:
 
     def build_cmd(self, mode=None):
 
-        lock_s, lockopts, sleep_s, blank_s, dim_s = None, '', None, None, None
+        # lock_s, lockopts, sleep_s, blank_s, dim_s = None, '', None, None, None
+        lock_s, lockopts, sleep_s, blank_s = None, '', None, None
         mode = self.applet.mode if mode else mode
         til_sleep_s = None
         if mode in ('LockOnly', 'SleepAfterLock'):
@@ -227,15 +226,15 @@ class SwayIdleManager:
         if blank_s is not None:
             blanking = True
             cmd += self.clauses.blanker.replace('[blank_s]', str(blank_s))
-        if isinstance(dim_s, (int,float)) and dim_s >= 0:
-            dimming = True
-            cmd += self.clauses.dimmer.replace('[dim_s]', str(dim_s))
+#       if isinstance(dim_s, (int,float)) and dim_s >= 0:
+#           dimming = True
+#           cmd += self.clauses.dimmer.replace('[dim_s]', str(dim_s))
         cmd += self.clauses.before_sleep.replace(
              "[sleep_s]", str(til_sleep_s)).replace(
                  '[lockopts]', lockopts).replace(
                  '[screenlock]', self.clauses.screenlock)
-        cmd += self.clauses.after_resume.replace(
-             "[undim]", self.clauses.undim if dimming else '')
+#       cmd += self.clauses.after_resume.replace(
+#            "[undim]", self.clauses.undim if dimming else '')
         cmd += self.clauses.after_resume.replace(
              "[unblank]", self.clauses.unblank if blanking else '')
 
@@ -268,8 +267,8 @@ class InhIndicator:
     NOTES:
      - when icons are moved/edited, rename them or reboot to avoid cache confusion
     """
-    svg_info = SimpleNamespace(version='03', subdir='icons.d'
-                , bases= ['NormMode', 'PresMode', 'LockOnlyMode'])
+    svg_info = SimpleNamespace(version='03', subdir='resources'
+                , bases= ['NormMode', 'PresMode', 'LockOnlyMode', 'LoBattery'])
     singleton = None
     @staticmethod
     def get_environment():
@@ -283,7 +282,7 @@ class InhIndicator:
             return 'i3'
         if sway_socket: # Check for Sway
             return 'sway'
-        if 'kde' in desktop_session or 'plasma' in xdg_current_desktop:
+        if 'plasma' in desktop_session or 'kde' in xdg_current_desktop:
             if wayland_display:
                 return 'kde-wayland'
             if display:
@@ -300,8 +299,8 @@ class InhIndicator:
         'suspend': 'systemctl suspend',
         'poweroff': 'systemctl poweroff',
         'reboot': 'systemctl reboot',
-        'dimmer': 'brightnessctl set {percent}%',
-        'undim': 'brightnessctl set 100%',
+#       'dimmer': 'brightnessctl set {percent}%',
+#       'undim': 'brightnessctl set 100%',
         'logoff': '',
         'monitors_off': '',
         'locker': '',
@@ -309,7 +308,8 @@ class InhIndicator:
         'reset_idle': '',
         'reload_wm': '',
         'restart_wm': '',
-        'must_haves': 'systemctl brightnessctl'.split(),
+#       'must_haves': 'systemctl brightnessctl'.split(),
+        'must_haves': 'systemctl'.split(),
 
     }
     overides = {
@@ -333,7 +333,10 @@ class InhIndicator:
             'locker': 'i3lock -c 300000 --ignore-empty-password --show-failed-attempt',
             'must_haves': 'i3-msg i3lock'.split(),
 
-        }, 'kde-xll': {
+        }, 'kde-x11': {
+            'locker': 'loginctl lock-session',
+            'logoff': 'loginctl terminate-session {XDG_SESSION_ID}',
+            'must_haves': 'loginctl'.split(),
         }, 'kde-wayland': {
             # sudo apt-get install xdg-utils
             'reset_idle': 'qdbus org.freedesktop.ScreenSaver /ScreenSaver SimulateUserActivity',
@@ -380,7 +383,8 @@ class InhIndicator:
         self.ini_tool = ini_tool
         # self.params, self.lock_mins, self.sleep_mins = None, None, None
         self.params = None
-        self.battery = SimpleNamespace(present=None, plugged=1, percent=100)
+        self.battery = SimpleNamespace(present=None,
+                       plugged=True, percent=100, selector='Settings')
         self.reconfig()
         ## self.lock_mins = self.params.lock_min_list[0]
         ## self.sleep_mins = self.params.sleep_min_list[0]
@@ -391,8 +395,9 @@ class InhIndicator:
 
         ## self.singleton.presentation_mode = False
         self.singleton.mode = 'SleepAfterLock' # or 'LockOnly' or 'Presentation'
-        self.was_mode = None
+        self.was_effective_mode = None
         self.was_inhibited = None
+        self.was_selector = None
         self.was_output = ''
         self.here_dir = os.path.dirname(os.path.abspath(__file__))
         self.svgs = []
@@ -453,20 +458,28 @@ class InhIndicator:
             self.idle_manager_start()
         self.on_timeout()
 
-    def get_lock_mins(self, plugged=None):
+    def get_lock_mins(self, selector=None):
         """TBD"""
-        plugged = self.battery.plugged if plugged is None else plugged
-        return self.ini_tool.lock_mins[plugged]
+        try:
+            selector = self.battery.selector if selector is None else selector
+            return self.ini_tool.lock_mins[selector]
+        except Exception:
+            assert False
 
-    def get_sleep_mins(self, plugged=None):
+    def get_sleep_mins(self, selector=None):
         """TBD"""
-        plugged = self.battery.plugged if plugged is None else plugged
-        return self.ini_tool.sleep_mins[plugged]
+        selector = self.battery.selector if selector is None else selector
+        return self.ini_tool.sleep_mins[selector]
+    
+    def get_effective_mode(self):
+        """TBD"""
+        return 'SleepAfterLock' if self.battery.selector == 'LoBattery' else self.mode
 
     def reconfig(self):
         """ update/fix config """
-        self.ini_tool.update_config(self.battery.plugged)
-        self.params = self.ini_tool.params
+        if self.ini_tool.update_config(self.battery.selector):
+            self.params = self.ini_tool.params
+            self.rebuild_menu = True
 #       if self.lock_mins not in self.params.lock_min_list:
 #           self.lock_mins = self.params.lock_min_list[0]
 #       if self.sleep_mins not in self.params.sleep_min_list:
@@ -477,13 +490,15 @@ class InhIndicator:
         this = InhIndicator.singleton
         if this and not this.quick:
             picks = { 'mode': this.mode,
-                      'Settings': {
-                          'lock_mins': this.get_lock_mins(1),
-                          'sleep_mins': this.get_sleep_mins(1),
-                      },
-                      'OnBattery': {
-                          'lock_mins': this.get_lock_mins(0),
-                          'sleep_mins': this.get_sleep_mins(0),
+                      'lock_mins': {
+                          'Settings': this.get_lock_mins('Settings'),
+                          'HiBattery': this.get_lock_mins('HiBattery'),
+                          'LoBattery': this.get_lock_mins('LoBattery'),
+
+                      }, 'sleep_mins': {
+                          'Settings': this.get_sleep_mins('Settings'),
+                          'HiBattery': this.get_sleep_mins('HiBattery'),
+                          'LoBattery': this.get_sleep_mins('LoBattery'),
                       },
                 }
             try:
@@ -500,11 +515,11 @@ class InhIndicator:
             with open(self.picks_file, 'r', encoding='utf-8') as handle:
                 picks = json.load(handle)
             self.mode = picks['mode']
-            for plugged, key in enumerate('OnBattery Settings'.split()):
-                for attr in 'lock_mins sleep_mins'.split():
-                    getattr(self.ini_tool, attr)[plugged] = picks[key][attr]
+            for attr in 'lock_mins sleep_mins'.split():
+                for selector in enumerate('LoBattery HiBattery Settings'.split()):
+                    getattr(self.ini_tool, attr)[selector] = picks[attr][selector]
 
-            self.ini_tool.set_effective_params(self.battery.plugged)
+            self.ini_tool.set_effective_params(self.battery.selector)
             prt('restored Picks OK:', picks)
             return True
 
@@ -532,6 +547,10 @@ class InhIndicator:
         """ is debug on? """
         rv = self.params.debug_mode
         return rv
+    
+    def effective_mode(self):
+        """ TBD """
+        return 'SleepAfterLock' if self.battery.selector == 'LoBattery' else self.mode
 
     def check_inhibited(self):
         pipe = subprocess.Popen(
@@ -563,20 +582,27 @@ class InhIndicator:
             rows = []
 
         # inhibited = bool(inhibited or self.presentation_mode)
-        inhibited = bool(inhibited or self.mode in ('Presentation',))
+        emode = self.effective_mode()
+        inhibited = bool(inhibited or emode in ('Presentation',))
         was_inhibited = bool(self.state.name == 'Inhibited'
-                             or self.mode in ('Presentation',))
+                             or emode in ('Presentation',))
 
-        if inhibited != was_inhibited or self.was_mode != self.mode:
-            svg = self.svgs[1 if inhibited else 0 if self.mode in ('SleepAfterLock',) else 2]
+        if (inhibited != was_inhibited or self.was_effective_mode != emode
+                or self.was_selector != self.battery.selector):
+            # TODO: fix me with 4th icon
+            svg = self.svgs[3 if self.battery.selector == 'LoBattery' else
+                            1 if inhibited else
+                            0 if emode in ('SleepAfterLock',) else 2]
             self.indicator.set_icon_full(svg, 'PI')
             self.poll_100ms = True
 
-        if (inhibited and self.mode not in ('Presentation', )
+        if (inhibited and emode not in ('Presentation', )
+                and self.battery.selector != 'LoBattery'
                 and self.state.name in ('Awake', )):
             self.set_state('Inhibited')
 
-        self.was_mode = self.mode
+        self.was_effective_mode = emode
+        self.was_selector = self.battery.selector
         was_output = self.was_output
         self.was_output = output
         return rows, bool(was_output != output)
@@ -589,11 +615,19 @@ class InhIndicator:
             self.battery.present = False
             return
         was_plugged = self.battery.plugged
+        was_selector = self.battery.selector
 
-        self.battery.plugged = 1 if battery.power_plugged else 0
+        self.battery.plugged = battery.power_plugged
         self.battery.percent = round(battery.percent, 1)
-        if was_plugged != self.battery.plugged:
-            self.ini_tool.set_effective_params(self.battery.plugged)
+        if self.battery.plugged:
+            self.battery.selector = 'Settings'
+        elif self.battery.percent > self.params.lo_battery_pct:
+            self.battery.selector = 'HiBattery'
+        else:
+            self.battery.selector = 'LoBattery'
+        if was_plugged != self.battery.plugged or was_selector != self.battery.selector:
+            self.ini_tool.set_effective_params(self.battery.selector)
+                # self.battery.plugged, self.battery.percent)
             self.rebuild_menu = True
 #   IF WANTING TIME LEFT
 #       secsleft = battery.secsleft
@@ -639,42 +673,43 @@ class InhIndicator:
             lock_secs = self.get_lock_mins()*60
             down_secs = self.get_sleep_mins()*60 + lock_secs
             blank_secs = 5 if self.quick else 20
-            if 0 <= int(self.params.dim_pct_brightness) < 100:
-                dim_secs = int(round(lock_secs * int(self.params.dim_pct_lock_min) / 100, 0))
-            else:
-                dim_secs = 2000 + lock_secs * 2  # make it never happen
+#           if 0 <= int(self.params.dim_pct_brightness) < 100:
+#               dim_secs = int(round(lock_secs * int(self.params.dim_pct_lock_min) / 100, 0))
+#           else:
+#               dim_secs = 2000 + lock_secs * 2  # make it never happen
 
             emit = f'idle_s={self.running_idle_s} state={self.state.name},{self.state.when}s'
-            if self.mode in ('LockOnly', 'SleepAfterLock'):
+            emode = self.get_effective_mode()
+            if emode in ('LockOnly', 'SleepAfterLock'):
                 emit += f' @{self.get_lock_mins()}m'
-            if self.mode in ('SleepAfterLock', ):
+            if emode in ('SleepAfterLock', ):
                 emit += f'+{self.get_sleep_mins()}m'
-            if not self.battery.plugged:
-                emit += ' unplugged'
+            if self.battery.selector != 'Settings':
+                emit += f' {self.battery.selector}'
             prt(emit)
 
             if self.running_idle_s > min(50, lock_secs*0.40) and (
-                    self.mode in ('Presentation',) or self.state.name in ('Inhibited')):
+                    emode in ('Presentation',) or self.state.name in ('Inhibited')):
                 self.reset_xidle_ms()
 
-            if (self.running_idle_s >= down_secs and self.mode not in ('LockOnly',)
+            if (self.running_idle_s >= down_secs and emode not in ('LockOnly',)
                     and self.state.name in ('Awake', 'Locked', 'Blanked')):
                 if self._get_down_state() == 'PowerOff':
                     self.poweroff(None)
                 else:
                     self.suspend(None)
 
-            elif (self.running_idle_s >= lock_secs and self.mode not in ('Presentation',)
+            elif (self.running_idle_s >= lock_secs and emode not in ('Presentation',)
                     and self.state.name in ('Awake', 'Dim')):
                 self.lock_screen(None)
 
-            elif (self.running_idle_s >= dim_secs and self.mode not in ('Presentation',)
-                    and self.state.name in ('Awake',)):
-                self.dimmer(None)
+#           elif (self.running_idle_s >= dim_secs and emode not in ('Presentation',)
+#                   and self.state.name in ('Awake',)):
+#               self.dimmer(None)
 
             elif (self.running_idle_s >= self.state.when + blank_secs
                     and self.params.turn_off_monitors
-                    and self.mode not in ('Presentation',)
+                    and emode not in ('Presentation',)
                     and self.state.name in ('Locked',)):
                 self.blank_primitive()
 
@@ -696,10 +731,15 @@ class InhIndicator:
         glib.timeout_add(poll_ms, self.on_timeout)
 
     def _toggle_battery(self, _=None):
-        # TODO: this is temporary for testing
-        self.battery.plugged = 0 if self.battery.plugged else 1
-        self.ini_tool.set_effective_params(self.battery.plugged)
-        self.rebuild_menu = True
+        if self.battery.present is False:
+            # lets you either use the lo/hi battery setting for another
+            # purpose or test out your battery settings
+            selector = self.battery.selector
+            selector = ('LoBattery' if selector == 'HiBattery'
+                        else 'Settings' if selector == 'LoBattery' else 'HiBattery')
+            self.battery.selector = selector
+            self.ini_tool.set_effective_params(selector)
+            self.rebuild_menu = True
 
     def _lock_rotate_next(self, advance=True):
         mins0 = self.get_lock_mins()
@@ -709,7 +749,7 @@ class InhIndicator:
         idx1 = (idx0+1) % len(self.params.lock_min_list)
         next_mins = self.params.lock_min_list[idx1]
         if advance:
-            self.ini_tool.lock_mins[self.battery.plugged] = next_mins
+            self.ini_tool.lock_mins[self.battery.selector] = next_mins
             prt(f'picked lock_mins={self.get_lock_mins()}')
             self.rebuild_menu = bool(idx0 != idx1)
             self.save_picks()
@@ -730,7 +770,7 @@ class InhIndicator:
         idx1 = (idx0+1) % len(self.params.sleep_min_list)
         next_mins = self.params.sleep_min_list[idx1]
         if advance:
-            self.ini_tool.sleep_mins[self.battery.plugged] = next_mins
+            self.ini_tool.sleep_mins[self.battery.selector] = next_mins
             prt(f'picked sleep_mins={self.get_sleep_mins()}')
             self.rebuild_menu = bool(idx0 != idx1)
             self.save_picks()
@@ -769,6 +809,26 @@ class InhIndicator:
             item = gtk.MenuItem(label='☀ SleepAfterLock Mode')
             item.connect('activate', self.enable_normal_mode)
             menu.append(item)
+
+        selector, percent = self.battery.selector, self.battery.percent
+        item = gtk.MenuItem(label=
+                #('🔌 Plugged In' if selector == 'Settings' else f'🔋 {selector}')
+                ('🗲 Plugged In' if selector == 'Settings'
+                     else (('█' if selector == 'HiBattery' else '▃') + f' {selector}')
+                 + (f' {percent}%' if percent < 100 or selector != 'Settings' else '')) )
+        item.connect('activate', self._toggle_battery)
+        menu.append(item)
+
+        # if self.mode not in ('Presentation',) and len(self.opts.lock_min_list) > 1:
+        item = gtk.MenuItem(label= f'  ♺ Lock: {self._lock_rotate_str()}')
+        item.connect('activate', self._lock_rotate_next)
+        menu.append(item)
+
+        # if self.mode in ('SleepAfterLock',) and len(self.opts.sleep_min_list) > 1:
+        item = gtk.MenuItem(label=f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}')
+        item.connect('activate', self._sleep_rotate_next)
+        menu.append(item)
+
 
         # enable = 'Disable' if self.presentation_mode else 'Enable'
         # item = gtk.MenuItem(label=enable + ' Presentation Mode')
@@ -810,23 +870,6 @@ class InhIndicator:
         item.connect('activate', self.poweroff)
         menu.append(item)
 
-        item = gtk.MenuItem(label=
-                '🔌 Plugged In' if self.battery.plugged else f'🔋 Battery {self.battery.percent}%')
-        item.connect('activate', self._toggle_battery)
-        menu.append(item)
-
-        # if self.mode not in ('Presentation',) and len(self.opts.lock_min_list) > 1:
-        if len(self.params.lock_min_list) > 1:
-            item = gtk.MenuItem(label= f'  ♺ Lock: {self._lock_rotate_str()}')
-            item.connect('activate', self._lock_rotate_next)
-            menu.append(item)
-
-        # if self.mode in ('SleepAfterLock',) and len(self.opts.sleep_min_list) > 1:
-        if len(self.params.sleep_min_list) > 1:
-            item = gtk.MenuItem(label=f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}')
-            item.connect('activate', self._sleep_rotate_next)
-            menu.append(item)
-
         item = gtk.MenuItem(label='☓ Quit this Applet')
         item.connect('activate', self.quit_self)
         menu.append(item)
@@ -864,9 +907,13 @@ class InhIndicator:
                 if file:
                     append = f'-t -i {file}'
             command += ' ' + append
-        elif key == 'dimmer':
-            percent = int(round(int(this.params.dim_pct_brightness), 0))
-            command = command.replace('{percent}', str(percent))
+        if '{XDG_SESSION_ID}' in command:
+            command = command.replace('{XDG_SESSION_ID}',
+                      os.environ.get('XDG_SESSION_ID', '-1'))
+
+#       elif key == 'dimmer':
+#           percent = int(round(int(this.params.dim_pct_brightness), 0))
+#           command = command.replace('{percent}', str(percent))
 
         if command:
             prt(f'+ {command}')
@@ -925,8 +972,8 @@ class InhIndicator:
         # cmd = 'exec i3lock -c 200020 --ignore-empty-password --show-failed-attempt'
         InhIndicator.run_command('locker')
         this.update_running_idle_s()
-        if 0 <= int(this.params.dim_pct_brightness) < 100:
-            this.undim(None)
+#       if 0 <= int(this.params.dim_pct_brightness) < 100:
+#           this.undim(None)
         this.set_state('Locked')
 
     def blank_primitive(self, lock_screen=False):
@@ -1069,39 +1116,46 @@ class PyKill:
 
 class IniTool:
     """ Configued Params for this class"""
-    def __init__(self):
+    def __init__(self, paths_only=False):
         self.defaults = {
             'Settings': {
                 'i3lock_args': '',
-            #   'i3lock_args': '-c 200020',
                 'debug_mode': False,
                 'power_down': False,
                 'turn_off_monitors': False,
-                'lock_min_list': '[15, 30, 2, 1]',
-                'sleep_min_list': '[10, 1]',
-                'dim_pct_brightness': 100,
-                'dim_pct_lock_min': 100,
-            },
-            'OnBattery': {
-                'down_percent': 10,
+                'lock_min_list': '[15, 30]',
+                'sleep_min_list': '[5, 30]',
+                'lo_battery_pct': 10,
+            #   'dim_pct_brightness': 100,
+            #   'dim_pct_lock_min': 100,
+
+            }, 'HiBattery': { #was OnBattery
+                'power_down': False,
+                'lock_min_list': '[10, 20]',
+                'sleep_min_list': '[1, 10]',
+            #   'dim_pct_brightness': 50,
+            #   'dim_pct_lock_min': 70,
+
+            }, 'LoBattery': {
                 'power_down': True,
-                'lock_min_list': '[10, 20, 1]',
-                'sleep_min_list': '[5, 1]',
-                'dim_pct_brightness': 50,
-                'dim_pct_lock_min': 70,
+                'lock_min_list': '[1]',
+                'sleep_min_list': '[1]',
+            #   'dim_pct_brightness': 50,
+            #   'dim_pct_lock_min': 70,
             }
         }
-        self.lock_mins = [10, 15] # indexed by int(plugged)
-        self.sleep_mins = [5, 10] # indexed by int(plugged)
         self.folder = os.path.expanduser("~/.config/pwr-tray")
         self.ini_path =  os.path.join(self.folder, "config.ini")
         self.log_path =  os.path.join(self.folder, "debug.log")
         self.picks_path =  os.path.join(self.folder, "picks.json")
         self.config = configparser.ConfigParser()
         self.last_mod_time = None
-        self.section_params = {'Settings': {}, 'OnBattery': {}}
+        self.section_params = {'Settings': {}, 'HiBattery': {}, 'LoBattery': {}, }
         self.params = SimpleNamespace()
-        self.ensure_ini_file()
+        self.lock_mins = {'Settings':1, 'HiBattery':1, 'LoBattery': 1}
+        self.sleep_mins = {'Settings':1, 'HiBattery':1, 'LoBattery': 1}
+        if not paths_only:
+            self.ensure_ini_file()
 
     def ensure_ini_file(self):
         """Check if the config file exists, create it if not."""
@@ -1111,15 +1165,17 @@ class IniTool:
             self.config.read_dict(self.defaults)
             with open(self.ini_path, 'w', encoding='utf-8') as configfile:
                 self.config.write(configfile)
+            lockpaper = get_resource_path('lockpaper.png')
+            shutil.copyfile(lockpaper, self.folder)
 
-    def update_config(self, plugged):
+    def update_config(self, selector):
         """ Check if the file has been modified since the last read """
         def to_array(val_str):
             rv = []
             try:
                 vals = json.loads(val_str)
             except Exception:
-                vals = None
+                vals = []
             if vals and not isinstance(vals, list):
                 vals = [vals]
             if isinstance(vals, list):
@@ -1133,14 +1189,14 @@ class IniTool:
 
         current_mod_time = os.path.getmtime(self.ini_path)
         if current_mod_time == self.last_mod_time or not self.params:
-            return False
+            return None
         # Re-read the configuration file if it has changed
         self.config.read(self.ini_path)
         self.last_mod_time = current_mod_time
 
         # Access the configuration values
-        for section in 'Settings OnBattery'.split():
-            section_params = SimpleNamespace(**self.section_params[section])
+        for section in 'Settings HiBattery LoBattery'.split():
+            section_params = self.section_params[section]
             for key in self.defaults[section]:
                 try:
                     value = self.config.get(section, key)
@@ -1150,35 +1206,38 @@ class IniTool:
                             value = True
                         elif value.lower() == 'false':
                             value = False
-                    setattr(section_params, key, value)
+                        section_params[key] = value
                 except Exception:
                     if not hasattr(self.params, key):
                         value = self.defaults[section].get(key, None)
                         if value is not None:
-                            setattr(section_params, key, value)
+                            section_params[key] = value
 
             for key in ('lock_min_list', 'sleep_min_list'):
-                array = to_array(getattr(section_params, key))
-                setattr(section_params, key, array)
+                array = to_array(section_params[key])
+                section_params[key] = array
             self.section_params[section] = section_params
 
-        self.set_effective_params(plugged)
+        return self.set_effective_params(selector)
 
-    def set_effective_params(self, plugged):
+    def set_effective_params(self, selector):
         """ Set the effective parameters based on state of battery """
-        params = copy.deepcopy(vars(self.section_params['Settings']))
-        if not plugged:
-            params.update(copy.deepcopy(vars(self.section_params['OnBattery'])))
-        for plug, key in enumerate('OnBattery Settings'.split()):
+        params = copy.deepcopy(self.section_params['Settings'])
+        if selector in ('HiBattery', 'LoBattery'):
+            params.update(copy.deepcopy(self.section_params['HiBattery']))
+        if selector in ('LoBattery',):
+            params.update(copy.deepcopy(self.section_params['LoBattery']))
+        for key in 'LoBattery HiBattery Settings'.split():
             for pick, array in [
                     'lock_mins lock_min_list'.split(),
                     'sleep_mins sleep_min_list'.split()
                     ]:
                 picks = getattr(self, pick)
-                choices = getattr(self.section_params[key], array)
-                if picks[plug] not in choices:
-                    picks[plug] = choices[0]
+                choices = self.section_params[key][array]
+                if picks[key] not in choices:
+                    picks[key] = choices[0]
         self.params = SimpleNamespace(**params)
+        return self.params
 
 
 def main():
@@ -1200,8 +1259,8 @@ def main():
             help='quick mode (1m lock + 1m sleep')
     opts = parser.parse_args()
 
-    ini_tool = IniTool()
     if opts.edit_config:
+        ini_tool = IniTool(paths_only=True)
         editor = os.getenv('EDITOR', 'vim')
         args = [editor, ini_tool.ini_path]
         print(f'RUNNING: {args}')
@@ -1209,6 +1268,7 @@ def main():
         sys.exit(1) # just in case ;-)
 
     if opts.follow_log:
+        ini_tool = IniTool(paths_only=True)
         args = ['tail', '-f', ini_tool.log_path]
         print(f'RUNNING: {args}')
         os.execvp('tail', args)
@@ -1217,18 +1277,18 @@ def main():
     os.environ['DISPLAY'] = ':0'
 
     global prt_path
+
+    ini_tool = IniTool(paths_only=True)
     prt_path = ini_tool.log_path
     prt('START-UP', to_stdout=opts.stdout)
     prt('Initial Params:', vars(ini_tool.params))
     PyKill().kill_loop('pwr-tray')
     atexit.register(InhIndicator.goodbye)
 
-    # Start ACPI event listener in a separate thread: TODL make conditional
-    # requires "acpid" which causes other issue
-    # threading.Thread(target=InhIndicator.acpi_event_listener, daemon=True).start()
-    # Start the applet
+
     if opts.debug:
         ini_tool.params.debug_mode = True # one-time override
+
     _ = InhIndicator(ini_tool=ini_tool, quick=opts.quick)
     gtk.main()
 
