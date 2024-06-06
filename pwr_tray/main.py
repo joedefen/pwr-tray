@@ -210,7 +210,7 @@ class InhIndicator:
         self.quick = quick
 
         self.loop = 0
-        self.loop_sample = (4 if quick else 15)
+        self.loop_sample = (1 if quick else 15)
 
         ## self.singleton.presentation_mode = False
         self.singleton.mode = 'SleepAfterLock' # or 'LockOnly' or 'Presentation'
@@ -239,6 +239,7 @@ class InhIndicator:
         self.inh_lock_began_secs = False # TBD: refactor?
         self.rebuild_menu = False
         self.picks_file = ini_tool.picks_path
+        self.current_icon_num = -1  # triggers immediate icon update
 
         self.restore_picks()
         if quick:
@@ -275,6 +276,7 @@ class InhIndicator:
         self.indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
         self.build_menu()
         notify.init(APPINDICATOR_ID)
+        self.show_icon()
         if self.idle_manager:
             self.idle_manager_start()
         self.on_timeout()
@@ -366,6 +368,7 @@ class InhIndicator:
         cmd = self.variables['get_idle_ms']
         if cmd:
             xidle_ms = int(subprocess.check_output(cmd.split()).strip())
+            xidle_ms *= 2 if self.quick else 1  # time warp
             self.running_idle_s = round(xidle_ms/1000, 3)
 
     def DB(self):
@@ -376,6 +379,17 @@ class InhIndicator:
     def effective_mode(self):
         """ TBD """
         return 'SleepAfterLock' if self.battery.selector == 'LoBattery' else self.mode
+    
+    def show_icon(self, inhibited=False):
+        """ Display Icon if updated """
+        emode = self.get_effective_mode()
+        num = (3 if self.battery.selector == 'LoBattery' else
+                1 if inhibited else 0 if emode in ('SleepAfterLock',) else 2)
+        if num != self.current_icon_num:
+            svg = self.svgs[num]
+            self.indicator.set_icon_full(
+                os.path.join(self.ini_tool.folder, svg), 'PI')
+            self.current_icon_num = num
 
     def check_inhibited(self):
         pipe = subprocess.Popen(
@@ -412,13 +426,9 @@ class InhIndicator:
         was_inhibited = bool(self.state.name == 'Inhibited'
                              or emode in ('Presentation',))
 
+        self.show_icon(inhibited=inhibited)
         if (inhibited != was_inhibited or self.was_effective_mode != emode
                 or self.was_selector != self.battery.selector):
-            svg = self.svgs[3 if self.battery.selector == 'LoBattery' else
-                            1 if inhibited else
-                            0 if emode in ('SleepAfterLock',) else 2]
-            self.indicator.set_icon_full(
-                os.path.join(self.ini_tool.folder, svg), 'PI')
             self.poll_100ms = True
             self.idle_manager_start()
 
@@ -741,9 +751,11 @@ class InhIndicator:
         if command:
             prt(f'+ {command}')
             if  re.match(r'^(\s\w\-)*$', command):
-                subprocess.run(command.split(), check=False)
+                result = subprocess.run(command.split(), check=False)
             else:
-                subprocess.run(command, check=False, shell=True)
+                result = subprocess.run(command, check=False, shell=True)
+            if result.returncode != 0:
+                prt(f'   NOTE: returncode={result.returncode}')
 
     @staticmethod
     def quit_self(_):
@@ -809,7 +821,9 @@ class InhIndicator:
             if lock_screen:
                 self.lock_screen(None, before='sleep 1.5; ')
             prt('+', cmd)
-            subprocess.run(cmd, shell=True, check=False)
+            result = subprocess.run(cmd, shell=True, check=False)
+            if result.returncode != 0:
+                prt(f'   NOTE: returncode={result.returncode}')
             self.set_state('Blanked')
 
         else:
@@ -922,7 +936,7 @@ def main():
         os.execvp('tail', args)
         sys.exit(1) # just in case ;-)
 
-    os.environ['DISPLAY'] = ':0'
+    # os.environ['DISPLAY'] = ':0'
 
     ini_tool = IniTool(paths_only=False)
     Utils.prt_path = ini_tool.log_path

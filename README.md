@@ -44,10 +44,19 @@ does not deal with those.
 
 ### Manual Launch of the Applet
 - For foreground in terminal, run `pwr-tray -o` ("-o" logs to stdout).
-- In the background, run `pwr-tray & disown` (logs to `~/.config/pwr-tray/debug.log`).
+- In the background, run `setsid pwr-tray &` (logs to `~/.config/pwr-tray/debug.log`).
 ### Other Forms of pwr-tray
 - `pwr-tray -e` edits the config file (`~/.config/pwr-ini/config.ini`)
 - `pwr-tray -f` tails the log file (`~/.config/pwr-ini/debug.log`)
+
+### Tests
+- Running `pwr-tray --quick` reduces the lock and sleep timeout to 1 minute
+  (although you can 'click' the current value to try others),
+  and `--quick` runs double-time (so 1 minute timers expire in 30s per the wall clock).
+- You can run in various modes, but the default, SleepAfterLock, runs thru almost every action.
+- Then ensure closing the lid, hitting the power button, etc., has the desired effects.
+
+---
 
 # Configuration Basics
 - When the program is started w/o a `config.ini`, then it is created with defaults.
@@ -103,24 +112,37 @@ Or act on the applet itself:
 - **☓ Quit this Applet** -  exit applet.
 - **↺ Restart this Applet** - restart applet.
 
+---
+
 ## Per-Distro Specific Notes
 
 ### i3wm Specific Notes
-* Uninstall or disable all competing energy saving programs (e.g., `xscreensaver`, `xfce4-power-manage`, etc.) which running `i3` whether started by `systemd` or `i3/config` or whatever.
-* Edit `/etc/system/logind.conf` and uncomment `HandlePowerKey=`, `HandlePowerKey=`, `HandlePowerKey=`, and `HandlePowerKey=`, and set the action to `suspend` (reboot or restart `systemd-logind`).  That enables `xss-lock` to handle those keys.
-* In `~/.config/i3/config`, configure something like:
+* Uninstall or disable all competing energy saving programs (e.g., `xscreensaver`, `xfce4-power-manager`, etc.) when running `i3` whether started by `systemd` or `i3/config` or whatever.
+* Edit `/etc/system/logind.conf` and uncomment `HandlePowerKey=`, `HandlePowerKey=`, `HandlePowerKey=`, and `HandlePowerKey=`, and set the action to `suspend` (reboot or restart `systemd-logind`).  That enables `xss-lock` to handle those keys similar to `pwr-tray`.
+* In `~/.config/i3/config`, configure `xss-lock` something like:
 ```
-set $screenlock i3lock -t -i ./lockpaper.png --ignore-empty-password --show-failed-attempts
-exec --no-startup-id xss-lock --transfer-sleep-lock -- $screenlock --nofork
-bar { 
-    status_command i3status
-    tray_output primary
-}
-exec_always --no-startup-id ~/.local/bin/pwr-tray
+        set $screenlock i3lock -t -i ./lockpaper.png --ignore-empty-password --show-failed-attempts
+        exec --no-startup-id xss-lock --transfer-sleep-lock -- $screenlock --nofork
 ```
-That creates handlers for those special key presses that is compatible with `pwr-tray` defaults. Vary if needed (but you might start with this suggestion).
+* Finally, start your pwr-tray somehow. Below is a simplest case, but it may depend on your status bar:
+```
+        bar { 
+            status_command i3status
+            tray_output primary
+        }
+        exec_always --no-startup-id ~/.local/bin/pwr-tray
+```
+* If you use `polybar` for status, then it may be best to run `pwr-tray` from polybar's 'launch' script, and I had to run it as `env DISPLAY=:0 pwr-tray` and delay to ensure the tray is ready.
 
-If you use `polybar` for status, then it may be best to run `pwr-tray` from polybar's 'launch' script, and I had to run it as `env DISPLAY=:0 pwr-tray`
+### sway Specific Notes
+* Uninstall or disable all competing energy saving programs (e.g., `swayidle`, `xfce4-power-manager`, etc.) when running `sway` whether started by `systemd` or `sway/config` or whatever.
+* NOTE: on `sway`, `pwr-tray` cannot read the title time and do its usual micromanagement of
+  the system; instead, it runs a `swayidle` whose arguments may change with you change `pwr-tray`
+  settings either in the .ini file or by clicking tray items.
+* Edit `/etc/system/logind.conf` and uncomment `HandlePowerKey=`, `HandlePowerKey=`,
+  `HandlePowerKey=`, and `HandlePowerKey=`, and set the action to `suspend`
+  (reboot or restart `systemd-logind`).  That enables the ever-running `sway-idle` to handle
+  the suspend / resume events.
 
 ### KDE (X11) Specific Notes
 * In Settings/Energy Saving, disable "Screen Energy Saving", "Suspend session", etc., except keep the "Button events handling" and make it as you wish (e.g., "When power button pressed", "Sleep").

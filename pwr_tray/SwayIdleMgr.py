@@ -27,10 +27,10 @@ class SwayIdleManager:
             sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
             # dimmer="""\\\n timeout [dim_s] 'brightnessctl set 50%'""", # perms?
             before_sleep=""" before-sleep 'exec [screenlock] [lockopts]'""",
-            after_resume=""" after-resume"""
-                        + """ 'pgrep -x copyq || copyq --start-server hide;"""
+            after_resume=""" after-resume '[unblank]'""",
+                        # + """ 'pgrep -x copyq || copyq --start-server hide;"""
                         # + """ pgrep -x nm-applet || nm-applet [undim][dpmsOn]'""",
-                        + """ pgrep -x nm-applet || nm-applet [unblank]'""",
+                        # + """ pgrep -x nm-applet || nm-applet [unblank]'""",
             # undim = """; brightnessctl set 100%""",
             screenlock = """swaylock --ignore-empty-password --show-failed-attempts""",
             unblank='''; swaymsg "output * dpms on"''',
@@ -43,21 +43,23 @@ class SwayIdleManager:
         # lock_s, lockopts, sleep_s, blank_s, dim_s = None, '', None, None, None
         lock_s, lockopts, sleep_s, blank_s = None, '', None, None
         mode = mode if mode else self.applet.get_effective_mode()
-        til_sleep_s = None
+        til_sleep_s, sleeping = None, False
         
         lockopts = self.applet.get_params().swaylock_args
+        quick = self.applet.quick
+        a_minute = 30 if quick else 60
 
         if mode in ('LockOnly', 'SleepAfterLock'):
-            lock_s = self.applet.get_lock_min_list()[0] * 60
+            lock_s = self.applet.get_lock_min_list()[0] * a_minute
             til_sleep_s = lock_s
             if self.applet.get_params().turn_off_monitors:
                 blank_s = 20 + lock_s
         if mode in ('SleepAfterLock', ):
-            sleep_s = self.applet.get_sleep_min_list()[0] * 60
+            sleep_s = self.applet.get_sleep_min_list()[0] * a_minute
             til_sleep_s = sleep_s
             sleeping = True
 
-        til_sleep_s, sleeping, blanking = 0, False, False
+        til_sleep_s, blanking = 0, False
         cmd = self.clauses.leader
         if isinstance(lock_s, (int,float)) and lock_s >= 0:
             til_sleep_s += lock_s
@@ -80,8 +82,9 @@ class SwayIdleManager:
                  '[screenlock]', self.clauses.screenlock)
 #       cmd += self.clauses.after_resume.replace(
 #            "[undim]", self.clauses.undim if dimming else '')
-        cmd += self.clauses.after_resume.replace(
-             "[unblank]", self.clauses.unblank if blanking else '')
+        if blanking:
+            cmd += self.clauses.after_resume.replace(
+                 "[unblank]", self.clauses.unblank if blanking else '')
 
         rv, self.current_cmd = bool(cmd != self.current_cmd), cmd
         if rv:
