@@ -76,6 +76,10 @@ lock_min_list = [15, 30]            # lock minutes choices
 sleep_min_list = [5, 30]            # sleep minutes choices (after lock)
 lo_battery_pct = 10                 # define "low battery" state
 ```
+NOTE: I've had problems with turning off the monitors, and if you do so, then
+it is harder to know the system state. If you have issues with the monitors
+failing to sleep or the system cannot wake with the monitors off, then
+avoid those that "feature".
 
 ### Tray Menu 
 Notes:

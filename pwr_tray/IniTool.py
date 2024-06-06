@@ -28,7 +28,7 @@ class IniTool:
                 'swaylock_args': '-i ./lockpaper.png',
                 'debug_mode': False,
                 'power_down': False,
-                'turn_off_monitors': True,
+                'turn_off_monitors': False,
                 'lock_min_list': '[15, 30]',
                 'sleep_min_list': '[5, 30]',
                 'lo_battery_pct': 10,
