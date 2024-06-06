@@ -18,20 +18,30 @@ import inspect
 from datetime import datetime
 from io import StringIO
 
-import pkg_resources
+import importlib.resources as pkg_resources
+# from pathlib import Path
 
 prt_kb = 512
 prt_path = ''
 prt_to_init = True
 
-def get_resource_path(resource_name):
+def copy_to_folder(resource_name, dest):
     """ Get the path of a resource """
     # Check if running from the source directory
-    possible_path = os.path.join(os.path.dirname(__file__), 'resources', resource_name)
-    if os.path.exists(possible_path):
-        return possible_path
+#   possible_path = os.path.join(os.path.dirname(__file__), 'resources', resource_name)
+#   if os.path.exists(possible_path):
+#       return possible_path
+
     # Fallback to package resources (useful when installed)
-    return pkg_resources.resource_filename('pwr_tray', f'resources/{resource_name}')
+    # return pkg_resources.resource_filename('pwr_tray', f'resources/{resource_name}')
+    package_name = 'pwr_tray.resources'
+
+    # Get the resource path as a file system path
+    resource = pkg_resources.files(package_name).joinpath(resource_name)
+    with pkg_resources.as_file(resource) as file_path:
+        shutil.copy(file_path, os.path.join(dest, resource_name))
+    return file_path
+
 
 def where(above=0):
     """Get the file and line of the caller. Arguments:

@@ -107,7 +107,7 @@ Or act on the applet itself:
 
 ### i3wm Specific Notes
 * Uninstall or disable all competing energy saving programs (e.g., `xscreensaver`, `xfce4-power-manage`, etc.) which running `i3` whether started by `systemd` or `i3/config` or whatever.
-* Edit `/etc/system/logind.conf` and uncomment `HandlePowerKey=`, `HandlePowerKey=`, `HandlePowerKey=`, and `HandlePowerKey=`, and set the action to `suspend` (reboot or restart `systemd-logind`).  That enables `xss-switch` to handle those keys.
+* Edit `/etc/system/logind.conf` and uncomment `HandlePowerKey=`, `HandlePowerKey=`, `HandlePowerKey=`, and `HandlePowerKey=`, and set the action to `suspend` (reboot or restart `systemd-logind`).  That enables `xss-lock` to handle those keys.
 * In `~/.config/i3/config`, configure something like:
 ```
 set $screenlock i3lock -t -i ./lockpaper.png --ignore-empty-password --show-failed-attempts
@@ -120,8 +120,9 @@ exec_always --no-startup-id ~/.local/bin/pwr-tray
 ```
 That creates handlers for those special key presses that is compatible with `pwr-tray` defaults. Vary if needed (but you might start with this suggestion).
 
-If you `polybar` for status, then it may be best to put run of `pwr-tray` into its 'launch' scripts, and I had to run it as `env DISPLAY=:0 pwr-tray`
+If you use `polybar` for status, then it may be best to run `pwr-tray` from polybar's 'launch' script, and I had to run it as `env DISPLAY=:0 pwr-tray`
 
 ### KDE (X11) Specific Notes
 * In Settings/Energy Saving, disable "Screen Energy Saving", "Suspend session", etc., except keep the "Button events handling" and make it as you wish (e.g., "When power button pressed", "Sleep").
+* In Settings/AutoStart, add the full path of `~/.local/bin/pwr-tray`.
 

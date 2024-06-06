@@ -88,7 +88,8 @@ class InhIndicator:
      - when icons are moved/edited, rename them or reboot to avoid cache confusion
     """
     svg_info = SimpleNamespace(version='03', subdir='resources'
-                , bases= ['NormMode', 'PresMode', 'LockOnlyMode', 'LoBattery'])
+                , bases= ['New-NormMode', 'New-PresMode',
+                          'LockOnlyMode', 'New-LowBattery'])
     singleton = None
     @staticmethod
     def get_environment():
@@ -220,10 +221,12 @@ class InhIndicator:
         self.here_dir = os.path.dirname(os.path.abspath(__file__))
         self.svgs = []
         for base in self.svg_info.bases:
-            self.svgs.append(Utils.get_resource_path(f'{base}-v{self.svg_info.version}.svg'))
-        for svg in self.svgs:
-            if not os.path.isfile(svg):
-                prt(f'WARN: cannot find {repr(svg)}')
+            self.svgs.append(f'{base}-v{self.svg_info.version}.svg')
+        for resource in self.svgs + ['lockpaper.png']:
+            if not os.path.isfile(resource):
+                Utils.copy_to_folder(resource, ini_tool.folder)
+            if not os.path.isfile(resource):
+                prt(f'WARN: cannot find {repr(resource)}')
 
             # states are Awake, Locked, Blanked, Asleep
             # when is idle time
@@ -266,7 +269,8 @@ class InhIndicator:
         self.idle_manager = SwayIdleManager(self) if self.graphical == 'sway' else None
 
         self.indicator = appindicator.Indicator.new(APPINDICATOR_ID,
-                self.svgs[0], appindicator.IndicatorCategory.SYSTEM_SERVICES)
+                os.path.join(self.ini_tool.folder, self.svgs[0]),
+                appindicator.IndicatorCategory.SYSTEM_SERVICES)
 
         self.indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
         self.build_menu()
@@ -413,7 +417,8 @@ class InhIndicator:
             svg = self.svgs[3 if self.battery.selector == 'LoBattery' else
                             1 if inhibited else
                             0 if emode in ('SleepAfterLock',) else 2]
-            self.indicator.set_icon_full(svg, 'PI')
+            self.indicator.set_icon_full(
+                os.path.join(self.ini_tool.folder, svg), 'PI')
             self.poll_100ms = True
             self.idle_manager_start()
 

@@ -54,13 +54,13 @@ class SwayIdleManager:
                 blank_s = 20 + lock_s
         if mode in ('SleepAfterLock', ):
             sleep_s = self.applet.get_sleep_min_list()[0] * 60
-            til_sleep_s += sleep_s
+            til_sleep_s = sleep_s
+            sleeping = True
 
         til_sleep_s, sleeping, blanking = 0, False, False
         cmd = self.clauses.leader
         if isinstance(lock_s, (int,float)) and lock_s >= 0:
             til_sleep_s += lock_s
-            sleeping = True
             cmd += self.clauses.locker.replace(
                 "[lock_s]", str(lock_s)).replace(
                 '[lockopts]', lockopts).replace(
