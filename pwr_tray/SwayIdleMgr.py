@@ -9,6 +9,9 @@ we want.
 """
 # pylint: disable=invalid-name,consider-using-with
 import subprocess
+import time
+import os
+import signal
 from types import SimpleNamespace
 from pwr_tray.Utils import prt
 
@@ -35,7 +38,25 @@ class SwayIdleManager:
             screenlock = """swaylock --ignore-empty-password --show-failed-attempts""",
             unblank='''; swaymsg "output * dpms on"''',
         )
+        self.kill_other_swayidle()
 
+    @staticmethod
+    def kill_other_swayidle():
+        """ Kills any stray swayidles"""
+        try:
+            pids = subprocess.check_output(['pgrep', 'swayidle']).decode().split()
+            if pids:
+                subprocess.run(['pkill', 'swayidle'])
+            time.sleep(2) # Wait a moment to ensure processes are terminated
+
+            pids = subprocess.check_output(['pgrep', 'swayidle']).decode().split()
+            if pids:
+                prt(f"Force killing remaining swayidle processes... {pids}")
+                for pid in pids:
+                    os.kill(int(pid), signal.SIGKILL)
+            return
+        except Exception:
+            return # none left
 
     def build_cmd(self, mode=None):
         """ Build the swayidle command line from the current statue. """

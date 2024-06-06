@@ -462,8 +462,6 @@ class InhIndicator:
         else:
             self.battery.selector = 'LoBattery'
         if was_plugged != self.battery.plugged or was_selector != self.battery.selector:
-            self.ini_tool.set_effective_params(self.battery.selector)
-                # self.battery.plugged, self.battery.percent)
             self.rebuild_menu = True
 #   IF WANTING TIME LEFT
 #       secsleft = battery.secsleft
