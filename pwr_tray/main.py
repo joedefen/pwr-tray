@@ -102,19 +102,32 @@ class InhIndicator:
         wayland_display = os.environ.get('WAYLAND_DISPLAY')
         display = os.environ.get('DISPLAY')
 
-        if xdg_current_desktop == 'i3': # Check for i3
+        if 'i3' in desktop_session and display: # Check for i3
+            prt(f'ENV: i3 {desktop_session=} {display=}')
             return 'i3'
         if 'plasma' in desktop_session or 'kde' in xdg_current_desktop:
             if wayland_display:
+                env = 'kde-wayland'
+                prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
+                assert False, f'unsupported env: {env}'
                 return 'kde-wayland'
             if display:
-                return 'kde-x11'
+                env = 'kde-x11'
+                prt(f'ENV: {env} {desktop_session=} {display=}')
+                return env
         if 'sway' in desktop_session and sway_socket: # Check for Sway
+            prt(f'ENV: sway {desktop_session=} {sway_socket=}')
             return 'sway'
         if 'gnome' in desktop_session:
             if wayland_display:
-                return 'gnome-wayland'
+                env='gnome-wayland'
+                prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
+                assert False, f'unsupported env: {env}'
+                return env
             if display:
+                env='gnome-x11'
+                prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
+                assert False, f'unsupported env: {env}'
                 return 'gnome-x11'
         # Default case: no known environment detected
         assert False, 'cannot determine if i3/sway/kde-(x11|wayland)'
@@ -627,24 +640,8 @@ class InhIndicator:
                 item.connect('activate', self.dummy)
                 menu.append(item)
 
-        if self.mode not in ('Presentation',):
-            item = gtk.MenuItem(label='☀ Presentation Mode')
-            item.connect('activate', self.enable_presentation_mode)
-            menu.append(item)
-
-        if self.mode not in ('LockOnly',):
-            item = gtk.MenuItem(label='☀ LockOnly Mode')
-            item.connect('activate', self.enable_nosleep_mode)
-            menu.append(item)
-
-        if self.mode not in ('SleepAfterLock',):
-            item = gtk.MenuItem(label='☀ SleepAfterLock Mode')
-            item.connect('activate', self.enable_normal_mode)
-            menu.append(item)
-
         selector, percent = self.battery.selector, self.battery.percent
         item = gtk.MenuItem(label=
-                #('🔌 Plugged In' if selector == 'Settings' else f'🔋 {selector}')
                 ('🗲 Plugged In' if selector == 'Settings'
                      else (('█' if selector == 'HiBattery' else '▃') + f' {selector}')
                  + (f' {percent}%' if percent < 100 or selector != 'Settings' else '')) )
@@ -660,6 +657,21 @@ class InhIndicator:
         item = gtk.MenuItem(label=f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}')
         item.connect('activate', self._sleep_rotate_next)
         menu.append(item)
+
+        if self.mode not in ('Presentation',):
+            item = gtk.MenuItem(label='⮀ Presentation Mode')
+            item.connect('activate', self.enable_presentation_mode)
+            menu.append(item)
+
+        if self.mode not in ('LockOnly',):
+            item = gtk.MenuItem(label='⮀ LockOnly Mode')
+            item.connect('activate', self.enable_nosleep_mode)
+            menu.append(item)
+
+        if self.mode not in ('SleepAfterLock',):
+            item = gtk.MenuItem(label='⮀ SleepAfterLock Mode')
+            item.connect('activate', self.enable_normal_mode)
+            menu.append(item)
 
 
         # enable = 'Disable' if self.presentation_mode else 'Enable'

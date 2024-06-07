@@ -87,18 +87,23 @@ Notes:
 * If .ini file is missing, it is created and `lockpaper.png` is copied there too.
 * Your picks of mode and times are saved to disk when changed, and restored on the next start.
 * Items may be absent depending on the mode and battery state.
+* Icons change based on state:
+    * **Full Sun**: Presentation Mode
+    * **Setting Sun**: SleepAfterLock Mode ("normal")
+    * **Open Lock**: LockOnly Mode
+    * **Red Downward Triangle**: LowBattery State
 
-Choose from three *major power modes* (to limit the effect of timeouts):
-- **☀ PRESENTATION Mode** -  Keeps the screen unlocked/on and system up.
-- **☀ LockOnly Mode** - Keeps the system up, but the screens may lock.
-- **☀ SleepAfterLock Mode** - Allows screen locking and system to go down (the "normal" mode).
-  **NOTE**: when in LoBattery, SleepAfterLock is in effect.
-The icon will change per your selection and the battery state.
-
-Next you may see:
-- **🗲 Plugged In** (or HiBattery or LoBattery). If you click this when you have no battery, then it switches to the next state.  This allows you to test battery state handly faily well and/or repurpose the battery config sections.
+First, you may see:
+- **🗲 Plugged In** (or HiBattery or LoBattery). If you click this when you don't have a battery, then it switches to the next state.  This allows you to test battery state handly faily well and/or repurpose the battery config sections.
 - **♺ Chg Screen Idle: 15m->30m** - change the time to start the screen saver; each time clicked, it changes to the next one.
 - **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next value.
+
+Next, choose from three *major power modes* (to control the effects of timeouts):
+- **⮀ PRESENTATION Mode** -  Keeps the screen unlocked/on and system up.
+- **⮀ LockOnly Mode** - Keeps the system up, but the screens may lock.
+- **⮀ SleepAfterLock Mode** - Allows screen locking and system to go down (the "normal" mode).
+- **NOTE**: when in LoBattery, SleepAfterLock is in effect.
+  The icon will change per your selection and the battery state.
 
 
 Next, you may choose from various locking/blanking/DE operations:
