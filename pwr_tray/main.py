@@ -91,7 +91,8 @@ class InhIndicator:
                 , bases= ['SettingSun',   # Normal (SleepAfterLock)
                           'FullSun',      # Presentation Mode
                           'Unlocked',     # LockOnly Mode
-                          'GoingDown',  # LowBattery Mode
+                          'GoingDown',    # LowBattery Mode
+                          'PlayingNow',   # Inhibited
                           ] )
     singleton = None
     @staticmethod
@@ -133,7 +134,7 @@ class InhIndicator:
         assert False, 'cannot determine if i3/sway/kde-(x11|wayland)'
 
     default_variables = {
-        'suspend': 'systemctl suspend',
+        'suspend': 'systemctl systemd-inhibit suspend',
         'poweroff': 'systemctl poweroff',
         'reboot': 'systemctl reboot',
 #       'dimmer': 'brightnessctl set {percent}%',
@@ -146,7 +147,7 @@ class InhIndicator:
         'reload_wm': '',
         'restart_wm': '',
 #       'must_haves': 'systemctl brightnessctl'.split(),
-        'must_haves': 'systemctl'.split(),
+        'must_haves': 'systemctl playerctl'.split(),
 
     }
     overides = {
@@ -232,6 +233,7 @@ class InhIndicator:
         self.singleton.mode = 'SleepAfterLock' # or 'LockOnly' or 'Presentation'
         self.was_effective_mode = None
         self.was_inhibited = None
+        self.was_play_state = ''
         self.was_selector = None
         self.was_output = ''
         self.here_dir = os.path.dirname(os.path.abspath(__file__))
@@ -400,8 +402,11 @@ class InhIndicator:
     def show_icon(self, inhibited=False):
         """ Display Icon if updated """
         emode = self.get_effective_mode()
-        num = (3 if self.battery.selector == 'LoBattery' else
-                1 if inhibited else 0 if emode in ('SleepAfterLock',) else 2)
+        num = (3 if self.battery.selector == 'LoBattery'
+                else 4 if inhibited
+                else 1 if emode in ('Presentation', )
+                else 0 if emode in ('SleepAfterLock',)
+                else 2)
         if num != self.current_icon_num:
             svg = self.svgs[num]
             self.indicator.set_icon_full(
@@ -436,6 +441,14 @@ class InhIndicator:
                 rows.append(line)
         if len(rows) == 1:
             rows = []
+        child = subprocess.run('playerctl status'.split(), check=False,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        play_state = child.stdout.decode('utf-8').strip().lower()
+        if play_state == 'playing':
+            inhibited = True
+        if self.was_play_state != play_state:
+            prt(f'{play_state=}')
+            self.was_play_state = play_state
 
         # inhibited = bool(inhibited or self.presentation_mode)
         emode = self.effective_mode()

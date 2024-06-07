@@ -35,7 +35,7 @@ class SwayIdleManager:
                         # + """ pgrep -x nm-applet || nm-applet [undim][dpmsOn]'""",
                         # + """ pgrep -x nm-applet || nm-applet [unblank]'""",
             # undim = """; brightnessctl set 100%""",
-            screenlock = """swaylock --ignore-empty-password --show-failed-attempts""",
+            screenlock = """pkill swaylock ; sleep 0.5; swaylock --ignore-empty-password --show-failed-attempts""",
             unblank='''; swaymsg "output * dpms on"''',
         )
         self.kill_other_swayidle()

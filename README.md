@@ -24,6 +24,7 @@ does not deal with those.
     * Shows missing, required system-level imports (DE dependent).
         * See "Installing Needed System Python Modules" (immediately below).
     * Shows missing system-level commands (DE dependent). Install per distro instructions.
+      `systemctl` and `playerctl` are always required.
 * When running manually, see the "Per-Distro Specific Notes" below for its configuration.
 * Finally, see the "Using pwr-tray" for everyday use after install.
 
@@ -36,7 +37,7 @@ does not deal with those.
     * gir1.2-notify-0.7 gir1.2-ayatanaappindicator3-0.1 ayatanalibappindicator3-1
 * On Arch, use `pacman -Syy ...` of:
     * libappindicator-gtk3 python-gobject python-cairo
-* On other distros, use the hints above to resolve an missing "imports".
+* On other distros, use the hints above to resolve any missing "imports".
 
 ---
 
@@ -92,6 +93,7 @@ Notes:
     * **Setting Sun**: SleepAfterLock Mode ("normal")
     * **Open Lock**: LockOnly Mode
     * **Red Downward Triangle**: LowBattery State
+    * **Musical Notes**: Inhibited when playing media or by other inhibitors.
 
 First, you may see:
 - **🗲 Plugged In** (or HiBattery or LoBattery). If you click this when you don't have a battery, then it switches to the next state.  This allows you to test battery state handly faily well and/or repurpose the battery config sections.
@@ -126,7 +128,10 @@ Or act on the applet itself:
 ## Per-Distro Specific Notes
 
 ### i3wm Specific Notes
-* Uninstall or disable all competing energy saving programs (e.g., `xscreensaver`, `xfce4-power-manager`, etc.) when running `i3` whether started by `systemd` or `i3/config` or whatever.
+* Uninstall or disable all competing energy saving programs (e.g., `xscreensaver`, `xfce4-power-manager`, etc.) when running `i3` whether started by `systemd` or `i3/config` or whatever; don't forget the X11 defaults that can be defeated many ways such as in in `~/.config/i3/config`:
+```
+        exec --no-startup-id xset s off ; xset s noblank ; xset -dpms
+```
 * Edit `/etc/system/logind.conf` and uncomment `HandlePowerKey=`, `HandlePowerKey=`, `HandlePowerKey=`, and `HandlePowerKey=`, and set the action to `suspend` (reboot or restart `systemd-logind`).  That enables `xss-lock` to handle those keys similar to `pwr-tray`.
 * In `~/.config/i3/config`, configure `xss-lock` something like:
 ```
