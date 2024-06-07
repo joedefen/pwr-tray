@@ -334,9 +334,10 @@ class InhIndicator:
                       },
                 }
             try:
+                picks_str = json.dumps(picks)
                 with open(this.picks_file, 'w', encoding='utf-8') as f:
-                    json.dump(picks, f)
-                print("Picks saved successfully.")
+                    f.write(picks_str + '\n')
+                print("Picks saved:", picks_str)
                 this.poll_100ms = True
             except Exception as e:
                 print(f"An error occurred while saving picks: {e}", file=sys.stderr)

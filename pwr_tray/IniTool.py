@@ -14,9 +14,7 @@ import os
 import configparser
 from types import SimpleNamespace
 import copy
-import shutil
 import json
-import pwr_tray.Utils as Utils
 from pwr_tray.Utils import prt
 
 class IniTool:
@@ -67,27 +65,26 @@ class IniTool:
         """ Returns the in right "order" """
         return 'Settings HiBattery LoBattery'.split()
 
+    def the_default(self, selector, key):
+        """ return the default value given the selector and key """
+        return self.defaults[selector][key]
+
     def get_current_vals(self, selector, list_name):
-        """ TBD """
+        """ Expecting a list of two or more non-zero ints """
         if selector in self.params_by_selector and hasattr(self.params_by_selector[selector], list_name):
             vals = getattr(self.params_by_selector[selector], list_name)
             if isinstance(vals, list) and len(vals) >= 2:
                 return vals
-        return [0, 0]
+        return self.the_default(selector, list_name) # should not get here
 
     def get_rotated_vals(self, selector, list_name, first):
         """ TBD """
-        if selector in self.params_by_selector and hasattr(self.params_by_selector[selector], list_name):
-            vals = getattr(self.params_by_selector[selector], list_name)
-            if isinstance(vals, list) and len(vals) >= 2:
-                if first in vals:
-                    while vals[0] != first:
-                        vals = vals[1:] + vals[:1]
-                setattr(self.params_by_selector[selector], list_name, vals)
-                return vals
-            return [vals[0], vals[1] if len(vals) >=2 else vals[0]]
-        return [1, 1] # should not get here; return just anything (could asssert)
-
+        vals = self.get_current_vals(selector, list_name)
+        if first in vals:
+            while vals[0] != first:
+                vals = vals[1:] + vals[:1]
+            setattr(self.params_by_selector[selector], list_name, vals)
+        return vals
 
     def ensure_ini_file(self):
         """Check if the config file exists, create it if not."""
@@ -101,12 +98,13 @@ class IniTool:
     def update_config(self):
         """ Check if the file has been modified since the last read """
         def to_array(val_str):
-            if isinstance(val_str, int):
-                val_str = f'[{val_str}]'
+            # Expecting string of form: "[1,2,...]" or just "20"
             try:
                 vals = json.loads(val_str)
             except Exception:
                 return None
+            if isinstance(vals, int):
+                vals = [vals]
             if not isinstance(vals, list):
                 return None
             rvs = []
@@ -127,7 +125,7 @@ class IniTool:
         self.last_mod_time = current_mod_time
 
         goldens = self.defaults['Settings']
-        running = copy.deepcopy(goldens)
+        running = goldens
         all_params = {}
 
         # Access the configuration values in order
@@ -148,6 +146,7 @@ class IniTool:
                 if key.endswith('_list'):
                     list_value = to_array(value)
                     if not value:
+                        params[key] = self.the_default(selector, key)
                         prt(f'skip {selector}.{key}: {value!r} [bad list spec]')
                     else:
                         params[key] = list_value
@@ -162,6 +161,7 @@ class IniTool:
                     if isinstance(value, bool):
                         params[key] = value
                     else:
+                        params[key] = self.the_default(selector, key)
                         prt(f'skip {selector}.{key}: {value!r} [expecting bool]')
                     continue
 
@@ -170,6 +170,7 @@ class IniTool:
                         params[key] = int(value)
                         continue
                     except Exception:
+                        params[key] = self.the_default(selector, key)
                         prt(f'skip {selector}.{key}: {value!r} [expecting int repr]')
                         continue
 
@@ -177,23 +178,14 @@ class IniTool:
                     if isinstance(value, str):
                         params[key] = value
                     else:
+                        params[key] = self.the_default(selector, key)
                         prt(f'skip {selector}.{key}: {value!r} [expecting string]')
                     continue
 
                 assert False, f'unhandled goldens[{key}]: {value!r}'
             all_params[selector] = SimpleNamespace(**params)
 
-        firsts = {}
-        for selector in self.get_selectors():
-            for key in goldens:
-                if key.endswith('_list'):
-                    firsts[selector] = self.get_current_vals(selector, key)[0]
         self.params_by_selector = all_params
-        for selector in self.get_selectors():
-            for key in goldens:
-                if key.endswith('_list'):
-                    self.get_rotated_vals(selector, key, firsts[selector])
-            prt(f'{selector=} params={vars(all_params[selector])}')
 
         prt('DONE parsing config.ini...')
 
