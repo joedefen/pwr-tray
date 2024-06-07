@@ -65,7 +65,7 @@ class SwayIdleManager:
         lock_s, lockopts, sleep_s, blank_s = None, '', None, None
         mode = mode if mode else self.applet.get_effective_mode()
         til_sleep_s, sleeping = None, False
-        
+
         lockopts = self.applet.get_params().swaylock_args
         quick = self.applet.quick
         a_minute = 30 if quick else 60

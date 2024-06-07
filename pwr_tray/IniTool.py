@@ -85,7 +85,8 @@ class IniTool:
                         vals = vals[1:] + vals[:1]
                 setattr(self.params_by_selector[selector], list_name, vals)
                 return vals
-        return [0, 0]
+            return [vals[0], vals[1] if len(vals) >=2 else vals[0]]
+        return [1, 1] # should not get here; return just anything (could asssert)
 
 
     def ensure_ini_file(self):
@@ -96,9 +97,6 @@ class IniTool:
             self.config.read_dict(self.defaults)
             with open(self.ini_path, 'w', encoding='utf-8') as configfile:
                 self.config.write(configfile)
-            lockpaper = Utils.get_resource_path('lockpaper.png')
-            shutil.copy2(lockpaper, os.path.join(
-                self.folder, os.path.basename(lockpaper)))
 
     def update_config(self):
         """ Check if the file has been modified since the last read """

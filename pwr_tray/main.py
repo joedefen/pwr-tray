@@ -87,9 +87,12 @@ class InhIndicator:
     NOTES:
      - when icons are moved/edited, rename them or reboot to avoid cache confusion
     """
-    svg_info = SimpleNamespace(version='03', subdir='resources'
-                , bases= ['New-NormMode', 'New-PresMode',
-                          'LockOnlyMode', 'New-LowBattery'])
+    svg_info = SimpleNamespace(version='03', subdir='resources/SetD'
+                , bases= ['SettingSun',   # Normal (SleepAfterLock)
+                          'FullSun',      # Presentation Mode
+                          'Unlocked',     # LockOnly Mode
+                          'GoingDown',  # LowBattery Mode
+                          ] )
     singleton = None
     @staticmethod
     def get_environment():
@@ -379,7 +382,7 @@ class InhIndicator:
     def effective_mode(self):
         """ TBD """
         return 'SleepAfterLock' if self.battery.selector == 'LoBattery' else self.mode
-    
+
     def show_icon(self, inhibited=False):
         """ Display Icon if updated """
         emode = self.get_effective_mode()
@@ -667,7 +670,7 @@ class InhIndicator:
         item.connect('activate', self.lock_screen)
         menu.append(item)
 
-        if (self.get_params().turn_off_monitors and 
+        if (self.get_params().turn_off_monitors and
                 self.variables['monitors_off']):
             item = gtk.MenuItem(label='▷ Blank Monitors')
             item.connect('activate', self.blank_quick)
@@ -734,9 +737,7 @@ class InhIndicator:
             elif this.graphical == 'sway':
                 append = this.get_params().swaylock_args
             if not append:
-                file = Utils.get_resource_path('lockpaper.png')
-                if file:
-                    append = f'-t -i {file}'
+                append = '-t -i ./lockpaper.png'
             command += ' ' + append
         if '{XDG_SESSION_ID}' in command:
             command = command.replace('{XDG_SESSION_ID}',
