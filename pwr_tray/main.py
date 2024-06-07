@@ -134,7 +134,7 @@ class InhIndicator:
         assert False, 'cannot determine if i3/sway/kde-(x11|wayland)'
 
     default_variables = {
-        'suspend': 'systemctl systemd-inhibit suspend',
+        'suspend': 'systemctl suspend',
         'poweroff': 'systemctl poweroff',
         'reboot': 'systemctl reboot',
 #       'dimmer': 'brightnessctl set {percent}%',
@@ -169,7 +169,7 @@ class InhIndicator:
             'reload_wm': 'i3-msg reload',
             'restart_wm': 'i3-msg restart',
             'logoff': 'i3-msg exit',
-            'locker': 'i3lock --ignore-empty-password --show-failed-attempt',
+            'locker': 'pkill i3lock; sleep 0.5; i3lock --ignore-empty-password --show-failed-attempt',
             'must_haves': 'i3-msg i3lock'.split(),
 
         }, 'kde-x11': {
@@ -412,6 +412,8 @@ class InhIndicator:
             self.indicator.set_icon_full(
                 os.path.join(self.ini_tool.folder, svg), 'PI')
             self.current_icon_num = num
+            return True # changed
+        return False # unchanged
 
     def check_inhibited(self):
         pipe = subprocess.Popen(
@@ -452,25 +454,22 @@ class InhIndicator:
 
         # inhibited = bool(inhibited or self.presentation_mode)
         emode = self.effective_mode()
-        inhibited = bool(inhibited or emode in ('Presentation',))
-        was_inhibited = bool(self.state.name == 'Inhibited'
-                             or emode in ('Presentation',))
+        # inhibited = bool(inhibited or emode in ('Presentation',))
 
-        self.show_icon(inhibited=inhibited)
-        if (inhibited != was_inhibited or self.was_effective_mode != emode
-                or self.was_selector != self.battery.selector):
+        if self.show_icon(inhibited=inhibited):
             self.poll_100ms = True
             self.idle_manager_start()
 
-        if (inhibited and emode not in ('Presentation', )
-                and self.battery.selector != 'LoBattery'
-                and self.state.name in ('Awake', )):
-            self.set_state('Inhibited')
+#       if (inhibited and emode not in ('Presentation', )
+#               and self.battery.selector != 'LoBattery'
+#               and self.state.name in ('Awake', )):
+#           self.set_state('Inhibited')
 
         self.was_effective_mode = emode
         self.was_selector = self.battery.selector
         was_output = self.was_output
         self.was_output = output
+        self.was_inhibited = inhibited
         return rows, bool(was_output != output)
 
     def update_battery_status(self):
@@ -553,10 +552,10 @@ class InhIndicator:
             prt(emit)
 
             if self.running_idle_s > min(50, lock_secs*0.40) and (
-                    emode in ('Presentation',) or self.state.name in ('Inhibited')):
+                    emode in ('Presentation',) or self.was_inhibited):
                 self.reset_xidle_ms()
 
-            if (self.running_idle_s >= down_secs and emode not in ('LockOnly',)
+            elif (self.running_idle_s >= down_secs and emode not in ('LockOnly',)
                     and self.state.name in ('Awake', 'Locked', 'Blanked')):
                 if self._get_down_state() == 'PowerOff':
                     self.poweroff(None)
