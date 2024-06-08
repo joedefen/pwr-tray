@@ -25,17 +25,17 @@ class SwayIdleManager:
         # substitutions.
         self.clauses = SimpleNamespace(
             leader="""exec swayidle""",
-            locker=""" timeout [lock_s] 'exec [screenlock] [lockopts]'""",
+            locker=""" timeout [lock_s] '[screenlock] [lockopts]'""",
             blanker=""" timeout [blank_s] 'swaymsg "output * dpms off"'""",
             sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
             # dimmer="""\\\n timeout [dim_s] 'brightnessctl set 50%'""", # perms?
-            before_sleep=""" before-sleep 'exec [screenlock] [lockopts]'""",
+            before_sleep=""" before-sleep '[screenlock] [lockopts]'""",
             after_resume=""" after-resume '[unblank]'""",
                         # + """ 'pgrep -x copyq || copyq --start-server hide;"""
                         # + """ pgrep -x nm-applet || nm-applet [undim][dpmsOn]'""",
                         # + """ pgrep -x nm-applet || nm-applet [unblank]'""",
             # undim = """; brightnessctl set 100%""",
-            screenlock = """pkill swaylock ; sleep 0.5; swaylock --ignore-empty-password --show-failed-attempts""",
+            screenlock = """pkill swaylock ; exec swaylock --ignore-empty-password --show-failed-attempts""",
             unblank='''; swaymsg "output * dpms on"''',
         )
         self.kill_other_swayidle()
