@@ -55,7 +55,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pwr_tray"
-version = "0.4"
+version = "0.5"
 description = "A GTK tray applet for power management for i3/sway/KDE"
 authors = [
     { name = "Joe Defen", email = "joedef@google.com" }
