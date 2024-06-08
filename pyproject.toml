@@ -55,7 +55,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pwr_tray"
-version = "0.5"
+version = "0.7"
 description = "A GTK tray applet for power management for i3/sway/KDE"
 authors = [
     { name = "Joe Defen", email = "joedef@google.com" }
@@ -83,17 +83,16 @@ dependencies = [
 [project.scripts]
 pwr-tray = "pwr_tray.main:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["pwr_tray"]
+[tool.setuptools]
+package-dir = {"" = "src"}
 
-[tool.hatch.build.targets.sdist]
-include = [
-    "/pwr_tray/resources/*",
-]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"pwr_tray.resources" = ["*.svg", "*.png"]
+
 exclude = [
     "__pycache__",
-    "*.png",
-    "*.kra",
-    "pwr-*.svg",
 ]
 
