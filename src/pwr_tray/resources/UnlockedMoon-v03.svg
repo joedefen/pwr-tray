@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created using Krita: https://krita.org -->
+
+<svg
+   width="256pt"
+   height="256pt"
+   viewBox="0 0 256.00001 256.00001"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="UnlockedMoon-v03.svg"
+   inkscape:version="1.3.2 (091e20ef0f, 2023-11-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="pt"
+     inkscape:zoom="3.3922482"
+     inkscape:cx="136.48765"
+     inkscape:cy="172.15721"
+     inkscape:window-width="1883"
+     inkscape:window-height="1378"
+     inkscape:window-x="661"
+     inkscape:window-y="1126"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1"
+     showgrid="false" />
+  <defs
+     id="defs1" />
+  <path
+     id="shape0"
+     fill="#bfbfbf"
+     fill-rule="evenodd"
+     stroke="#000000"
+     stroke-width="8.70276"
+     stroke-linecap="square"
+     stroke-linejoin="bevel"
+     d="m 23.733077,175.6443 2.336998,-20.48093 5.606188,-11.37152 7.30107,-8.41938 12.516117,-8.09131 14.602195,-4.04567 16.948881,0.54671 12.646625,4.155 10.690799,6.45121 6.77965,6.23251 5.21494,7.10731 -18.731132,10.57384 -6.10545,-9.35909 -7.643323,-6.20991 -9.025743,-2.0946 -8.807413,0.29415 -9.731678,3.73927 -6.18527,6.12452 -4.343959,6.43302 -1.825029,5.26136 -1.488561,12.88281 c 0,0 -9.804297,-0.0938 -20.755905,0.2707 z"
+     sodipodi:nodetypes="cccccccccccccccccccccc"
+     style="fill:#ffe680;stroke:#554400;stroke-width:6.38985;stroke-dasharray:none" />
+  <rect
+     id="shape01"
+     fill="#d9d9d9"
+     fill-rule="evenodd"
+     stroke="#000000"
+     stroke-width="8.65393"
+     stroke-linecap="square"
+     stroke-linejoin="bevel"
+     width="117.72985"
+     height="69.041321"
+     x="13.349257"
+     y="174.67522"
+     style="fill:#ffe680;stroke:#554400" />
+  <path
+     id="shape2"
+     fill="none"
+     stroke="#8c8c8c"
+     stroke-width="5.76929"
+     stroke-linecap="square"
+     stroke-linejoin="miter"
+     stroke-miterlimit="2"
+     d="M 24.863312,187.65739 H 118.28883"
+     sodipodi:nodetypes="cc"
+     style="stroke:#806600" />
+  <path
+     id="shape011"
+     fill="none"
+     stroke="#8c8c8c"
+     stroke-width="5.76929"
+     stroke-linecap="square"
+     stroke-linejoin="miter"
+     stroke-miterlimit="2"
+     d="M 25.135034,198.50497 H 118.56055"
+     sodipodi:nodetypes="cc"
+     style="stroke:#806600" />
+  <path
+     id="shape02"
+     fill="none"
+     stroke="#8c8c8c"
+     stroke-width="5.76929"
+     stroke-linecap="square"
+     stroke-linejoin="miter"
+     stroke-miterlimit="2"
+     d="M 25.135034,210.9488 H 118.56055"
+     sodipodi:nodetypes="cc"
+     style="stroke:#806600" />
+  <path
+     id="shape03"
+     fill="none"
+     stroke="#8c8c8c"
+     stroke-width="5.76929"
+     stroke-linecap="square"
+     stroke-linejoin="miter"
+     stroke-miterlimit="2"
+     d="M 25.135034,221.46987 H 118.56055"
+     sodipodi:nodetypes="cc"
+     style="stroke:#806600" />
+  <path
+     id="shape04"
+     fill="none"
+     stroke="#8c8c8c"
+     stroke-width="5.76929"
+     stroke-linecap="square"
+     stroke-linejoin="miter"
+     stroke-miterlimit="2"
+     d="M 25.135034,231.60637 H 118.56055"
+     sodipodi:nodetypes="cc"
+     style="stroke:#806600" />
+  <path
+     id="path1"
+     style="fill:#ff0000;stroke:#800000;stroke-width:13.6998;stroke-dasharray:none"
+     d="m 152.82919,10.417982 a 90.83362,85.920774 0 0 0 -90.83425,85.92015 90.83362,85.920774 0 0 0 0.17797,2.34946 72.607657,68.680584 0 0 1 59.70029,-29.80502 72.607657,68.680584 0 0 1 72.60808,68.680988 72.607657,68.680584 0 0 1 -14.25415,40.57767 90.83362,85.920774 0 0 0 63.43502,-81.803098 90.83362,85.920774 0 0 0 -90.83296,-85.92015 z" />
+</svg>

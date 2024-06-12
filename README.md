@@ -91,7 +91,9 @@ Notes:
 * Icons change based on state:
     * **Full Sun**: Presentation Mode
     * **Setting Sun**: SleepAfterLock Mode ("normal")
+        - **Setting Sun + Moon** : SleepAfterLock Mode and Locking Screen Soon
     * **Open Lock**: LockOnly Mode
+        - **Open Lock + Moon** : LockOnly Mode and Locking Screen Soon
     * **Red Downward Triangle**: LowBattery State
     * **Musical Notes**: Inhibited when playing media or by other inhibitors.
 

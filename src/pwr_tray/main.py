@@ -94,6 +94,8 @@ class InhIndicator:
                           'Unlocked',     # LockOnly Mode
                           'GoingDown',    # LowBattery Mode
                           'PlayingNow',   # Inhibited
+                          'RisingMoon',   # Normal and Locking Soon
+                          'UnlockedMoon', # LockOnly and Locking Soon
                           ] )
     singleton = None
     @staticmethod
@@ -177,9 +179,10 @@ class InhIndicator:
 
         }, 'kde-x11': {
             'locker': 'loginctl lock-session',
-            'logoff': 'loginctl terminate-session {XDG_SESSION_ID}',
+            # 'logoff': 'loginctl terminate-session {XDG_SESSION_ID}',
+            'logoff': 'qdbus org.kde.ksmserver /KSMServer org.kde.KSMServerInterface.logout 0 0 0',
             'restart_wm': 'killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray',
-            'must_haves': 'loginctl'.split(),
+            'must_haves': 'loginctl qdbus'.split(),
         }, 'kde-wayland': {
             # sudo apt-get install xdg-utils
             'reset_idle': 'qdbus org.freedesktop.ScreenSaver /ScreenSaver SimulateUserActivity',
@@ -411,6 +414,15 @@ class InhIndicator:
                 else 1 if emode in ('Presentation', )
                 else 0 if emode in ('SleepAfterLock',)
                 else 2)
+        lock_secs = self.get_lock_min_list()[0]*60
+        # down_secs = self.get_sleep_min_list()[0]*60 + lock_secs
+        moon_when = lock_secs - min(60 , lock_secs/8)
+        if num == 0 and self.running_idle_s >= moon_when:
+            num = 5
+        elif num == 2 and self.running_idle_s >= moon_when:
+            num = 6
+        # prt(f'{num=} {self.running_idle_s=} {moon_when=}')
+
         if num != self.current_icon_num:
             svg = self.svgs[num]
             self.indicator.set_icon_full(
@@ -679,17 +691,17 @@ class InhIndicator:
         menu.append(item)
 
         if self.mode not in ('Presentation',):
-            item = gtk.MenuItem(label='⮀ Presentation Mode')
+            item = gtk.MenuItem(label=f'Presentation ⮜ {self.mode} Mode')
             item.connect('activate', self.enable_presentation_mode)
             menu.append(item)
 
         if self.mode not in ('LockOnly',):
-            item = gtk.MenuItem(label='⮀ LockOnly Mode')
+            item = gtk.MenuItem(label=f'LockOnly ⮜ {self.mode} Mode')
             item.connect('activate', self.enable_nosleep_mode)
             menu.append(item)
 
         if self.mode not in ('SleepAfterLock',):
-            item = gtk.MenuItem(label='⮀ SleepAfterLock Mode')
+            item = gtk.MenuItem(label=f'SleepAfterLock ⮜ {self.mode} Mode')
             item.connect('activate', self.enable_normal_mode)
             menu.append(item)
 
@@ -699,39 +711,39 @@ class InhIndicator:
         # item.connect('activate', self.toggle_presentation_mode)
         # menu.append(item)
 
-        item = gtk.MenuItem(label='▷ Lock Screen')
+        item = gtk.MenuItem(label=f'{self.graphical}:  ▷ Lock Screen')
         item.connect('activate', self.lock_screen)
         menu.append(item)
 
         if (self.get_params().turn_off_monitors and
                 self.variables['monitors_off']):
-            item = gtk.MenuItem(label='▷ Blank Monitors')
+            item = gtk.MenuItem(label='   ▷ Blank Monitors')
             item.connect('activate', self.blank_quick)
             menu.append(item)
 
         if has_cmd('reload_wm'):
-            item = gtk.MenuItem(label=f'▷ Reload {self.graphical}')
+            item = gtk.MenuItem(label='   ▷ Reload')
             item.connect('activate', self.reload_wm)
             menu.append(item)
 
         if has_cmd('restart_wm'):
-            item = gtk.MenuItem(label=f'▷ Restart {self.graphical}')
+            item = gtk.MenuItem(label='   ▷ Restart')
             item.connect('activate', self.restart_wm)
             menu.append(item)
 
-        item = gtk.MenuItem(label='▷ Log Off')
+        item = gtk.MenuItem(label='   ▷ Log Off')
         item.connect('activate', self.exit_wm)
         menu.append(item)
 
-        item = gtk.MenuItem(label='▼ Suspend System')
+        item = gtk.MenuItem(label='System:  ▼ Suspend')
         item.connect('activate', self.suspend)
         menu.append(item)
 
-        item = gtk.MenuItem(label='▼ Reboot System')
+        item = gtk.MenuItem(label='    ▼ Reboot')
         item.connect('activate', self.reboot)
         menu.append(item)
 
-        item = gtk.MenuItem(label='▼ PowerOff System')
+        item = gtk.MenuItem(label='    ▼ PowerOff')
         item.connect('activate', self.poweroff)
         menu.append(item)
 
@@ -742,6 +754,12 @@ class InhIndicator:
         item = gtk.MenuItem(label='↺ Restart this Applet')
         item.connect('activate', self.restart_self)
         menu.append(item)
+
+        if self.get_params().gui_editor:
+            item = gtk.MenuItem(label='🖹  Edit Applet Config')
+            item.connect('activate', self.edit_config)
+            menu.append(item)
+        
 
 
 #       item = gtk.MenuItem(label='Wake-SCSI')
@@ -772,9 +790,9 @@ class InhIndicator:
             if not append:
                 append = '-t -i ./lockpaper.png'
             command += ' ' + append
-        if '{XDG_SESSION_ID}' in command:
-            command = command.replace('{XDG_SESSION_ID}',
-                      os.environ.get('XDG_SESSION_ID', '-1'))
+        # if '{XDG_SESSION_ID}' in command:
+        #    command = command.replace('{XDG_SESSION_ID}',
+        #             os.environ.get('XDG_SESSION_ID', '-1'))
 
 #       elif key == 'dimmer':
 #           percent = int(round(int(thisget_params()params.dim_pct_brightness), 0))
@@ -803,6 +821,19 @@ class InhIndicator:
         notify.uninit()
         InhIndicator.save_picks()
         os.execv(sys.executable, [sys.executable] + sys.argv[:])
+
+    @staticmethod
+    def edit_config(_):
+        this = InhIndicator.singleton
+        if this.get_params().gui_editor:
+            try:
+                ini_path = this.ini_tool.ini_path
+                arguments = this.get_params().gui_editor.split()
+                arguments.append(ini_path)
+                prt('+', 'running:', arguments)
+                subprocess.run(arguments, check=True)
+            except Exception as e:
+                prt(f"Edit Config ERR: {e}")
 
     @staticmethod
     def suspend(_):
