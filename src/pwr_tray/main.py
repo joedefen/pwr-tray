@@ -48,7 +48,6 @@ import subprocess
 import json
 import shutil
 import atexit
-import time
 import traceback
 from types import SimpleNamespace
 import psutil
@@ -186,8 +185,11 @@ class InhIndicator:
         }, 'kde-wayland': {
             # sudo apt-get install xdg-utils
             'reset_idle': 'qdbus org.freedesktop.ScreenSaver /ScreenSaver SimulateUserActivity',
-            # gdbus introspect --session --dest org.gnome.SessionManager --object-path /org/gnome/SessionManager
-            # gdbus call --session --dest org.gnome.SessionManager --object-path /org/gnome/SessionManager --method org.gnome.SessionManager.GetIdleTime
+            # gdbus introspect --session --dest org.gnome.SessionManager
+            #       --object-path /org/gnome/SessionManager
+            # gdbus call --session --dest org.gnome.SessionManager
+            #       --object-path /org/gnome/SessionManager
+            #       --method org.gnome.SessionManager.GetIdleTime
             #   from pydbus import SessionBus
             #   import time
             #   def get_idle_time():
@@ -214,7 +216,8 @@ class InhIndicator:
             # pip install pydbus
             # from pydbus import SessionBus
             #   bus = SessionBus()
-            #   screensaver = bus.get("org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core")
+            #   screensaver = bus.get("org.gnome.Mutter.IdleMonitor",
+            #        "/org/gnome/Mutter/IdleMonitor/Core")
             #   idle_time = screensaver.GetIdletime()
 
             #   print(f"Idle time in milliseconds: {idle_time}")
@@ -257,7 +260,6 @@ class InhIndicator:
         self.state = SimpleNamespace(name='Awake', when=0)
 
         self.running_idle_s = 0.000
-        self.reset_idle_mono_s = time.monotonic()
         self.poll_s = 2.000
         self.poll_100ms = False
         self.lock_began_secs = None   # TBD: remove
@@ -568,12 +570,10 @@ class InhIndicator:
             prt(emit)
 
             if emode in ('Presentation',) or self.was_inhibited:
-                mono_now = time.monotonic()
-                delta_reset_s = mono_now - self.reset_idle_mono_s
-                # prt(f'{delta_reset_s=:.2f}')
-                if delta_reset_s > min(50, lock_secs*0.40):
-                    self.reset_xidle_ms()
-                    self.reset_idle_mono_s = mono_now
+                if 'sway' in self.graphical:
+                    self.reset_xidle_ms() # we don't know when
+                elif self.running_idle_s > min(50, lock_secs*0.40):
+                    self.reset_xidle_ms() # we don't know when
 
             elif (self.running_idle_s >= down_secs and emode not in ('LockOnly',)
                     and self.state.name in ('Awake', 'Locked', 'Blanked')):
@@ -759,8 +759,6 @@ class InhIndicator:
             item = gtk.MenuItem(label='🖹  Edit Applet Config')
             item.connect('activate', self.edit_config)
             menu.append(item)
-        
-
 
 #       item = gtk.MenuItem(label='Wake-SCSI')
 #       item.connect('activate', self.wake_scsi)
