@@ -48,6 +48,7 @@ import subprocess
 import json
 import shutil
 import atexit
+import time
 import traceback
 from types import SimpleNamespace
 import psutil
@@ -98,6 +99,7 @@ class InhIndicator:
     @staticmethod
     def get_environment():
         desktop_session = os.environ.get('DESKTOP_SESSION', '').lower()
+        xdg_session_desktop = os.environ.get('XDG_SESSION_DESKTOP', '').lower()
         xdg_current_desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
         sway_socket = os.environ.get('SWAYSOCK')
         wayland_display = os.environ.get('WAYLAND_DISPLAY')
@@ -106,6 +108,10 @@ class InhIndicator:
         if 'i3' in desktop_session and display: # Check for i3
             prt(f'ENV: i3 {desktop_session=} {display=}')
             return 'i3'
+        if ('sway' in desktop_session or 'sway' in xdg_session_desktop
+                or 'sway' in xdg_current_desktop) and sway_socket: # Check for Sway
+            prt(f'ENV: sway {desktop_session=} {sway_socket=}')
+            return 'sway'
         if 'plasma' in desktop_session or 'kde' in xdg_current_desktop:
             if wayland_display:
                 env = 'kde-wayland'
@@ -116,9 +122,6 @@ class InhIndicator:
                 env = 'kde-x11'
                 prt(f'ENV: {env} {desktop_session=} {display=}')
                 return env
-        if 'sway' in desktop_session and sway_socket: # Check for Sway
-            prt(f'ENV: sway {desktop_session=} {sway_socket=}')
-            return 'sway'
         if 'gnome' in desktop_session:
             if wayland_display:
                 env='gnome-wayland'
@@ -251,6 +254,7 @@ class InhIndicator:
         self.state = SimpleNamespace(name='Awake', when=0)
 
         self.running_idle_s = 0.000
+        self.reset_idle_mono_s = time.monotonic()
         self.poll_s = 2.000
         self.poll_100ms = False
         self.lock_began_secs = None   # TBD: remove
@@ -551,9 +555,13 @@ class InhIndicator:
                 emit += f' {self.battery.selector}'
             prt(emit)
 
-            if self.running_idle_s > min(50, lock_secs*0.40) and (
-                    emode in ('Presentation',) or self.was_inhibited):
-                self.reset_xidle_ms()
+            if emode in ('Presentation',) or self.was_inhibited:
+                mono_now = time.monotonic()
+                delta_reset_s = mono_now - self.reset_idle_mono_s
+                # prt(f'{delta_reset_s=:.2f}')
+                if delta_reset_s > min(50, lock_secs*0.40):
+                    self.reset_xidle_ms()
+                    self.reset_idle_mono_s = mono_now
 
             elif (self.running_idle_s >= down_secs and emode not in ('LockOnly',)
                     and self.state.name in ('Awake', 'Locked', 'Blanked')):
