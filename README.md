@@ -1,22 +1,17 @@
 # pwr-tray
-A GTK Tray Applet for Power/Energy Saving and System/DE Controls.
-
-Currently supported/tested DEs are:
+A GTK Tray Applet for Power/Energy Saving and System/DE Controls; currently supported/tested DEs are:
 * i3wm
+* swaywm
 * KDE on X11
 
 In the plans are:
-* Support for these DEs:
-    * swaywm
-    * KDE on Wayland
-    * Gnome on X11
-    * Gnome on Wayland
+* Support for KDE on Wayland, Gnome on X11, and Gnome on Wayland.
 * And, imaginably, an AppImage that bundles all the system requirements since pip/pipx
 does not deal with those.
 
 ---
 
-### Install
+### HowTo Install
 * Basically: `pipx install pwr-tray` (exactly how depends on your installation and its state)
 * Plus, various system modules and executables.
 * Manually run as `pwr-tray -o`:
@@ -41,25 +36,25 @@ does not deal with those.
 
 ---
 
-## Using pwr-tray
+## HowTo Run pwr-tray
 
-### Manual Launch of the Applet
+### Manual Launch of the Tray Applet
 - For foreground in terminal, run `pwr-tray -o` ("-o" logs to stdout).
 - In the background, run `setsid pwr-tray &` (logs to `~/.config/pwr-tray/debug.log`).
-### Other Forms of pwr-tray
+### Other Forms of pwr-tray (for Maintenance/Debugging)
 - `pwr-tray -e` edits the config file (`~/.config/pwr-ini/config.ini`)
 - `pwr-tray -f` tails the log file (`~/.config/pwr-ini/debug.log`)
 
-### Tests
+### Initial Testing of pwr-tray
 - Running `pwr-tray --quick` reduces the lock and sleep timeout to 1 minute
   (although you can 'click' the current value to try others),
   and `--quick` runs double-time (so 1 minute timers expire in 30s per the wall clock).
-- You can run in various modes, but the default, SleepAfterLock, runs thru almost every action.
-- Then ensure closing the lid, hitting the power button, etc., has the desired effects.
+- You can run in various modes, but the default, SleepAfterLock, exercises thru the most code paths.
+- Then, ensure closing the lid, hitting the power button, etc., have the desired effects.
 
 ---
 
-# Configuration Basics
+# HowTo Configure pwr-tray
 - When the program is started w/o a `config.ini`, then it is created with defaults.
 - It has three sections:
     * **Settings**: The settings for when plugged in.  Missing/invalid settings are inherited from the defaults. Here are the defaults:
@@ -79,10 +74,11 @@ lo_battery_pct = 10                 # define "low battery" state
 ```
 NOTE: I've had problems with turning off the monitors, and if you do so, then
 it is harder to know the system state. If you have issues with the monitors
-failing to sleep or the system cannot wake with the monitors off, then
-avoid those that "feature".
+failing to sleep or the system cannot wake when the monitors are off, then
+avoid the `turn_off_monitor` feature.
 
 ### Tray Menu 
+
 Notes:
 * `pwr-tray` changes directory to `~/.config/pwr-tray`.
 * If .ini file is missing, it is created and `lockpaper.png` is copied there too.
@@ -96,19 +92,15 @@ Notes:
         - **Open Lock + Moon** : LockOnly Mode and Locking Screen Soon
     * **Red Downward Triangle**: LowBattery State
     * **Musical Notes**: Inhibited when playing media or by other inhibitors.
-
-First, you may see:
-- **🗲 Plugged In** (or HiBattery or LoBattery). If you click this when you don't have a battery, then it switches to the next state.  This allows you to test battery state handly faily well and/or repurpose the battery config sections.
-- **♺ Chg Screen Idle: 15m->30m** - change the time to start the screen saver; each time clicked, it changes to the next one.
-- **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next value.
-
-Next, choose from three *major power modes* (to control the effects of timeouts):
-- **⮀ PRESENTATION Mode** -  Keeps the screen unlocked/on and system up.
-- **⮀ LockOnly Mode** - Keeps the system up, but the screens may lock.
-- **⮀ SleepAfterLock Mode** - Allows screen locking and system to go down (the "normal" mode).
 - **NOTE**: when in LoBattery, SleepAfterLock is in effect.
   The icon will change per your selection and the battery state.
 
+![pwr-tray-screenshot](https://github.com/joedefen/pwr-tray/blob/main/images/pwr-tray-screenshot.png?raw=true)
+
+Choose from three *major power modes* (to control the effects of timeouts):
+- **Presentation ⮜** -  Keeps the screen unlocked/on and system up.
+- **LockOnly ⮜** - Keeps the system up, but the screens may lock.
+- **SleepAfterLock ⮜** - Allows screen locking and system to go down (the "normal" mode).
 
 Next, you may choose from various locking/blanking/DE operations:
 - **▷ Lock Screen** - lock screen.
@@ -121,7 +113,14 @@ Or choose a new *system state*:
 - **▼ Reboot System** - reboots the system immediately.
 - **▼ Poweroff System** - power down the system immediately.
 
+Next, you may see:
+- **🗲 Plugged In** (or HiBattery or LoBattery). If you click this when you don't have a battery, then it switches to the next state.  This allows you to test battery state handly faily well and/or repurpose the battery config sections.
+- **♺ Chg Screen Idle: 15m->30m** - change the time to start the screen saver; each time clicked, it changes to the next choice.
+- **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next choice.
+
+
 Or act on the applet itself:
+- **🖹  Edit Applet Confi** - 
 - **☓ Quit this Applet** -  exit applet.
 - **↺ Restart this Applet** - restart applet.
 

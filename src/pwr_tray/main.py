@@ -672,24 +672,6 @@ class InhIndicator:
                 item.connect('activate', self.dummy)
                 menu.append(item)
 
-        selector, percent = self.battery.selector, self.battery.percent
-        item = gtk.MenuItem(label=
-                ('🗲 Plugged In' if selector == 'Settings'
-                     else (('█' if selector == 'HiBattery' else '▃') + f' {selector}')
-                 + (f' {percent}%' if percent < 100 or selector != 'Settings' else '')) )
-        item.connect('activate', self._toggle_battery)
-        menu.append(item)
-
-        # if self.mode not in ('Presentation',) and len(self.opts.lock_min_list) > 1:
-        item = gtk.MenuItem(label= f'  ♺ Lock: {self._lock_rotate_str()}')
-        item.connect('activate', self._lock_rotate_next)
-        menu.append(item)
-
-        # if self.mode in ('SleepAfterLock',) and len(self.opts.sleep_min_list) > 1:
-        item = gtk.MenuItem(label=f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}')
-        item.connect('activate', self._sleep_rotate_next)
-        menu.append(item)
-
         if self.mode not in ('Presentation',):
             item = gtk.MenuItem(label=f'Presentation ⮜ {self.mode} Mode')
             item.connect('activate', self.enable_presentation_mode)
@@ -747,6 +729,29 @@ class InhIndicator:
         item.connect('activate', self.poweroff)
         menu.append(item)
 
+        selector, percent = self.battery.selector, self.battery.percent
+        item = gtk.MenuItem(label=
+                ('🗲 Plugged In' if selector == 'Settings'
+                     else (('█' if selector == 'HiBattery' else '▃') + f' {selector}')
+                 + (f' {percent}%' if percent < 100 or selector != 'Settings' else '')) )
+        item.connect('activate', self._toggle_battery)
+        menu.append(item)
+
+        # if self.mode not in ('Presentation',) and len(self.opts.lock_min_list) > 1:
+        item = gtk.MenuItem(label= f'  ♺ Lock: {self._lock_rotate_str()}')
+        item.connect('activate', self._lock_rotate_next)
+        menu.append(item)
+
+        # if self.mode in ('SleepAfterLock',) and len(self.opts.sleep_min_list) > 1:
+        item = gtk.MenuItem(label=f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}')
+        item.connect('activate', self._sleep_rotate_next)
+        menu.append(item)
+
+        if self.get_params().gui_editor:
+            item = gtk.MenuItem(label='🖹  Edit Applet Config')
+            item.connect('activate', self.edit_config)
+            menu.append(item)
+
         item = gtk.MenuItem(label='☓ Quit this Applet')
         item.connect('activate', self.quit_self)
         menu.append(item)
@@ -754,11 +759,6 @@ class InhIndicator:
         item = gtk.MenuItem(label='↺ Restart this Applet')
         item.connect('activate', self.restart_self)
         menu.append(item)
-
-        if self.get_params().gui_editor:
-            item = gtk.MenuItem(label='🖹  Edit Applet Config')
-            item.connect('activate', self.edit_config)
-            menu.append(item)
 
 #       item = gtk.MenuItem(label='Wake-SCSI')
 #       item.connect('activate', self.wake_scsi)
