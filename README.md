@@ -1,13 +1,6 @@
 # pwr-tray
 A GTK Tray Applet for Power/Energy Saving and System/DE Controls; currently supported/tested DEs are:
-* i3wm
-* swaywm
-* KDE on X11
-
-In the plans are:
-* Support for KDE on Wayland, Gnome on X11, and Gnome on Wayland.
-* And, imaginably, an AppImage that bundles all the system requirements since pip/pipx
-does not deal with those.
+* i3wm, swaywm, and KDE on X11
 
 ---
 
@@ -54,7 +47,7 @@ does not deal with those.
 
 ---
 
-# HowTo Configure pwr-tray
+### HowTo Configure pwr-tray
 - When the program is started w/o a `config.ini`, then it is created with defaults.
 - It has three sections:
     * **Settings**: The settings for when plugged in.  Missing/invalid settings are inherited from the defaults. Here are the defaults:
@@ -77,7 +70,7 @@ it is harder to know the system state. If you have issues with the monitors
 failing to sleep or the system cannot wake when the monitors are off, then
 avoid the `turn_off_monitor` feature.
 
-### Tray Menu 
+## Tray Menu 
 
 Notes:
 * `pwr-tray` changes directory to `~/.config/pwr-tray`.
@@ -94,9 +87,9 @@ Notes:
     * **Musical Notes**: Inhibited when playing media or by other inhibitors.
 - **NOTE**: when in LoBattery, SleepAfterLock is in effect.
   The icon will change per your selection and the battery state.
-
-![pwr-tray-screenshot](https://github.com/joedefen/pwr-tray/blob/main/images/pwr-tray-screenshot.png?raw=true)
-
+---
+* ![pwr-tray-screenshot](https://github.com/joedefen/pwr-tray/blob/main/images/pwr-tray-screenshot.png?raw=true)
+---
 Choose from three *major power modes* (to control the effects of timeouts):
 - **Presentation ⮜** -  Keeps the screen unlocked/on and system up.
 - **LockOnly ⮜** - Keeps the system up, but the screens may lock.

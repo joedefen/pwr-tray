@@ -3,3 +3,6 @@ __pycache__/
 dist/
 *.egg-info/
 env/
+pi-venv/
+build/
+pwr-tray-exe

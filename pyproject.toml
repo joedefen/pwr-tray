@@ -20,17 +20,15 @@
 #   - deactivate # to deactivate
 # 
 # rm -rf ./dist && python3 -m build && pip install -e . --break-system-packages
-# pip-tray
+# 
+# - after ./deploy, run with
+#   - pip-tray
+#   - python3 -m pwr_tray.main
+#   - (cd src/pwr_tray && ./main.py)
+#   - src/pwr_tray/main.py
+# - w/o ./deploy, run with
+#   - PYTHONPATH=src src/pwr_tray/main.py
 #
-#    -OR-
-# python3 -m pwr_tray.main
-#
-#    -OR-
-# cd pwr_tray && ./main.py
-#
-#    -OR-
-# pwr_tray/main.py
-
 # HOW TO PUBLISH...
 # PUBLIC Build and deploy (from project directory):
 #   ## BUMP the version (below in [project])
@@ -55,7 +53,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pwr_tray"
-version = "0.9"
+version = "0.9.1"
 description = "A GTK tray applet for power management for i3/sway/KDE"
 authors = [
     { name = "Joe Defen", email = "joedef@google.com" }

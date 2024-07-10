@@ -1,0 +1,17 @@
+#!/bin/bash
+# build the "onefile" executable using pyinstaller
+#   NOTE ::::::::::::::    NOT WORKING    ::::::::::::::
+#
+script_dir=$(dirname "$0")
+set -ex
+cd ${script_dir}
+
+(
+    rm -rf ./dist ./pi-venv
+    python3 -m venv pi-venv
+    . pi-venv/bin/activate
+    pip install psutil
+    pyinstaller pi.spec
+)
+cp dist/pwr-tray-exe .
+

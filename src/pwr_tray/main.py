@@ -28,6 +28,11 @@ TODO:
  - add dimming controls (only if on battery)
  - add alternative lock/sleep (only if on battery)
  - add shutdown if low battery
+ 
+qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.runScript "$(cat idle_time.js)"
+var idleTime = workspace.readProperty("org.kde.kwin.idleTime", "idleTime");
+print("Idle time: " + idleTime + " milliseconds");
+
 
 """
 # pylint: disable=invalid-name,wrong-import-position,missing-function-docstring
@@ -673,17 +678,17 @@ class InhIndicator:
                 menu.append(item)
 
         if self.mode not in ('Presentation',):
-            item = gtk.MenuItem(label=f'Presentation ⮜ {self.mode} Mode')
+            item = gtk.MenuItem(label=f'🅟 Presentation ⮜ {self.mode} Mode')
             item.connect('activate', self.enable_presentation_mode)
             menu.append(item)
 
         if self.mode not in ('LockOnly',):
-            item = gtk.MenuItem(label=f'LockOnly ⮜ {self.mode} Mode')
+            item = gtk.MenuItem(label=f'🅛 LockOnly ⮜ {self.mode} Mode')
             item.connect('activate', self.enable_nosleep_mode)
             menu.append(item)
 
         if self.mode not in ('SleepAfterLock',):
-            item = gtk.MenuItem(label=f'SleepAfterLock ⮜ {self.mode} Mode')
+            item = gtk.MenuItem(label=f'🅢 SleepAfterLock ⮜ {self.mode} Mode')
             item.connect('activate', self.enable_normal_mode)
             menu.append(item)
 
