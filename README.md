@@ -16,17 +16,6 @@ A GTK Tray Applet for Power/Energy Saving and System/DE Controls; currently supp
 * When running manually, see the "Per-Distro Specific Notes" below for its configuration.
 * Finally, see the "Using pwr-tray" for everyday use after install.
 
-#### Installing Needed System Python Modules
-* On Debian, use `sudo apt install ...` of:
-    * python3-gi python3-gi-cairo gir1.2-gtk-3.0
-    * gir1.2-appindicator3-0.1 libappindicator3-1
-* On Debian 12 and others?, if the above is not working, try:
-    * python3-gi python3-gi-cairo gir1.2-gtk-3.0
-    * gir1.2-notify-0.7 gir1.2-ayatanaappindicator3-0.1 ayatanalibappindicator3-1
-* On Arch, use `pacman -Syy ...` of:
-    * libappindicator-gtk3 python-gobject python-cairo
-* On other distros, use the hints above to resolve any missing "imports".
-
 ---
 
 ## HowTo Run pwr-tray
@@ -107,13 +96,13 @@ Or choose a new *system state*:
 - **▼ Poweroff System** - power down the system immediately.
 
 Next, you may see:
-- **🗲 Plugged In** (or HiBattery or LoBattery). If you click this when you don't have a battery, then it switches to the next state.  This allows you to test battery state handly faily well and/or repurpose the battery config sections.
+- **🗲 Plugged In** (or HiBattery or LoBattery). If you click this when you don't have a battery, then it switches to the next state **for testing only**;  thus, you can test Hi/Lo battery states behavior w/o a battery.
 - **♺ Chg Screen Idle: 15m->30m** - change the time to start the screen saver; each time clicked, it changes to the next choice.
 - **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next choice.
 
 
 Or act on the applet itself:
-- **🖹  Edit Applet Confi** - 
+- **🖹  Edit Applet Config** - edit the applet's .ini file.
 - **☓ Quit this Applet** -  exit applet.
 - **↺ Restart this Applet** - restart applet.
 

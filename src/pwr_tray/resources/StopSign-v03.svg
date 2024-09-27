@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   id="0"
+   sodipodi:docname="StopSign-v03.svg"
+   viewBox="0 0 255.99999 256.00001"
+   version="1.0"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25)"
+   width="256"
+   height="256"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <defs
+     id="defs1" />
+  <sodipodi:namedview
+     id="namedview12"
+     bordercolor="#666666"
+     inkscape:pageshadow="2"
+     guidetolerance="10"
+     pagecolor="#ffffff"
+     gridtolerance="10"
+     inkscape:window-maximized="0"
+     inkscape:window-width="2540"
+     inkscape:zoom="3.5543695"
+     objecttolerance="10"
+     showgrid="false"
+     borderopacity="1"
+     inkscape:current-layer="0"
+     inkscape:cx="162.89809"
+     inkscape:cy="143.76671"
+     inkscape:window-y="1126"
+     inkscape:window-x="4"
+     inkscape:window-height="1378"
+     inkscape:pageopacity="0"
+     inkscape:showpageshadow="0"
+     inkscape:pagecheckerboard="1"
+     inkscape:deskcolor="#d1d1d1" />
+  <path
+     id="5"
+     style="fill:#da251d;fill-rule:evenodd;stroke-width:0.482844"
+     inkscape:connector-curvature="0"
+     d="m 255.557,180.61335 -37.35572,37.35862 -37.39484,37.35862 H 75.145647 L 37.790888,217.97294 0.4351633,180.61528 V 74.939996 L 37.790888,37.544678 75.145647,0.18605612 H 180.81127 L 218.2061,37.544678 255.56183,74.94241 v 105.67046 z" />
+  <metadata
+     id="metadata11">
+    <rdf:RDF>
+      <cc:Work>
+        <dc:format>image/svg+xml</dc:format>
+        <dc:type
+           rdf:resource="http://purl.org/dc/dcmitype/StillImage" />
+        <cc:license
+           rdf:resource="http://creativecommons.org/licenses/publicdomain/" />
+        <dc:publisher>
+          <cc:Agent
+             rdf:about="http://openclipart.org/">
+            <dc:title>Openclipart</dc:title>
+          </cc:Agent>
+        </dc:publisher>
+      </cc:Work>
+      <cc:License
+         rdf:about="http://creativecommons.org/publicdomain/zero/1.0/">
+        <cc:permits
+           rdf:resource="http://creativecommons.org/ns#Reproduction" />
+        <cc:permits
+           rdf:resource="http://creativecommons.org/ns#Distribution" />
+        <cc:permits
+           rdf:resource="http://creativecommons.org/ns#DerivativeWorks" />
+      </cc:License>
+    </rdf:RDF>
+  </metadata>
+  <path
+     sodipodi:type="star"
+     style="fill:none;stroke:#ffffff;stroke-width:6.32612;stroke-dasharray:none;stroke-opacity:1"
+     id="path1"
+     inkscape:flatsided="true"
+     sodipodi:sides="8"
+     sodipodi:cx="-57.460281"
+     sodipodi:cy="18.190466"
+     sodipodi:r1="48.607609"
+     sodipodi:r2="44.907574"
+     sodipodi:arg1="1.0471976"
+     sodipodi:arg2="1.4398966"
+     inkscape:rounded="0"
+     inkscape:randomized="0"
+     d="m -33.156479,60.285891 -36.88438,4.855919 -29.514848,-22.647542 -4.855923,-36.8843793 22.647546,-29.5148477 36.88438,-4.855919 29.514848,22.6475416 4.855919,36.8843794 z"
+     transform="matrix(-0.30718858,2.3397546,-2.3397546,-0.30718858,153.24035,268.56631)" />
+</svg>

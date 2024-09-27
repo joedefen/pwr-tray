@@ -56,27 +56,10 @@ import atexit
 import traceback
 from types import SimpleNamespace
 import psutil
+from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction #, QMessageBox
+from PyQt5.QtGui import QIcon, QCursor
+from PyQt5.QtCore import QTimer
 
-import gi
-gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk as gtk
-gi.require_version('Notify', '0.7')
-
-try:
-    gi.require_version('AppIndicator3', '0.1')
-    from gi.repository import AppIndicator3 as appindicator
-    ERRORMSG = None
-except Exception:
-    try:
-        gi.require_version('AyatanaAppIndicator3', '0.1')
-        from gi.repository import AyatanaAppIndicator3 as appindicator
-        ERRORMSG = None
-    except (ValueError, ImportError):
-        ERRORMSG = 'Please install libappindicator3'
-
-    # from gi.repository import AppIndicator3 as appindicator
-from gi.repository import Notify as notify
-from gi.repository import GLib as glib
 import pwr_tray.Utils as Utils
 from pwr_tray.Utils import prt, PyKill
 from pwr_tray.SwayIdleMgr import SwayIdleManager
@@ -234,6 +217,8 @@ class InhIndicator:
 
     def __init__(self, ini_tool, quick=False):
         InhIndicator.singleton = self
+        self.app = QApplication([])
+        self.app.setQuitOnLastWindowClosed(False)
         self.ini_tool = ini_tool
         self.battery = SimpleNamespace(present=None,
                        plugged=True, percent=100, selector='Settings')
@@ -252,6 +237,7 @@ class InhIndicator:
         self.was_output = ''
         self.here_dir = os.path.dirname(os.path.abspath(__file__))
         self.svgs = []
+        self.icons = []
         for base in self.svg_info.bases:
             self.svgs.append(f'{base}-v{self.svg_info.version}.svg')
         for resource in self.svgs + ['lockpaper.png']:
@@ -259,9 +245,13 @@ class InhIndicator:
                 Utils.copy_to_folder(resource, ini_tool.folder)
             if not os.path.isfile(resource):
                 prt(f'WARN: cannot find {repr(resource)}')
+                continue
+            self.icons.append(QIcon(os.path.join(self.ini_tool.folder, resource)))
 
             # states are Awake, Locked, Blanked, Asleep
             # when is idle time
+        self.tray_icon = QSystemTrayIcon(self.icons[0], self.app)
+        self.tray_icon.setVisible(True)
         self.state = SimpleNamespace(name='Awake', when=0)
 
         self.running_idle_s = 0.000
@@ -301,17 +291,22 @@ class InhIndicator:
 
         self.idle_manager = SwayIdleManager(self) if self.graphical == 'sway' else None
 
-        self.indicator = appindicator.Indicator.new(APPINDICATOR_ID,
-                os.path.join(self.ini_tool.folder, self.svgs[0]),
-                appindicator.IndicatorCategory.SYSTEM_SERVICES)
+#       self.indicator = appindicator.Indicator.new(APPINDICATOR_ID,
+#               os.path.join(self.ini_tool.folder, self.svgs[0]),
+#               appindicator.IndicatorCategory.SYSTEM_SERVICES)
 
-        self.indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
+#       self.indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
+        self.menu_items = []
+        self.menu = None
         self.build_menu()
-        notify.init(APPINDICATOR_ID)
-        self.show_icon()
+        # self.tray_icon.show()
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
         if self.idle_manager:
             self.idle_manager_start()
-        self.on_timeout()
+        self.timer = QTimer()
+        self.timer.setInterval(100) # 100 is initial ... gets recomputed
+        self.timer.timeout.connect(self.on_timeout)
+        self.timer.start()
 
     def get_params(self, selector=None):
         selector = self.battery.selector if selector is None else selector
@@ -417,8 +412,8 @@ class InhIndicator:
         """ Display Icon if updated """
         emode = self.get_effective_mode()
         num = (3 if self.battery.selector == 'LoBattery'
-                else 4 if inhibited
                 else 1 if emode in ('Presentation', )
+                else 4 if inhibited
                 else 0 if emode in ('SleepAfterLock',)
                 else 2)
         lock_secs = self.get_lock_min_list()[0]*60
@@ -431,9 +426,7 @@ class InhIndicator:
         # prt(f'{num=} {self.running_idle_s=} {moon_when=}')
 
         if num != self.current_icon_num:
-            svg = self.svgs[num]
-            self.indicator.set_icon_full(
-                os.path.join(self.ini_tool.folder, svg), 'PI')
+            self.tray_icon.setIcon(self.icons[num])
             self.current_icon_num = num
             return True # changed
         return False # unchanged
@@ -616,7 +609,7 @@ class InhIndicator:
             prt(f'{poll_ms=}')
         else:
             poll_ms = int(self.poll_s * 1000)
-        glib.timeout_add(poll_ms, self.on_timeout)
+        self.timer.setInterval(poll_ms)
 
     def _toggle_battery(self, _=None):
         if self.battery.present is False:
@@ -629,7 +622,8 @@ class InhIndicator:
             # self.ini_tool.set_effective_params(selector)
             self.rebuild_menu = True
 
-    def _lock_rotate_next(self, advance=True):
+    def _lock_rotate_next(self, advance=None):
+        advance = True if advance is None else advance
         mins = self.get_lock_min_list()
         if len(mins) < 1 or (len(mins) == 2 and mins[0] == mins[1]):
             return mins[0]
@@ -647,7 +641,8 @@ class InhIndicator:
         rv = f'{mins[0]}m' + ('' if mins[0] == mins[1] else f'->{mins[1]}m')
         return rv
 
-    def _sleep_rotate_next(self, advance=True):
+    def _sleep_rotate_next(self, advance=None):
+        advance = True if advance is None else advance
         mins = self.get_sleep_min_list()
         if len(mins) < 1 or (len(mins) == 2 and mins[0] == mins[1]):
             return mins[0]
@@ -670,107 +665,79 @@ class InhIndicator:
         def has_cmd(label):
             return bool(self.variables.get(label, None))
 
-        menu = gtk.Menu()
+        def add_item(text, callback):
+            nonlocal self
+            item = QAction(text)
+            item.triggered.connect(callback)
+            self.menu.addAction(item)
+            self.menu_items.append(item)
+
+        self.menu = QMenu()
+        self.menu_items = []
+
         if rows:
             for row in rows:
-                item = gtk.MenuItem(label=row)
-                item.connect('activate', self.dummy)
-                menu.append(item)
+                add_item(row, self.dummy)
 
         if self.mode not in ('Presentation',):
-            item = gtk.MenuItem(label=f'🅟 Presentation ⮜ {self.mode} Mode')
-            item.connect('activate', self.enable_presentation_mode)
-            menu.append(item)
+            add_item(f'🅟 Presentation ⮜ {self.mode} Mode', self.enable_presentation_mode)
 
         if self.mode not in ('LockOnly',):
-            item = gtk.MenuItem(label=f'🅛 LockOnly ⮜ {self.mode} Mode')
-            item.connect('activate', self.enable_nosleep_mode)
-            menu.append(item)
+            add_item(f'🅛 LockOnly ⮜ {self.mode} Mode', self.enable_nosleep_mode)
 
         if self.mode not in ('SleepAfterLock',):
-            item = gtk.MenuItem(label=f'🅢 SleepAfterLock ⮜ {self.mode} Mode')
-            item.connect('activate', self.enable_normal_mode)
-            menu.append(item)
+            add_item(f'🅢 SleepAfterLock ⮜ {self.mode} Mode', self.enable_normal_mode)
 
+        add_item(f'{self.graphical}:  ▷ Lock Screen', self.lock_screen)
 
-        # enable = 'Disable' if self.presentation_mode else 'Enable'
-        # item = gtk.MenuItem(label=enable + ' Presentation Mode')
-        # item.connect('activate', self.toggle_presentation_mode)
-        # menu.append(item)
-
-        item = gtk.MenuItem(label=f'{self.graphical}:  ▷ Lock Screen')
-        item.connect('activate', self.lock_screen)
-        menu.append(item)
-
-        if (self.get_params().turn_off_monitors and
-                self.variables['monitors_off']):
-            item = gtk.MenuItem(label='   ▷ Blank Monitors')
-            item.connect('activate', self.blank_quick)
-            menu.append(item)
+        if (self.get_params().turn_off_monitors and self.variables['monitors_off']):
+            add_item('   ▷ Blank Monitors', self.blank_quick)
 
         if has_cmd('reload_wm'):
-            item = gtk.MenuItem(label='   ▷ Reload')
-            item.connect('activate', self.reload_wm)
-            menu.append(item)
+            add_item('   ▷ Reload', self.reload_wm)
 
         if has_cmd('restart_wm'):
-            item = gtk.MenuItem(label='   ▷ Restart')
-            item.connect('activate', self.restart_wm)
-            menu.append(item)
+            add_item('   ▷ Restart', self.restart_wm)
 
-        item = gtk.MenuItem(label='   ▷ Log Off')
-        item.connect('activate', self.exit_wm)
-        menu.append(item)
-
-        item = gtk.MenuItem(label='System:  ▼ Suspend')
-        item.connect('activate', self.suspend)
-        menu.append(item)
-
-        item = gtk.MenuItem(label='    ▼ Reboot')
-        item.connect('activate', self.reboot)
-        menu.append(item)
-
-        item = gtk.MenuItem(label='    ▼ PowerOff')
-        item.connect('activate', self.poweroff)
-        menu.append(item)
+        add_item('   ▷ Log Off', self.exit_wm)
+        add_item('System:  ▼ Suspend', self.suspend)
+        add_item('    ▼ Reboot', self.reboot)
+        add_item('    ▼ PowerOff', self.poweroff)
 
         selector, percent = self.battery.selector, self.battery.percent
-        item = gtk.MenuItem(label=
-                ('🗲 Plugged In' if selector == 'Settings'
+        add_item('🗲 Plugged In' if selector == 'Settings'
                      else (('█' if selector == 'HiBattery' else '▃') + f' {selector}')
-                 + (f' {percent}%' if percent < 100 or selector != 'Settings' else '')) )
-        item.connect('activate', self._toggle_battery)
-        menu.append(item)
+                + (f' {percent}%' if percent < 100 or selector != 'Settings' else '')
+                , self._toggle_battery)
 
         # if self.mode not in ('Presentation',) and len(self.opts.lock_min_list) > 1:
-        item = gtk.MenuItem(label= f'  ♺ Lock: {self._lock_rotate_str()}')
-        item.connect('activate', self._lock_rotate_next)
-        menu.append(item)
+        add_item(f'  ♺ Lock: {self._lock_rotate_str()}',
+                 lambda: self._lock_rotate_next())
 
         # if self.mode in ('SleepAfterLock',) and len(self.opts.sleep_min_list) > 1:
-        item = gtk.MenuItem(label=f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}')
-        item.connect('activate', self._sleep_rotate_next)
-        menu.append(item)
+        add_item(f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}',
+                 lambda: self._sleep_rotate_next())
 
         if self.get_params().gui_editor:
-            item = gtk.MenuItem(label='🖹  Edit Applet Config')
-            item.connect('activate', self.edit_config)
-            menu.append(item)
+            add_item('🖹  Edit Applet Config', self.edit_config)
 
-        item = gtk.MenuItem(label='☓ Quit this Applet')
-        item.connect('activate', self.quit_self)
-        menu.append(item)
+        add_item('☓ Quit this Applet', self.quit_self)
 
-        item = gtk.MenuItem(label='↺ Restart this Applet')
-        item.connect('activate', self.restart_self)
-        menu.append(item)
+        add_item('↺ Restart this Applet', self.restart_self)
+        
+                # To quit the app 
+#       menu = QMenu()
+#       quitter = QAction("Quit")
+#       quitter.triggered.connect(self.app.quit)
+#       menu.addAction(quitter)
 
-#       item = gtk.MenuItem(label='Wake-SCSI')
-#       item.connect('activate', self.wake_scsi)
-#       menu.append(item)
+        self.tray_icon.setContextMenu(self.menu)
+    
+    def on_tray_icon_activated(self, reason):
+        if (reason == QSystemTrayIcon.Trigger  # Left click
+                or reason == QSystemTrayIcon.Context):  # Right click
+            self.tray_icon.contextMenu().exec_(QCursor.pos())  # Show the context menu
 
-        menu.show_all()
-        self.indicator.set_menu(menu)
 
     def idle_manager_start(self):
         """ For any mode, get the idle manager started"""
@@ -814,14 +781,18 @@ class InhIndicator:
     def quit_self(_):
         """TBD"""
         prt('+', 'quitting applet...')
-        notify.uninit()
-        gtk.main_quit()
+        this = InhIndicator.singleton
+        if this:
+            this.tray_icon.hide()
+        sys.exit()
 
     @staticmethod
     def restart_self(_):
         """TBD"""
         prt('+', 'restarting applet...')
-        notify.uninit()
+        this = InhIndicator.singleton
+        if this:
+            this.tray_icon.hide()
         InhIndicator.save_picks()
         os.execv(sys.executable, [sys.executable] + sys.argv[:])
 
@@ -867,7 +838,7 @@ class InhIndicator:
         InhIndicator.run_command('undim')
 
     @staticmethod
-    def lock_screen(_, before=''):
+    def lock_screen(_):
         this = InhIndicator.singleton
         # NOTE: loginctl works for most systems, but at least on KDE Neon, the Desktop Session
         # is not managed by systemd-login.service.
@@ -942,13 +913,6 @@ class InhIndicator:
         this.save_picks()
         this.idle_manager_start()
 
-    @staticmethod
-    def wake_scsi(_):
-        this = InhIndicator.singleton
-        cmd = os.path.join(this.here_dir, "wake-scsi")
-        prt('+', cmd)
-        os.system(f'exec {cmd}')
-
     # Function to check for ACPI events
     @staticmethod
     def acpi_event_listener():
@@ -1016,8 +980,8 @@ def main():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override
 
 
-    _ = InhIndicator(ini_tool=ini_tool, quick=opts.quick)
-    gtk.main()
+    tray = InhIndicator(ini_tool=ini_tool, quick=opts.quick)
+    tray.app.exec_()
 
 if __name__ == "__main__":
     try:
