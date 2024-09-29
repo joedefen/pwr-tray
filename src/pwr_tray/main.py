@@ -28,7 +28,7 @@ TODO:
  - add dimming controls (only if on battery)
  - add alternative lock/sleep (only if on battery)
  - add shutdown if low battery
- 
+
 qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.runScript "$(cat idle_time.js)"
 var idleTime = workspace.readProperty("org.kde.kwin.idleTime", "idleTime");
 print("Idle time: " + idleTime + " milliseconds");
@@ -53,6 +53,7 @@ import subprocess
 import json
 import shutil
 import atexit
+import time
 import traceback
 from types import SimpleNamespace
 import psutil
@@ -80,9 +81,10 @@ class InhIndicator:
                           'FullSun',      # Presentation Mode
                           'Unlocked',     # LockOnly Mode
                           'GoingDown',    # LowBattery Mode
-                          'PlayingNow',   # Inhibited
+                          'PlayingNow',   # inhibited by a/v player
                           'RisingMoon',   # Normal and Locking Soon
                           'UnlockedMoon', # LockOnly and Locking Soon
+                          'StopSign',     # systemd inhibited
                           ] )
     singleton = None
     @staticmethod
@@ -92,38 +94,39 @@ class InhIndicator:
         xdg_current_desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
         sway_socket = os.environ.get('SWAYSOCK')
         wayland_display = os.environ.get('WAYLAND_DISPLAY')
+        is_wayland = bool(wayland_display)
         display = os.environ.get('DISPLAY')
 
         if 'i3' in desktop_session and display: # Check for i3
             prt(f'ENV: i3 {desktop_session=} {display=}')
-            return 'i3'
+            return 'i3', is_wayland
         if ('sway' in desktop_session or 'sway' in xdg_session_desktop
                 or 'sway' in xdg_current_desktop) and sway_socket: # Check for Sway
             prt(f'ENV: sway {desktop_session=} {sway_socket=}')
-            return 'sway'
+            return 'sway', is_wayland
         if 'plasma' in desktop_session or 'kde' in xdg_current_desktop:
-            if wayland_display:
+            if is_wayland:
                 env = 'kde-wayland'
                 prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
                 assert False, f'unsupported env: {env}'
-                return 'kde-wayland'
+                return 'kde-wayland', is_wayland
             if display:
                 env = 'kde-x11'
                 prt(f'ENV: {env} {desktop_session=} {display=}')
-                return env
+                return env, is_wayland
         if 'gnome' in desktop_session:
-            if wayland_display:
+            if is_wayland:
                 env='gnome-wayland'
                 prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
                 assert False, f'unsupported env: {env}'
-                return env
+                return env, is_wayland
             if display:
                 env='gnome-x11'
-                prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
+                prt(f'ENV: {env} {desktop_session=} {display=}')
                 assert False, f'unsupported env: {env}'
-                return 'gnome-x11'
+                return 'gnome-x11', is_wayland
         # Default case: no known environment detected
-        assert False, 'cannot determine if i3/sway/kde-(x11|wayland)'
+        assert False, 'cannot determine if i3/sway/(kde|gnome)-(x11|wayland)'
 
     default_variables = {
         'suspend': 'systemctl suspend',
@@ -139,10 +142,10 @@ class InhIndicator:
         'reload_wm': '',
         'restart_wm': '',
 #       'must_haves': 'systemctl brightnessctl'.split(),
-        'must_haves': 'systemctl playerctl'.split(),
+        'must_haves': 'systemctl'.split(),
 
     }
-    overides = {
+    overrides = {
         'x11': {
             'reset_idle': 'xset s reset',
             'get_idle_ms': 'xprintidle',
@@ -219,6 +222,11 @@ class InhIndicator:
         InhIndicator.singleton = self
         self.app = QApplication([])
         self.app.setQuitOnLastWindowClosed(False)
+        while not QSystemTrayIcon.isSystemTrayAvailable():
+            prt("System tray is not available. Retry in 1 second...")
+            time.sleep(1.0)
+        prt("System tray is available. Continuing...")
+
         self.ini_tool = ini_tool
         self.battery = SimpleNamespace(present=None,
                        plugged=True, percent=100, selector='Settings')
@@ -251,6 +259,7 @@ class InhIndicator:
             # states are Awake, Locked, Blanked, Asleep
             # when is idle time
         self.tray_icon = QSystemTrayIcon(self.icons[0], self.app)
+        self.tray_icon.setToolTip("pwr-tray")
         self.tray_icon.setVisible(True)
         self.state = SimpleNamespace(name='Awake', when=0)
 
@@ -262,6 +271,7 @@ class InhIndicator:
         self.rebuild_menu = False
         self.picks_file = ini_tool.picks_path
         self.current_icon_num = -1  # triggers immediate icon update
+        self.enable_playerctl = True
 
         self.restore_picks()
         if quick:
@@ -272,14 +282,14 @@ class InhIndicator:
 
         # self.down_state = self.opts.down_state
 
-        self.graphical = self.get_environment()
+        self.graphical, self.is_wayland = self.get_environment()
         self.variables = self.default_variables
         must_haves = self.default_variables['must_haves']
         if self.graphical in ('i3', 'kde-x11'):
-            self.variables.update(self.overides['x11'])
+            self.variables.update(self.overrides['x11'])
             must_haves += self.default_variables['must_haves']
 
-        self.variables.update(self.overides[self.graphical])
+        self.variables.update(self.overrides[self.graphical])
         must_haves += self.variables['must_haves']
 
         dont_haves = []
@@ -287,6 +297,7 @@ class InhIndicator:
             if shutil.which(must_have) is None:
                 dont_haves.append(must_have)
         assert not dont_haves, f'commands NOT on $PATH: {dont_haves}'
+        self.has_playerctl = bool(shutil.which('playerctl'))
 
 
         self.idle_manager = SwayIdleManager(self) if self.graphical == 'sway' else None
@@ -346,6 +357,7 @@ class InhIndicator:
         this = InhIndicator.singleton
         if this and not this.quick:
             picks = { 'mode': this.mode,
+                      'playerctl': this.enable_playerctl,
                       'lock_mins': {
                           'Settings': this.get_lock_min_list('Settings')[0],
                           'HiBattery': this.get_lock_min_list('HiBattery')[0],
@@ -371,7 +383,8 @@ class InhIndicator:
         try:
             with open(self.picks_file, 'r', encoding='utf-8') as handle:
                 picks = json.load(handle)
-            self.mode = picks['mode']
+            self.mode = picks.get('mode', 'SleepAfterLock')
+            self.enable_playerctl = picks.get('enable_playerctl', True)
             for attr in 'lock_mins sleep_mins'.split():
                 for selector in 'LoBattery HiBattery Settings'.split():
                     self.get_lock_rotated_list(selector, first=picks[attr][selector])
@@ -408,12 +421,13 @@ class InhIndicator:
         """ TBD """
         return 'SleepAfterLock' if self.battery.selector == 'LoBattery' else self.mode
 
-    def show_icon(self, inhibited=False):
+    def show_icon(self, inhibited=''):
         """ Display Icon if updated """
         emode = self.get_effective_mode()
         num = (3 if self.battery.selector == 'LoBattery'
                 else 1 if emode in ('Presentation', )
-                else 4 if inhibited
+                else 7 if inhibited == 'systemd'
+                else 4 if inhibited == 'player'
                 else 0 if emode in ('SleepAfterLock',)
                 else 2)
         lock_secs = self.get_lock_min_list()[0]*60
@@ -442,7 +456,7 @@ class InhIndicator:
         if self.DB() and 'No inhibitors' not in output:
             prt('DB', 'systemd-inhibit:', output.strip())
         rows = []
-        inhibited = False
+        inhibited = ''
         for count, line in enumerate(lines):
             if count == 0:
                 rows.append(line.strip())
@@ -452,21 +466,22 @@ class InhIndicator:
             if count == 1:
                 if ('xfce4-power-man' not in line
                         and 'org_kde_powerde' not in line):
-                    inhibited = True
+                    inhibited = 'systemd'
                     rows.append(line)
             else:
-                inhibited = True
+                inhibited = 'systemd'
                 rows.append(line)
         if len(rows) == 1:
             rows = []
-        child = subprocess.run('playerctl status'.split(), check=False,
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        play_state = child.stdout.decode('utf-8').strip().lower()
-        if play_state == 'playing':
-            inhibited = True
-        if self.was_play_state != play_state:
-            prt(f'{play_state=}')
-            self.was_play_state = play_state
+        if self.has_playerctl and self.enable_playerctl:
+            child = subprocess.run('playerctl status'.split(), check=False,
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            play_state = child.stdout.decode('utf-8').strip().lower()
+            if play_state == 'playing':
+                inhibited = 'player'
+            if self.was_play_state != play_state:
+                prt(f'{play_state=}')
+                self.was_play_state = play_state
 
         # inhibited = bool(inhibited or self.presentation_mode)
         emode = self.effective_mode()
@@ -641,6 +656,12 @@ class InhIndicator:
         rv = f'{mins[0]}m' + ('' if mins[0] == mins[1] else f'->{mins[1]}m')
         return rv
 
+    def toggle_playerctl(self):
+        if self.has_playerctl:
+            self.enable_playerctl = not bool(self.enable_playerctl)
+            self.save_picks()
+            self.rebuild_menu = True
+
     def _sleep_rotate_next(self, advance=None):
         advance = True if advance is None else advance
         mins = self.get_sleep_min_list()
@@ -718,24 +739,37 @@ class InhIndicator:
         add_item(f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}',
                  lambda: self._sleep_rotate_next())
 
+        label = '🎝 PlayerCtl: '
+        label += ('not installed' if not self.has_playerctl
+                   else 'Enabled' if self.enable_playerctl
+                   else 'Disabled')
+        add_item(label, self.toggle_playerctl)
         if self.get_params().gui_editor:
             add_item('🖹  Edit Applet Config', self.edit_config)
 
         add_item('☓ Quit this Applet', self.quit_self)
 
         add_item('↺ Restart this Applet', self.restart_self)
-        
-                # To quit the app 
+
+                # To quit the app
 #       menu = QMenu()
 #       quitter = QAction("Quit")
 #       quitter.triggered.connect(self.app.quit)
 #       menu.addAction(quitter)
 
         self.tray_icon.setContextMenu(self.menu)
-    
+        
+        if not self.tray_icon.isVisible():
+            prt('self.tray_icon.isVisible() is False ... restarting app')
+            time.sleep(0.5)
+            self.restart_self(None)
+        # self.tray_icon.show()
+
     def on_tray_icon_activated(self, reason):
-        if (reason == QSystemTrayIcon.Trigger  # Left click
-                or reason == QSystemTrayIcon.Context):  # Right click
+        if reason == QSystemTrayIcon.Context:  # Right click
+            self.tray_icon.contextMenu().exec_(QCursor.pos())  # Show the context menu
+        elif (reason == QSystemTrayIcon.Trigger  # Left click
+                 and not self.is_wayland):  # wayland behaves badly
             self.tray_icon.contextMenu().exec_(QCursor.pos())  # Show the context menu
 
 
@@ -856,7 +890,8 @@ class InhIndicator:
         cmd = self.variables['monitors_off']
         if cmd and self.get_params().turn_off_monitors:
             if lock_screen:
-                self.lock_screen(None, before='sleep 1.5; ')
+                # self.lock_screen(None, before='sleep 1.5; ')
+                self.lock_screen(None)
             prt('+', cmd)
             result = subprocess.run(cmd, shell=True, check=False)
             if result.returncode != 0:
