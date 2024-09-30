@@ -1,13 +1,13 @@
 # pwr-tray
 
-`pwr-tray` is a GTK5 Tray Applet for Power/Energy Saving and System/DE Controls; currently supported/tested DEs are: i3wm, swaywm, and KDE on X11. Its menu will look similar to:
+`pwr-tray` is a GTK5 Tray Applet for Power/Energy Saving and System/DE Controls; currently supported/tested DEs are: i3wm, swaywm, and KDE on X11. `systemd` is required. The `pwr-tray` menu will look similar to:
 
 <p align="center">
   <img src="https://github.com/joedefen/pwr-tray/blob/main/images/pwr-tray-screenshot.png?raw=true" alt="screenshot">
 </p>
 
 
-With a right-click and a left-click, you can do operations such as change to Presentation Mode, lock your screen, blank your monitors, change screen lock and sleep timeouts, lock and blank your monitors, and more. The `pwr-tray` icon changes based on state:
+With just a right-click and a left-click, you can do most operations such as change to Presentation Mode, change screen lock and sleep timeouts, log off, lock and blank your monitors, and more. The `pwr-tray` icon changes based on state:
 
 * <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/FullSun-v03.svg?raw=true" alt="FullSun" width="24" height="24"> Presentation Mode (i.e., the full sun)
 * <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/SettingSun-v03.svg?raw=true" alt="SettingSun" width="24" height="24"> SleepAfterLock Mode (i.e., the setting sun)
@@ -20,35 +20,60 @@ With a right-click and a left-click, you can do operations such as change to Pre
 
 ---
 
-### HowTo Install
+### HowTo Install and Start pwr-tray
 * Basically: `pipx install pwr-tray` (exactly how depends on your installation and its state)
 * Manually run as `pwr-tray -o`:
     * Creates config (in `~/.config/pwr-tray/config.ini`).
-    * Shows missing system-level commands (DE dependent).
+    * Shows system-level commands (DE dependent) that must be installed if missing. Note:
       * `systemctl` is always required.
       * Optionally, install `playerctl` if you wish playing media to inhibit screen saving and sleeping.
 * Then, follow the "Per-DE Specific Notes" below to ensure proper operation. To just kick the tires, you can defer this until ready to go forward.
-* Finally, read the other sections for customization and everyday use.
+* Read the other sections for customization and everyday use.
+* From the CLI, you can start/restart pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts.
+* `pwr-tray -e` edits the config file (`~/.config/pwr-ini/config.ini`)
+* `pwr-tray -f` tails the log file (`~/.config/pwr-ini/debug.log`)
 
 ---
 
-## HowTo Run pwr-tray
+### HowTo Use pwr-tray
+Open the `pwr-tray' menu with a right-click. Then left-click a line to have an effect ...
 
-### Manual Launch of the Tray Applet
-- For foreground in terminal, run `pwr-tray -o` ("-o" logs to stdout).
-- In the background, run `setsid pwr-tray &` (logs to `~/.config/pwr-tray/debug.log`).
-### Other Forms of pwr-tray (for Maintenance/Debugging)
-- `pwr-tray -e` edits the config file (`~/.config/pwr-ini/config.ini`)
-- `pwr-tray -f` tails the log file (`~/.config/pwr-ini/debug.log`)
+Choose from three *major power modes* (to control the effects of timeouts):
+- **🅟 Presentation ⮜** -  Keeps the screen unlocked/on and system up.
+- **🅛 LockOnly ⮜** - Keeps the system up, but the screen may lock.
+- **🅢 SleepAfterLock ⮜** - Allows screen locking and system to go down (the "normal" mode).
 
-### Initial Testing of pwr-tray
+Ory choose from various locking/blanking/DE operations:
+- **▷ Lock Screen** - locks the screen immediately.
+- **▷ Blank Monitors** - blanks the screen after locking the screen.
+- **▷ Reload i3** - various DE-dependent actions.
+- **▷ Log Off** - terminate your user session.
+
+Or choose a new *system state*:
+- **▼ Suspend System** - suspends the system immediately.
+- **▼ Reboot System** - reboots the system immediately.
+- **▼ Poweroff System** - power down the system immediately.
+
+Next, you may see:
+- **🗲 Plugged In** (or HiBattery or LoBattery). Shows the state of the battery.
+- **♺ Chg Screen Idle: 15m->30m** - change the time to start the screen saver; each time clicked, it changes to the next choice.
+- **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next choice.
+- **🎝 PlayerCtl** - shows the state (not installed, enabled, disabled); if installed, a click toggles whether playing media inhibits screen locking and sleeping.
+
+Or act on the applet itself:
+- **🖹  Edit Applet Config** - edit the applet's .ini file.
+- **☓ Quit this Applet** -  exit applet.
+- **↺ Restart this Applet** - restart applet.
+
+
+---
+
+### Testing pwr-tray
 - Running `pwr-tray --quick` reduces the lock and sleep timeout to 1 minute (although you can 'click' the current value to try others), and `--quick` runs double-time (so 1 minute timers expire in 30s per the wall clock).
 - You can run in various modes, but the default, `SleepAfterLock`, exercises the most code paths.
 - Then, ensure closing the lid, hitting the power button, etc., have the desired effects.
-
-## More Testing Hints
-* To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`
-* To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states.
+- To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`
+- To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states.
 
 ---
 
@@ -61,15 +86,15 @@ With a right-click and a left-click, you can do operations such as change to Pre
 
 Here are the current 'Settings' defaults with explanation.
 ```
-[Settings]
-i3lock_args = -t -i ./lockpaper.png # arguments when running i3lock
-debug_mode = False                  # more frequent and elaborate logging
-power_down = False                  # power down (rather than suspend)
-turn_off_monitors = False           # turn off monitors after locking screen
-lock_min_list = [15, 30]            # lock minutes choices
-sleep_min_list = [5, 30]            # sleep minutes choices (after lock)
-lo_battery_pct = 10                 # define "low battery" state
-gui_editor = geany                  # gui editor for .ini file
+    [Settings]
+    i3lock_args = -t -i ./lockpaper.png # arguments when running i3lock
+    debug_mode = False                  # more frequent and elaborate logging
+    power_down = False                  # power down (rather than suspend)
+    turn_off_monitors = False           # turn off monitors after locking screen
+    lock_min_list = [15, 30]            # lock minutes choices
+    sleep_min_list = [5, 30]            # sleep minutes choices (after lock)
+    lo_battery_pct = 10                 # define "low battery" state
+    gui_editor = geany                  # gui editor for .ini file
 ```
 **NOTES**:
 * If you have issues with monitors failing to sleep or the system cannot wake when the monitors are off, then disable the `turn_off_monitors` feature.
@@ -79,39 +104,6 @@ gui_editor = geany                  # gui editor for .ini file
 * Your picks of mode, timeouts, etc. are saved to disk when changed, and restored on the next start.
 * Items may be absent depending on the mode and battery state.
 - **NOTE**: when in LoBattery, SleepAfterLock becomes the effective mode. The icon will change per your selection and the battery state.
-
----
-
-### HowTo Configure pwr-tray
-Open the menu with a right- or left-click. Then click a line to have an effect:
-
-Choose from three *major power modes* (to control the effects of timeouts):
-- **🅟 Presentation ⮜** -  Keeps the screen unlocked/on and system up.
-- **🅛 LockOnly ⮜** - Keeps the system up, but the screen may lock.
-- **🅢 SleepAfterLock ⮜** - Allows screen locking and system to go down (the "normal" mode).
-
-Next, you may choose from various locking/blanking/DE operations:
-- **▷ Lock Screen** - locks the screen immediately.
-- **▷ Blank Monitors** - blanks the screen after locking the screen.
-- **▷ Reload i3** - various DE-dependent actions.
-- **▷ Log Off** - terminate your user session.
-
-Or choose a new *system state*:
-- **▼ Suspend System** - suspends the system immediately.
-- **▼ Reboot System** - reboots the system immediately.
-- **▼ Poweroff System** - power down the system immediately.
-
-Next, you may see:
-- **🗲 Plugged In** (or HiBattery or LoBattery). Shows major state of the battery.
-- **♺ Chg Screen Idle: 15m->30m** - change the time to start the screen saver; each time clicked, it changes to the next choice.
-- **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next choice.
-
-
-Or act on the applet itself:
-- **🎝 PlayerCtl** - shows the state (not installed, enabled, disabled); if installed, a click toggles whether playing media inhibits screen locking and sleeping.
-- **🖹  Edit Applet Config** - edit the applet's .ini file.
-- **☓ Quit this Applet** -  exit applet.
-- **↺ Restart this Applet** - restart applet.
 
 ---
 

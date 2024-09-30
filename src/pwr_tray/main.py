@@ -314,7 +314,7 @@ class PwrTray:
         this = PwrTray.singleton
         if this and not this.quick:
             picks = { 'mode': this.mode,
-                      'playerctl': this.enable_playerctl,
+                      'enable_playerctl': this.enable_playerctl,
                       'lock_mins': {
                           'Settings': this.get_lock_min_list('Settings')[0],
                           'HiBattery': this.get_lock_min_list('HiBattery')[0],
