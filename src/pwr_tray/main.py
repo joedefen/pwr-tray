@@ -770,7 +770,8 @@ class PwrTray:
         if this:
             this.tray_icon.hide()
         PwrTray.save_picks()
-        os.execv(sys.executable, [sys.executable] + sys.argv[:])
+        subprocess.Popen([sys.executable] + sys.argv)
+        os._exit(0)
 
     @staticmethod
     def edit_config(_):
@@ -791,7 +792,8 @@ class PwrTray:
         this = PwrTray.singleton
         this.set_state('Asleep')
         this.reset_xidle_ms()
-        PwrTray.run_command('locker')
+        if this.graphical in ('i3', ):
+            PwrTray.run_command('locker')
         PwrTray.run_command('suspend')
 
     @staticmethod
