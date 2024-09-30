@@ -2,38 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 This code is designed to control power matters from the tray.
-
-This code is an derived (mostly) from a tutorial on Ubuntu Unity/Gnome AppIndicators:
-- http://candidtim.github.io/appindicator/2014/09/13/ubuntu-appindicator-step-by-step.html
-
-Prerequisites - Debian 12 / i3wm:
-#   sudo apt install gir1.2-appindicator3-0.1
-#   sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 libappindicator3-1
-    sudo apt install gir1.2-ayatanaappindicator3-0.1 gir1.2-notify-0.7
-    sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 ayatanalibappindicator3-1
-
-Prerequisites - Arch / i3wm: # ??
-    sudo pacman -S libappindicator-gtk3
-    sudo pacman -S python-gobject
-    sudo pacman -S python-cairo
-
-Also depends on:
-  - For KDE, cripple "powerdevil" so it does not try to do much.
-  - systemd (i.e., systemctl, loginctl, xset, systemd-inhibit)
-  - qdbus: in particular, this must work:
-    - qdbus org.freedesktop.ScreenSaver /ScreenSaver GetSessionIdleTime
-
-TODO:
- - and battery detection
- - add dimming controls (only if on battery)
- - add alternative lock/sleep (only if on battery)
- - add shutdown if low battery
-
-qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.runScript "$(cat idle_time.js)"
-var idleTime = workspace.readProperty("org.kde.kwin.idleTime", "idleTime");
-print("Idle time: " + idleTime + " milliseconds");
-
-
 """
 # pylint: disable=invalid-name,wrong-import-position,missing-function-docstring
 # pylint: disable=broad-except,too-many-instance-attributes
@@ -66,12 +34,7 @@ from pwr_tray.Utils import prt, PyKill
 from pwr_tray.SwayIdleMgr import SwayIdleManager
 from pwr_tray.IniTool import IniTool
 
-
-# from gi.repository import GObject as gobject
-
-APPINDICATOR_ID = 'PowerInhibitIndicator'
-
-class InhIndicator:
+class PwrTray:
     """ pwr-tray main class.
     NOTES:
      - when icons are moved/edited, rename them or reboot to avoid cache confusion
@@ -219,7 +182,7 @@ class InhIndicator:
     }
 
     def __init__(self, ini_tool, quick=False):
-        InhIndicator.singleton = self
+        PwrTray.singleton = self
         self.app = QApplication([])
         self.app.setQuitOnLastWindowClosed(False)
         while not QSystemTrayIcon.isSystemTrayAvailable():
@@ -302,15 +265,9 @@ class InhIndicator:
 
         self.idle_manager = SwayIdleManager(self) if self.graphical == 'sway' else None
 
-#       self.indicator = appindicator.Indicator.new(APPINDICATOR_ID,
-#               os.path.join(self.ini_tool.folder, self.svgs[0]),
-#               appindicator.IndicatorCategory.SYSTEM_SERVICES)
-
-#       self.indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
         self.menu_items = []
         self.menu = None
         self.build_menu()
-        # self.tray_icon.show()
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         if self.idle_manager:
             self.idle_manager_start()
@@ -354,7 +311,7 @@ class InhIndicator:
 
     @staticmethod
     def save_picks():
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         if this and not this.quick:
             picks = { 'mode': this.mode,
                       'playerctl': this.enable_playerctl,
@@ -404,8 +361,6 @@ class InhIndicator:
 
     def update_running_idle_s(self):
         """ Update the running idle seconds (called after each regular timeout) """
-        # pipe = subprocess.Popen(['qdbus', 'org.freedesktop.ScreenSaver', '/ScreenSaver',
-            # 'GetSessionIdleTime'])
         cmd = self.variables['get_idle_ms']
         if cmd:
             xidle_ms = int(subprocess.check_output(cmd.split()).strip())
@@ -483,18 +438,11 @@ class InhIndicator:
                 prt(f'{play_state=}')
                 self.was_play_state = play_state
 
-        # inhibited = bool(inhibited or self.presentation_mode)
         emode = self.effective_mode()
-        # inhibited = bool(inhibited or emode in ('Presentation',))
 
         if self.show_icon(inhibited=inhibited):
             self.poll_100ms = True
             self.idle_manager_start()
-
-#       if (inhibited and emode not in ('Presentation', )
-#               and self.battery.selector != 'LoBattery'
-#               and self.state.name in ('Awake', )):
-#           self.set_state('Inhibited')
 
         self.was_effective_mode = emode
         self.was_selector = self.battery.selector
@@ -550,6 +498,9 @@ class InhIndicator:
         self.loop += 1
         if self.DB():
             prt('DB', f'on_timeout() {self.loop=}/{self.loop_sample} ...')
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            prt('SystemTray is gone ... exiting')
+            self.exit_wm(None)
 
         self.reconfig()
         if self.idle_manager:
@@ -683,6 +634,7 @@ class InhIndicator:
 
     def build_menu(self, rows=None):
         """TBD"""
+        # pylint: disable=unnecessary-lambda
         def has_cmd(label):
             return bool(self.variables.get(label, None))
 
@@ -751,19 +703,12 @@ class InhIndicator:
 
         add_item('↺ Restart this Applet', self.restart_self)
 
-                # To quit the app
-#       menu = QMenu()
-#       quitter = QAction("Quit")
-#       quitter.triggered.connect(self.app.quit)
-#       menu.addAction(quitter)
-
         self.tray_icon.setContextMenu(self.menu)
-        
+ 
         if not self.tray_icon.isVisible():
             prt('self.tray_icon.isVisible() is False ... restarting app')
             time.sleep(0.5)
             self.restart_self(None)
-        # self.tray_icon.show()
 
     def on_tray_icon_activated(self, reason):
         if reason == QSystemTrayIcon.Context:  # Right click
@@ -784,7 +729,7 @@ class InhIndicator:
 
     @staticmethod
     def run_command(key):
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         command = this.variables.get(key, None)
         if command and key == 'locker' and this.graphical in ('i3', 'sway'):
             if this.graphical == 'i3':
@@ -794,9 +739,6 @@ class InhIndicator:
             if not append:
                 append = '-t -i ./lockpaper.png'
             command += ' ' + append
-        # if '{XDG_SESSION_ID}' in command:
-        #    command = command.replace('{XDG_SESSION_ID}',
-        #             os.environ.get('XDG_SESSION_ID', '-1'))
 
 #       elif key == 'dimmer':
 #           percent = int(round(int(thisget_params()params.dim_pct_brightness), 0))
@@ -815,7 +757,7 @@ class InhIndicator:
     def quit_self(_):
         """TBD"""
         prt('+', 'quitting applet...')
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         if this:
             this.tray_icon.hide()
         sys.exit()
@@ -824,15 +766,15 @@ class InhIndicator:
     def restart_self(_):
         """TBD"""
         prt('+', 'restarting applet...')
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         if this:
             this.tray_icon.hide()
-        InhIndicator.save_picks()
+        PwrTray.save_picks()
         os.execv(sys.executable, [sys.executable] + sys.argv[:])
 
     @staticmethod
     def edit_config(_):
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         if this.get_params().gui_editor:
             try:
                 ini_path = this.ini_tool.ini_path
@@ -846,40 +788,36 @@ class InhIndicator:
     @staticmethod
     def suspend(_):
         """TBD"""
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         this.set_state('Asleep')
         this.reset_xidle_ms()
-        InhIndicator.run_command('suspend')
+        PwrTray.run_command('locker')
+        PwrTray.run_command('suspend')
 
     @staticmethod
     def poweroff(_):
         """TBD"""
-        InhIndicator.run_command('poweroff')
+        PwrTray.run_command('poweroff')
 
     @staticmethod
     def reboot(_):
         """TBD"""
-        InhIndicator.run_command('reboot')
+        PwrTray.run_command('reboot')
 
     @staticmethod
     def dimmer(_):
         """TBD"""
-        InhIndicator.run_command('dimmer')
+        PwrTray.run_command('dimmer')
 
     @staticmethod
     def undim(_):
         """TBD"""
-        InhIndicator.run_command('undim')
+        PwrTray.run_command('undim')
 
     @staticmethod
     def lock_screen(_):
-        this = InhIndicator.singleton
-        # NOTE: loginctl works for most systems, but at least on KDE Neon, the Desktop Session
-        # is not managed by systemd-login.service.
-        # cmd = 'loginctl lock-session'
-        # cmd = f'{before}qdbus org.kde.ksmserver /ScreenSaver SetActive true'
-        # cmd = 'exec i3lock -c 200020 --ignore-empty-password --show-failed-attempt'
-        InhIndicator.run_command('locker')
+        this = PwrTray.singleton
+        PwrTray.run_command('locker')
         this.update_running_idle_s()
 #       if 0 <= int(thisget_params()params.dim_pct_brightness) < 100:
 #           this.undim(None)
@@ -903,25 +841,25 @@ class InhIndicator:
 
     @staticmethod
     def blank_quick(_):
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         this.blank_primitive(lock_screen=True)
 
     @staticmethod
     def reload_wm(_):
-        InhIndicator.run_command('reload_wm')
+        PwrTray.run_command('reload_wm')
 
     @staticmethod
     def restart_wm(_):
-        InhIndicator.run_command('restart_wm')
+        PwrTray.run_command('restart_wm')
 
     @staticmethod
     def exit_wm(_):
-        InhIndicator.run_command('logoff')
+        PwrTray.run_command('logoff')
 
     @staticmethod
     def enable_presentation_mode(_):
         """TBD"""
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         this.mode = 'Presentation'
         this.was_output = 'Changed Mode'
         prt('+', f'{this.mode=}')
@@ -931,7 +869,7 @@ class InhIndicator:
     @staticmethod
     def enable_nosleep_mode(_):
         """TBD"""
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         this.mode = 'LockOnly'
         this.was_output = 'Changed Mode'
         prt('+', f'{this.mode=}')
@@ -941,7 +879,7 @@ class InhIndicator:
     @staticmethod
     def enable_normal_mode(_):
         """TBD"""
-        this = InhIndicator.singleton
+        this = PwrTray.singleton
         this.mode = 'SleepAfterLock'
         this.was_output = 'Changed Mode'
         prt('+', f'{this.mode=}')
@@ -953,7 +891,7 @@ class InhIndicator:
     def acpi_event_listener():
         acpi_pipe = subprocess.Popen(["acpi_listen"], stdout=subprocess.PIPE)
         for line in acpi_pipe.stdout:
-            this = InhIndicator.singleton
+            this = PwrTray.singleton
             if this and b"resume" in line:
                 prt('acpi event:', line)
                 # Reset idle timer
@@ -1007,7 +945,7 @@ def main():
     Utils.prt_path = ini_tool.log_path
     prt('START-UP', to_stdout=opts.stdout)
     PyKill().kill_loop('pwr-tray')
-    atexit.register(InhIndicator.goodbye)
+    atexit.register(PwrTray.goodbye)
 
 
     if opts.debug:
@@ -1015,7 +953,7 @@ def main():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override
 
 
-    tray = InhIndicator(ini_tool=ini_tool, quick=opts.quick)
+    tray = PwrTray(ini_tool=ini_tool, quick=opts.quick)
     tray.app.exec_()
 
 if __name__ == "__main__":

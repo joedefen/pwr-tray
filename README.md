@@ -48,7 +48,7 @@ With a right-click and a left-click, you can do operations such as change to Pre
 
 ## More Testing Hints
 * To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`
-* To test Hi/Lo Battery states: when plugged in, click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states.
+* To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states.
 
 ---
 

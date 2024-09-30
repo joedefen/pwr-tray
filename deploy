@@ -1,9 +1,7 @@
 #!/bin/bash
 
-script_dir=$(dirname "$0")
+script_dir=$(cd "$(dirname "$0")" && pwd)
 set -ex
 cd ${script_dir}
-rm -rf ./dist
-/usr/bin/python3 -m pip install build --break-system-packages
-/usr/bin/python3 -m build
-/usr/bin/python3 -m pip install -e . --break-system-packages
+pip install -e .
+echo "For testing, this creates: $script_dir/pi-venv/bin/pwr-tray"
