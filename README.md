@@ -87,7 +87,7 @@ Or act on the applet itself:
 Here are the current 'Settings' defaults with explanation.
 ```
     [Settings]
-    i3lock_args = -t -i ./lockpaper.png # arguments when running i3lock
+    i3lock_args = -t -i ./lockpaper.png # arguments when running i3lock for wallpaper
     debug_mode = False                  # more frequent and elaborate logging
     power_down = False                  # power down (rather than suspend)
     turn_off_monitors = False           # turn off monitors after locking screen
@@ -115,6 +115,14 @@ Here are the current 'Settings' defaults with explanation.
         exec --no-startup-id xset s off ; xset s noblank ; xset -dpms
 ```
 * Edit `/etc/systemd/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, set each action to `suspend`, and then either reboot or restart `systemd-logind`.  That enables `xss-lock` to handle those keys.
+* In your config, arrange for the power key (when set to suspend) to also have the system locked on power up with:
+```
+set $screenlock i3lock -t -i ~/.config/pwr-tray/lockpaper.png --ignore-empty-password --show-failed-attempts
+exec --no-startup-id xss-lock --transfer-sleep-lock -- $screenlock --nofork
+bindsym XF86PowerOff exec --no-startup-id $screenlock && systemctl suspend
+bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock screen only
+
+```
 * Finally, start your pwr-tray somehow. Below is a simplest case using `i3status`, but it may depend on your status bar:
 ```
         bar { 

@@ -1,5 +1,4 @@
 # HOW TO DEVELOP
-
 #
 # Prep Work (ensure need modules are up-to-date):
 #   sudo apt install python3-pip
@@ -32,8 +31,7 @@
 # HOW TO PUBLISH...
 # PUBLIC Build and deploy (from project directory):
 #   ## BUMP the version (below in [project])
-#   rm -rf dist; python3 -m build; ls dist/.
-#   python3 -m twine upload dist/*          # keyring --disable # may be required
+#   rm -rf dist; python3 -m build; python3 -m twine upload dist/*
 #     ## Enter __token__ and the saved TOKEN (in bitwarden)
 #   pipx upgrade pwr-tray || pipx install pwr-tray # >= python3.11
 #   --OR-- sudo python3 -m pip install pwr-tray # <= python3.10
