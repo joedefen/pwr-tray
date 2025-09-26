@@ -1,7 +1,0 @@
-#!/bin/bash
-
-script_dir=$(cd "$(dirname "$0")" && pwd)
-set -ex
-cd ${script_dir}
-pip install -e .
-echo "For testing, this creates: $script_dir/pi-venv/bin/pwr-tray"

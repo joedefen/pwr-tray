@@ -27,6 +27,11 @@ With just a right-click and a left-click, you can do most operations such as cha
     * Shows system-level commands (DE dependent) that must be installed if missing. Note:
       * `systemctl` is always required.
       * Optionally, install `playerctl` if you wish playing media to inhibit screen saving and sleeping.
+    * If you find you are missing the QT5 foundation, then you'll need to install that; examples:
+        * `sudo apt install qt5-default` # if debian based
+        * `sudo pacman -S qt5-base` # if arch based
+        * `sudo dnf install qt5-qtbase` # if fedora based
+
 * Then, follow the "Per-DE Specific Notes" below to ensure proper operation. To just kick the tires, you can defer this until ready to go forward.
 * Read the other sections for customization and everyday use.
 * From the CLI, you can start/restart pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts.

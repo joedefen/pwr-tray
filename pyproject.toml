@@ -1,57 +1,10 @@
-# HOW TO DEVELOP
-#
-# Prep Work (ensure need modules are up-to-date):
-#   sudo apt install python3-pip
-#   sudo apt install python3-pip-whl
-#   pip install build --break-system-packages
-#   sudo apt install twine
-#   -- antiquated way
-#      sudo pacman -Syu python-pip
-#      sudo pacman -Syu python-build
-#      sudo pacman -Syu python-twine
-#   -- antiquated way
-#      python3 -m pip install --upgrade pip
-#      python3 -m pip install --upgrade build
-#      python3 -m pip install --upgrade twine
-#
-# Optionally, `python3 -m venv venv`, and then
-#   - source env/bin/activate # to activate
-#   - deactivate # to deactivate
-# 
-# rm -rf ./dist && python3 -m build && pip install -e . --break-system-packages
-# 
-# - after ./deploy, run with
-#   - pip-tray
-#   - python3 -m pwr_tray.main
-#   - (cd src/pwr_tray && ./main.py)
-#   - src/pwr_tray/main.py
-# - w/o ./deploy, run with
-#   - PYTHONPATH=src src/pwr_tray/main.py
-#
-# HOW TO PUBLISH...
-# PUBLIC Build and deploy (from project directory):
-#   ## BUMP the version (below in [project])
-#   rm -rf dist; python3 -m build; python3 -m twine upload dist/*
-#     ## Enter __token__ and the saved TOKEN (in bitwarden)
-#   pipx upgrade pwr-tray || pipx install pwr-tray # >= python3.11
-#   --OR-- sudo python3 -m pip install pwr-tray # <= python3.10
-#   ## VISIT  https://pypi.org/project/pwr-tray and delete old versions
-#
-# TEST Build and test (from project directory):
-#   ## BUMP the version (below in [project])
-#   rm -r dist; python3 -m build
-#   python3 -m twine upload --repository testpypi dist/* #     keyring --disable # may be required
-#     ## Enter __token__ and the saved TOKEN (in bitwarden)
-#   sudo python3 -m pip install --upgrade --index-url https://test.pypi.org/simple/ --no-deps --break-system-packages my-sna
-#   ## VISIT  https://test.pypi.org/project/pwr-tray and delete old versions
-
 [build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["flit_core>=3.4"]
+build-backend = "flit_core.buildapi"
 
 [project]
 name = "pwr_tray"
-version = "1.0.0"
+version = "1.0.2"
 description = "A GTK tray applet for power management for i3/sway/KDE"
 authors = [
     { name = "Joe Defen", email = "joedef@google.com" }
@@ -59,9 +12,7 @@ authors = [
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.8"
-
 keywords = ["power", "energy", "GTK", "applet", "tray", "kde", "i3wm", "sway"]
-
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -70,6 +21,7 @@ classifiers = [
 dependencies = [
     'importlib-metadata; python_version<"3.8"',
     'psutil>=5.9',
+    'PyQt5>=5.15',
 ]
 
 [project.urls]
@@ -79,16 +31,5 @@ dependencies = [
 [project.scripts]
 pwr-tray = "pwr_tray.main:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-"pwr_tray.resources" = ["*.svg", "*.png"]
-
-exclude = [
-    "__pycache__",
-]
-
+[tool.flit.sdist]
+include = ["pwr_tray/resources/"]
