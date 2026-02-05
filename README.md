@@ -35,8 +35,17 @@ With just a right-click and a left-click, you can do most operations such as cha
 * Then, follow the "Per-DE Specific Notes" below to ensure proper operation. To just kick the tires, you can defer this until ready to go forward.
 * Read the other sections for customization and everyday use.
 * From the CLI, you can start/restart pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts.
-* `pwr-tray -e` edits the config file (`~/.config/pwr-tray/config.ini`)
-* `pwr-tray -f` tails the log file (`~/.config/pwr-tray/debug.log`)
+
+### Command Line Options
+| Option | Description |
+|--------|-------------|
+| `-o`, `--stdout` | Log to stdout (in addition to the log file); useful for debugging from a terminal. |
+| `-D`, `--debug` | Enable debug mode (more frequent/elaborate logging); overrides the `debug_mode` config setting. |
+| `-q`, `--quick` | Quick mode: sets lock and sleep timeouts to 1 minute and runs double-time (timers expire in 30s wall clock). Useful for testing. |
+| `-e`, `--edit-config` | Open `~/.config/pwr-tray/config.ini` in `$EDITOR` (default: `vim`). |
+| `-f`, `--follow-log` | Tail the log file (`~/.config/pwr-tray/debug.log`). |
+
+For initial setup and troubleshooting, `pwr-tray -D -o` is a good starting point.
 
 ---
 
@@ -149,6 +158,6 @@ bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock 
 * In Settings/Energy Saving, disable "Screen Energy Saving", "Suspend session", etc., except keep the "Button events handling" and make it as you wish (e.g., "When power button pressed", "Sleep").
 * In Settings/AutoStart, add the full path of `~/.local/bin/pwr-tray`.
 * `qdbus` (or `qdbus6` on Plasma 6) is required; `pwr-tray` auto-detects which is available.
-* On **KDE Wayland**, idle time is read via D-Bus (`org.freedesktop.ScreenSaver`). Locking uses `loginctl lock-session`.
+* On **KDE Wayland**, `swayidle` is required (install it if missing). `pwr-tray` manages `swayidle` for idle timeout handling since KDE Wayland does not expose idle time via D-Bus. Locking uses `loginctl lock-session`.
 * On **KDE X11**, idle time is read via `xprintidle` and screen locking uses `loginctl lock-session`.
 

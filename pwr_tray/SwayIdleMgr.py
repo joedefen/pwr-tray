@@ -16,28 +16,36 @@ from types import SimpleNamespace
 from pwr_tray.Utils import prt
 
 class SwayIdleManager:
-    """ Class to manage 'swayidle' """
+    """ Class to manage 'swayidle' for sway and KDE Wayland """
     def __init__(self, applet):
         self.process = None
         self.applet = applet
         self.current_cmd = ''
         # we construct the sway idle from these clauses which various
         # substitutions.
-        self.clauses = SimpleNamespace(
-            leader="""exec swayidle""",
-            locker=""" timeout [lock_s] '[screenlock] [lockopts]'""",
-            blanker=""" timeout [blank_s] 'swaymsg "output * dpms off"'""",
-            sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
-            # dimmer="""\\\n timeout [dim_s] 'brightnessctl set 50%'""", # perms?
-            before_sleep=""" before-sleep '[screenlock] [lockopts]'""",
-            after_resume=""" after-resume '[unblank]'""",
-                        # + """ 'pgrep -x copyq || copyq --start-server hide;"""
-                        # + """ pgrep -x nm-applet || nm-applet [undim][dpmsOn]'""",
-                        # + """ pgrep -x nm-applet || nm-applet [unblank]'""",
-            # undim = """; brightnessctl set 100%""",
-            screenlock = """pkill swaylock ; exec swaylock --ignore-empty-password --show-failed-attempts""",
-            unblank='''; swaymsg "output * dpms on"''',
-        )
+        if applet.graphical == 'kde-wayland':
+            locker = applet.variables.get('locker', 'loginctl lock-session')
+            self.clauses = SimpleNamespace(
+                leader="""exec swayidle""",
+                locker=f""" timeout [lock_s] '{locker}'""",
+                blanker="",
+                sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
+                before_sleep=f""" before-sleep '{locker}'""",
+                after_resume="",
+                screenlock=locker,
+                unblank='',
+            )
+        else:
+            self.clauses = SimpleNamespace(
+                leader="""exec swayidle""",
+                locker=""" timeout [lock_s] '[screenlock] [lockopts]'""",
+                blanker=""" timeout [blank_s] 'swaymsg "output * dpms off"'""",
+                sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
+                before_sleep=""" before-sleep '[screenlock] [lockopts]'""",
+                after_resume=""" after-resume '[unblank]'""",
+                screenlock = """pkill swaylock ; exec swaylock --ignore-empty-password --show-failed-attempts""",
+                unblank='''; swaymsg "output * dpms on"''',
+            )
         self.kill_other_swayidle()
 
     @staticmethod

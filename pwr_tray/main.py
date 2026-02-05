@@ -137,11 +137,9 @@ class PwrTray:
             'restart_wm': 'killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray',
             'must_haves': 'loginctl qdbus'.split(),
         }, 'kde-wayland': {
-            'get_idle_s': 'qdbus org.freedesktop.ScreenSaver /ScreenSaver GetSessionIdleTime',
-            'reset_idle': 'qdbus org.freedesktop.ScreenSaver /ScreenSaver SimulateUserActivity',
             'locker': 'loginctl lock-session',
             'logoff': 'qdbus org.kde.ksmserver /KSMServer org.kde.KSMServerInterface.logout 0 0 0',
-            'must_haves': 'loginctl'.split(),
+            'must_haves': 'loginctl swayidle'.split(),
         }, 'gnome-x11': {
 
         }, 'gnome-wayland': {
@@ -255,7 +253,8 @@ class PwrTray:
         self.has_playerctl = bool(shutil.which('playerctl'))
 
 
-        self.idle_manager = SwayIdleManager(self) if self.graphical == 'sway' else None
+        self.idle_manager = (SwayIdleManager(self)
+            if self.graphical in ('sway', 'kde-wayland') else None)
 
         self.menu_items = []
         self.menu = None
@@ -362,10 +361,13 @@ class PwrTray:
             cmd = self.variables.get('get_idle_s', '')
             scale = 1000
         if cmd:
-            xidle = int(subprocess.check_output(cmd.split()).strip())
-            xidle_ms = xidle * scale
-            xidle_ms *= 2 if self.quick else 1  # time warp
-            self.running_idle_s = round(xidle_ms/1000, 3)
+            try:
+                xidle = int(subprocess.check_output(cmd.split()).strip())
+                xidle_ms = xidle * scale
+                xidle_ms *= 2 if self.quick else 1  # time warp
+                self.running_idle_s = round(xidle_ms/1000, 3)
+            except Exception as e:
+                prt(f'WARN: idle time command failed: {e}')
 
     def DB(self):
         """ is debug on? """
@@ -535,8 +537,8 @@ class PwrTray:
             prt(emit)
 
             if emode in ('Presentation',) or self.was_inhibited:
-                if 'sway' in self.graphical:
-                    self.reset_xidle_ms() # we don't know when
+                if self.idle_manager:
+                    self.reset_xidle_ms() # idle_manager handles timeouts
                 elif self.running_idle_s > min(50, lock_secs*0.40):
                     self.reset_xidle_ms() # we don't know when
 
@@ -980,6 +982,7 @@ def main():
     atexit.register(PwrTray.goodbye)
 
 
+    ini_tool.update_config()
     if opts.debug:
         for selector in ini_tool.get_selectors():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override
