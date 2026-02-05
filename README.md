@@ -1,6 +1,6 @@
 # pwr-tray
 
-`pwr-tray` is a GTK5 Tray Applet for Power/Energy Saving and System/DE Controls; currently supported/tested DEs are: i3wm, swaywm, and KDE on X11. `systemd` is required. The `pwr-tray` menu will look similar to:
+`pwr-tray` is a PyQt5 Tray Applet for Power/Energy Saving and System/DE Controls; currently supported/tested DEs are: i3wm, swaywm, and KDE (X11 and Wayland). `systemd` is required. The `pwr-tray` menu will look similar to:
 
 <p align="center">
   <img src="https://github.com/joedefen/pwr-tray/blob/main/images/pwr-tray-screenshot.png?raw=true" alt="screenshot">
@@ -9,14 +9,14 @@
 
 With just a right-click and a left-click, you can do most operations such as change to Presentation Mode, change screen lock and sleep timeouts, log off, lock and blank your monitors, and more. The `pwr-tray` icon changes based on state:
 
-* <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/FullSun-v03.svg?raw=true" alt="FullSun" width="24" height="24"> Presentation Mode (i.e., the full sun)
-* <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/SettingSun-v03.svg?raw=true" alt="SettingSun" width="24" height="24"> SleepAfterLock Mode (i.e., the setting sun)
-    * <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/RisingMoon-v03.svg?raw=true" alt="RisingMoon" width="24" height="24"> SleepAfterLock Mode and Locking Screen Soon
-* <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/Unlocked-v03.svg?raw=true" alt="Unlocked" width="24" height="24"> LockOnly Mode  (i.e., the unlocked lock)
-    * <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/UnlockedMoon-v03.svg?raw=true" alt="UnlockedMoon" width="24" height="24"> LockOnly Mode and Locking Screen Soon
-* <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/GoingDown-v03.svg?raw=true" alt="GoingDown" width="24" height="24"> LowBattery State (going down).
-* <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/PlayingNow-v03.svg?raw=true" alt="PlayingNow" width="24" height="24"> Inhibited by playing media.
-* <img src="https://github.com/joedefen/pwr-tray/blob/main/src/pwr_tray/resources/StopSign-v03.svg?raw=true" alt="StopSign" width="24" height="24"> Inhibited by systemd inhibitors.
+* <img src="https://github.com/joedefen/pwr-tray/blob/main/pwr_tray/resources/FullSun-v03.svg?raw=true" alt="FullSun" width="24" height="24"> Presentation Mode (i.e., the full sun)
+* <img src="https://github.com/joedefen/pwr-tray/blob/main/pwr_tray/resources/SettingSun-v03.svg?raw=true" alt="SettingSun" width="24" height="24"> SleepAfterLock Mode (i.e., the setting sun)
+    * <img src="https://github.com/joedefen/pwr-tray/blob/main/pwr_tray/resources/RisingMoon-v03.svg?raw=true" alt="RisingMoon" width="24" height="24"> SleepAfterLock Mode and Locking Screen Soon
+* <img src="https://github.com/joedefen/pwr-tray/blob/main/pwr_tray/resources/Unlocked-v03.svg?raw=true" alt="Unlocked" width="24" height="24"> LockOnly Mode  (i.e., the unlocked lock)
+    * <img src="https://github.com/joedefen/pwr-tray/blob/main/pwr_tray/resources/UnlockedMoon-v03.svg?raw=true" alt="UnlockedMoon" width="24" height="24"> LockOnly Mode and Locking Screen Soon
+* <img src="https://github.com/joedefen/pwr-tray/blob/main/pwr_tray/resources/GoingDown-v03.svg?raw=true" alt="GoingDown" width="24" height="24"> LowBattery State (going down).
+* <img src="https://github.com/joedefen/pwr-tray/blob/main/pwr_tray/resources/PlayingNow-v03.svg?raw=true" alt="PlayingNow" width="24" height="24"> Inhibited by playing media.
+* <img src="https://github.com/joedefen/pwr-tray/blob/main/pwr_tray/resources/StopSign-v03.svg?raw=true" alt="StopSign" width="24" height="24"> Inhibited by systemd inhibitors.
 
 ---
 
@@ -27,31 +27,31 @@ With just a right-click and a left-click, you can do most operations such as cha
     * Shows system-level commands (DE dependent) that must be installed if missing. Note:
       * `systemctl` is always required.
       * Optionally, install `playerctl` if you wish playing media to inhibit screen saving and sleeping.
-    * If you find you are missing the QT5 foundation, then you'll need to install that; examples:
-        * `sudo apt install qt5-default` # if debian based
-        * `sudo pacman -S qt5-base` # if arch based
-        * `sudo dnf install qt5-qtbase` # if fedora based
+    * If you find you are missing PyQt5, then you'll need to install it; examples:
+        * `sudo apt install python3-pyqt5` # if debian based
+        * `sudo pacman -S python-pyqt5` # if arch based
+        * `sudo dnf install python3-qt5` # if fedora based
 
 * Then, follow the "Per-DE Specific Notes" below to ensure proper operation. To just kick the tires, you can defer this until ready to go forward.
 * Read the other sections for customization and everyday use.
 * From the CLI, you can start/restart pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts.
-* `pwr-tray -e` edits the config file (`~/.config/pwr-ini/config.ini`)
-* `pwr-tray -f` tails the log file (`~/.config/pwr-ini/debug.log`)
+* `pwr-tray -e` edits the config file (`~/.config/pwr-tray/config.ini`)
+* `pwr-tray -f` tails the log file (`~/.config/pwr-tray/debug.log`)
 
 ---
 
 ### HowTo Use pwr-tray
-Open the `pwr-tray' menu with a right-click. Then left-click a line to have an effect ...
+Open the `pwr-tray` menu with a right-click. Then left-click a line to have an effect ...
 
 Choose from three *major power modes* (to control the effects of timeouts):
 - **🅟 Presentation ⮜** -  Keeps the screen unlocked/on and system up.
 - **🅛 LockOnly ⮜** - Keeps the system up, but the screen may lock.
 - **🅢 SleepAfterLock ⮜** - Allows screen locking and system to go down (the "normal" mode).
 
-Ory choose from various locking/blanking/DE operations:
+Or choose from various locking/blanking/DE operations:
 - **▷ Lock Screen** - locks the screen immediately.
 - **▷ Blank Monitors** - blanks the screen after locking the screen.
-- **▷ Reload i3** - various DE-dependent actions.
+- **▷ Reload** - various DE-dependent actions (reload WM config, etc.).
 - **▷ Log Off** - terminate your user session.
 
 Or choose a new *system state*:
@@ -92,7 +92,8 @@ Or act on the applet itself:
 Here are the current 'Settings' defaults with explanation.
 ```
     [Settings]
-    i3lock_args = -t -i ./lockpaper.png # arguments when running i3lock for wallpaper
+    i3lock_args = -t -i ./lockpaper.png # extra arguments for i3lock
+    swaylock_args = -i ./lockpaper.png  # extra arguments for swaylock
     debug_mode = False                  # more frequent and elaborate logging
     power_down = False                  # power down (rather than suspend)
     turn_off_monitors = False           # turn off monitors after locking screen
@@ -141,10 +142,13 @@ bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock 
 ### sway Specific Notes
 * Uninstall or disable all competing energy saving programs (e.g., `swayidle`, `xfce4-power-manager`, etc.) when running `sway` whether started by `systemd` or `sway/config` or whatever.
 * **NOTE**: on `sway`, `pwr-tray` cannot read the idle time and do its usual micromanagement; instead, it runs a `swayidle` command whose arguments may vary with your settings.
-* Edit `/etc/system/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, and set each action to `suspend`; then either reboot or restart `systemd-logind`.  That enables the ever-running `swayidle` to handle the suspend / resume events.
+* Edit `/etc/systemd/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, and set each action to `suspend`; then either reboot or restart `systemd-logind`.  That enables the ever-running `swayidle` to handle the suspend / resume events.
 * Again, find a way to start `pwr-tray`; perhaps adding to sway's config: `exec_always --no-startup-id sleep 2 && ~/.local/bin/pwr-tray`; a delay may be required to let the tray initialize.
 
-### KDE (X11) Specific Notes
+### KDE Specific Notes
 * In Settings/Energy Saving, disable "Screen Energy Saving", "Suspend session", etc., except keep the "Button events handling" and make it as you wish (e.g., "When power button pressed", "Sleep").
 * In Settings/AutoStart, add the full path of `~/.local/bin/pwr-tray`.
+* `qdbus` (or `qdbus6` on Plasma 6) is required; `pwr-tray` auto-detects which is available.
+* On **KDE Wayland**, idle time is read via D-Bus (`org.freedesktop.ScreenSaver`). Locking uses `loginctl lock-session`.
+* On **KDE X11**, idle time is read via `xprintidle` and screen locking uses `loginctl lock-session`.
 

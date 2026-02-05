@@ -71,7 +71,6 @@ class PwrTray:
             if is_wayland:
                 env = 'kde-wayland'
                 prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
-                assert False, f'unsupported env: {env}'
                 return 'kde-wayland', is_wayland
             if display:
                 env = 'kde-x11'
@@ -101,6 +100,7 @@ class PwrTray:
         'monitors_off': '',
         'locker': '',
         'get_idle_ms': '',
+        'get_idle_s': '',
         'reset_idle': '',
         'reload_wm': '',
         'restart_wm': '',
@@ -137,29 +137,11 @@ class PwrTray:
             'restart_wm': 'killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray',
             'must_haves': 'loginctl qdbus'.split(),
         }, 'kde-wayland': {
-            # sudo apt-get install xdg-utils
+            'get_idle_s': 'qdbus org.freedesktop.ScreenSaver /ScreenSaver GetSessionIdleTime',
             'reset_idle': 'qdbus org.freedesktop.ScreenSaver /ScreenSaver SimulateUserActivity',
-            # gdbus introspect --session --dest org.gnome.SessionManager
-            #       --object-path /org/gnome/SessionManager
-            # gdbus call --session --dest org.gnome.SessionManager
-            #       --object-path /org/gnome/SessionManager
-            #       --method org.gnome.SessionManager.GetIdleTime
-            #   from pydbus import SessionBus
-            #   import time
-            #   def get_idle_time():
-            #       bus = SessionBus()
-            #       screensaver = bus.get("org.freedesktop.ScreenSaver")
-            #       # The GetSessionIdleTime method returns the idle time in seconds.
-            #       idle_time = screensaver.GetSessionIdleTime()
-            #       return idle_time
-            #   if __name__ == "__main__":
-            #       while True:
-            #           idle_time = get_idle_time()
-            #           print(f"Idle time in seconds: {idle_time}")
-            #           time.sleep(5)
             'locker': 'loginctl lock-session',
-            'must_haves': 'loginctl qdbus'.split(),
-
+            'logoff': 'qdbus org.kde.ksmserver /KSMServer org.kde.KSMServerInterface.logout 0 0 0',
+            'must_haves': 'loginctl'.split(),
         }, 'gnome-x11': {
 
         }, 'gnome-wayland': {
@@ -260,6 +242,16 @@ class PwrTray:
             if shutil.which(must_have) is None:
                 dont_haves.append(must_have)
         assert not dont_haves, f'commands NOT on $PATH: {dont_haves}'
+
+        if self.graphical in ('kde-x11', 'kde-wayland'):
+            qdbus_cmd = shutil.which('qdbus') or shutil.which('qdbus6')
+            assert qdbus_cmd, 'neither qdbus nor qdbus6 found on $PATH'
+            qdbus_name = os.path.basename(qdbus_cmd)
+            if qdbus_name != 'qdbus':
+                for key, val in list(self.variables.items()):
+                    if isinstance(val, str) and 'qdbus ' in val:
+                        self.variables[key] = val.replace('qdbus ', f'{qdbus_name} ')
+
         self.has_playerctl = bool(shutil.which('playerctl'))
 
 
@@ -271,6 +263,9 @@ class PwrTray:
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         if self.idle_manager:
             self.idle_manager_start()
+        self._resume_proc = self._start_resume_monitor()
+        self._resume_buf = b''
+
         self.timer = QTimer()
         self.timer.setInterval(100) # 100 is initial ... gets recomputed
         self.timer.timeout.connect(self.on_timeout)
@@ -362,8 +357,13 @@ class PwrTray:
     def update_running_idle_s(self):
         """ Update the running idle seconds (called after each regular timeout) """
         cmd = self.variables['get_idle_ms']
+        scale = 1
+        if not cmd:
+            cmd = self.variables.get('get_idle_s', '')
+            scale = 1000
         if cmd:
-            xidle_ms = int(subprocess.check_output(cmd.split()).strip())
+            xidle = int(subprocess.check_output(cmd.split()).strip())
+            xidle_ms = xidle * scale
             xidle_ms *= 2 if self.quick else 1  # time warp
             self.running_idle_s = round(xidle_ms/1000, 3)
 
@@ -499,9 +499,10 @@ class PwrTray:
         if self.DB():
             prt('DB', f'on_timeout() {self.loop=}/{self.loop_sample} ...')
         if not QSystemTrayIcon.isSystemTrayAvailable():
-            prt('SystemTray is gone ... exiting')
-            self.exit_wm(None)
+            prt('SystemTray is gone ... restarting')
+            self.restart_self(None)
 
+        self._check_resume()
         self.reconfig()
         if self.idle_manager:
             self.idle_manager.checkup()
@@ -645,7 +646,11 @@ class PwrTray:
             self.menu.addAction(item)
             self.menu_items.append(item)
 
-        self.menu = QMenu()
+        first_menu = self.menu is None
+        if first_menu:
+            self.menu = QMenu()
+        else:
+            self.menu.clear()
         self.menu_items = []
 
         if rows:
@@ -703,8 +708,9 @@ class PwrTray:
 
         add_item('↺ Restart this Applet', self.restart_self)
 
-        self.tray_icon.setContextMenu(self.menu)
- 
+        if first_menu:
+            self.tray_icon.setContextMenu(self.menu)
+
         if not self.tray_icon.isVisible():
             prt('self.tray_icon.isVisible() is False ... restarting app')
             time.sleep(0.5)
@@ -770,7 +776,9 @@ class PwrTray:
         if this:
             this.tray_icon.hide()
         PwrTray.save_picks()
-        subprocess.Popen([sys.executable] + sys.argv)
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        args = [sys.executable, '-m', 'pwr_tray.main'] + sys.argv[1:]
+        subprocess.Popen(args, cwd=project_root)
         os._exit(0)
 
     @staticmethod
@@ -795,6 +803,9 @@ class PwrTray:
         if this.graphical in ('i3', ):
             PwrTray.run_command('locker')
         PwrTray.run_command('suspend')
+        # systemctl suspend blocks until resume; restart to restore tray icon
+        prt('suspend: resumed, restarting applet...')
+        PwrTray.restart_self(None)
 
     @staticmethod
     def poweroff(_):
@@ -888,20 +899,39 @@ class PwrTray:
         this.save_picks()
         this.idle_manager_start()
 
-    # Function to check for ACPI events
-    @staticmethod
-    def acpi_event_listener():
-        acpi_pipe = subprocess.Popen(["acpi_listen"], stdout=subprocess.PIPE)
-        for line in acpi_pipe.stdout:
-            this = PwrTray.singleton
-            if this and b"resume" in line:
-                prt('acpi event:', line)
-                # Reset idle timer
-                this.reset_xidle_ms()
-            elif this:
-                prt('UNSELECTED acpi event:', line)
-                # Reset idle timer
-                this.reset_xidle_ms()
+    def _start_resume_monitor(self):
+        """Start dbus-monitor subprocess for resume detection (non-blocking)."""
+        try:
+            proc = subprocess.Popen(
+                ['dbus-monitor', '--system',
+                 "type='signal',interface='org.freedesktop.login1.Manager',"
+                 "member='PrepareForSleep'"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            os.set_blocking(proc.stdout.fileno(), False)
+            prt('resume monitor: started')
+            return proc
+        except FileNotFoundError:
+            prt('WARN: dbus-monitor not found; resume detection disabled')
+            return None
+
+    def _check_resume(self):
+        """Poll dbus-monitor for resume signal (called from on_timeout)."""
+        if not self._resume_proc:
+            return
+        try:
+            chunk = os.read(self._resume_proc.stdout.fileno(), 4096)
+            if chunk:
+                self._resume_buf += chunk
+                if b'boolean false' in self._resume_buf:
+                    prt('resume detected, restarting...')
+                    self.restart_self(None)
+                # Prevent unbounded growth; keep tail for partial matches
+                if len(self._resume_buf) > 1024:
+                    self._resume_buf = self._resume_buf[-512:]
+        except BlockingIOError:
+            pass
+        except OSError:
+            pass
     @staticmethod
     def goodbye(message=''):
         prt(f'ENDED {message}')
