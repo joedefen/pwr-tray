@@ -132,13 +132,12 @@ class PwrTray:
 
         }, 'kde-x11': {
             'locker': 'loginctl lock-session',
-            # 'logoff': 'loginctl terminate-session {XDG_SESSION_ID}',
-            'logoff': 'qdbus org.kde.ksmserver /KSMServer org.kde.KSMServerInterface.logout 0 0 0',
+            'logoff': 'qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout',
             'restart_wm': 'killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray',
             'must_haves': 'loginctl qdbus'.split(),
         }, 'kde-wayland': {
             'locker': 'loginctl lock-session',
-            'logoff': 'qdbus org.kde.ksmserver /KSMServer org.kde.KSMServerInterface.logout 0 0 0',
+            'logoff': 'qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout',
             'must_haves': 'loginctl swayidle'.split(),
         }, 'gnome-x11': {
 
@@ -234,6 +233,15 @@ class PwrTray:
 
         self.variables.update(self.overrides[self.graphical])
         must_haves += self.variables['must_haves']
+        
+        if self.graphical == 'kde-wayland':
+            if self.get_params().kde_wayland_hard_logout:
+            #   self.variables['logoff'] = ("loginctl terminate-session "
+            #       + os.environ.get('XDG_SESSION_ID'))
+                self.variables['logoff'] = 'pkill kwin'
+            if self.DB():
+                prt(str(self.variables))
+
 
         dont_haves = []
         for must_have in set(must_haves):

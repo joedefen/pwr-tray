@@ -20,6 +20,28 @@ With just a right-click and a left-click, you can do most operations such as cha
 
 ---
 
+### Requirements
+* **Python** 3.8+ with **PyQt5** (5.15+)
+* **systemd** (for `systemctl`, `loginctl`, `systemd-inhibit`)
+* **pipx** (recommended for installation)
+
+Per-DE requirements:
+
+| DE | Required Packages | Notes |
+|----|-------------------|-------|
+| **i3wm** | `i3lock`, `xprintidle`, `xset`, `xss-lock` | X11 only |
+| **sway** | `swaylock`, `swayidle` (1.8+) | `pwr-tray` manages `swayidle` |
+| **KDE Wayland** | `qdbus6`, `swayidle` (1.8+) | Requires **Plasma 6**; `pwr-tray` manages `swayidle` |
+| **KDE X11** | `qdbus`/`qdbus6`, `xprintidle`, `xset` | Plasma 6 (Plasma 5 untested) |
+
+**Distro notes:**
+* Developed and tested on **Debian 13 (trixie)**. Should work on any distro with sufficiently recent packages.
+* KDE Wayland support requires **Plasma 6** (uses the `org.kde.Shutdown` D-Bus API) and **swayidle 1.8+** (for `ext-idle-notify-v1` protocol support).
+* Debian 12 (bookworm) and Ubuntu 24.04 ship Plasma 5 and swayidle 1.7 -- KDE Wayland will **not** work on those. i3 and sway should be fine.
+* Arch Linux and Fedora 40+ ship current versions and should work for all DEs.
+
+---
+
 ### HowTo Install and Start pwr-tray
 * Basically: `pipx install pwr-tray` (exactly how depends on your installation and its state)
 * Manually run as `pwr-tray -o`:
