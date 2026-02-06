@@ -31,7 +31,6 @@ class IniTool:
                 'sleep_min_list': '[5, 30]',
                 'lo_battery_pct': 10,
                 'gui_editor': 'geany',
-                'kde_wayland_hard_logout': True,
             #   'dim_pct_brightness': 100,
             #   'dim_pct_lock_min': 100,
 

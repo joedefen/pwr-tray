@@ -16,36 +16,26 @@ from types import SimpleNamespace
 from pwr_tray.Utils import prt
 
 class SwayIdleManager:
-    """ Class to manage 'swayidle' for sway and KDE Wayland """
+    """ Class to manage 'swayidle' for Wayland compositors """
     def __init__(self, applet):
         self.process = None
         self.applet = applet
         self.current_cmd = ''
-        # we construct the sway idle from these clauses which various
-        # substitutions.
-        if applet.graphical == 'kde-wayland':
-            locker = applet.variables.get('locker', 'loginctl lock-session')
-            self.clauses = SimpleNamespace(
-                leader="""exec swayidle""",
-                locker=f""" timeout [lock_s] '{locker}'""",
-                blanker="",
-                sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
-                before_sleep=f""" before-sleep '{locker}'""",
-                after_resume="",
-                screenlock=locker,
-                unblank='',
-            )
-        else:
-            self.clauses = SimpleNamespace(
-                leader="""exec swayidle""",
-                locker=""" timeout [lock_s] '[screenlock] [lockopts]'""",
-                blanker=""" timeout [blank_s] 'swaymsg "output * dpms off"'""",
-                sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
-                before_sleep=""" before-sleep '[screenlock] [lockopts]'""",
-                after_resume=""" after-resume '[unblank]'""",
-                screenlock = """pkill swaylock ; exec swaylock --ignore-empty-password --show-failed-attempts""",
-                unblank='''; swaymsg "output * dpms on"''',
-            )
+        # Build clauses from de_config (no DE-specific branching)
+        de = applet.de_config
+        locker = de.get('swayidle_locker') or applet.variables.get('locker', '')
+        blanker = de.get('swayidle_blanker', '')
+        unblanker = de.get('swayidle_unblanker', '')
+        self.clauses = SimpleNamespace(
+            leader="""exec swayidle""",
+            locker=""" timeout [lock_s] '[screenlock] [lockopts]'""",
+            blanker=f""" timeout [blank_s] '{blanker}'""" if blanker else "",
+            sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
+            before_sleep=""" before-sleep '[screenlock] [lockopts]'""",
+            after_resume=""" after-resume '[unblank]'""" if unblanker else "",
+            screenlock=locker,
+            unblank=f'; {unblanker}' if unblanker else '',
+        )
         self.kill_other_swayidle()
 
     @staticmethod
@@ -74,7 +64,8 @@ class SwayIdleManager:
         mode = mode if mode else self.applet.get_effective_mode()
         til_sleep_s, sleeping = None, False
 
-        lockopts = self.applet.get_params().swaylock_args
+        ini_key = self.applet.de_config.get('lock_args_ini_key', '')
+        lockopts = getattr(self.applet.get_params(), ini_key, '') if ini_key else ''
         quick = self.applet.quick
         a_minute = 30 if quick else 60
 

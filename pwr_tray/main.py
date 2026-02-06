@@ -50,115 +50,38 @@ class PwrTray:
                           'StopSign',     # systemd inhibited
                           ] )
     singleton = None
+
     @staticmethod
-    def get_environment():
+    def load_de_config(config_dir):
+        """Load DE config JSON, copying default to user config dir if needed."""
+        user_json = os.path.join(config_dir, 'de_config.json')
+        if not os.path.exists(user_json):
+            Utils.copy_to_folder('de_config.json', config_dir)
+        with open(user_json, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    @staticmethod
+    def detect_de(de_config):
+        """Detect the current DE from environment using JSON config rules."""
+        xdg_desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
         desktop_session = os.environ.get('DESKTOP_SESSION', '').lower()
-        xdg_session_desktop = os.environ.get('XDG_SESSION_DESKTOP', '').lower()
-        xdg_current_desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
-        sway_socket = os.environ.get('SWAYSOCK')
-        wayland_display = os.environ.get('WAYLAND_DISPLAY')
-        is_wayland = bool(wayland_display)
-        display = os.environ.get('DISPLAY')
+        session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
+        desktop_str = xdg_desktop or desktop_session
 
-        if 'i3' in desktop_session and display: # Check for i3
-            prt(f'ENV: i3 {desktop_session=} {display=}')
-            return 'i3', is_wayland
-        if ('sway' in desktop_session or 'sway' in xdg_session_desktop
-                or 'sway' in xdg_current_desktop) and sway_socket: # Check for Sway
-            prt(f'ENV: sway {desktop_session=} {sway_socket=}')
-            return 'sway', is_wayland
-        if 'plasma' in desktop_session or 'kde' in xdg_current_desktop:
-            if is_wayland:
-                env = 'kde-wayland'
-                prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
-                return 'kde-wayland', is_wayland
-            if display:
-                env = 'kde-x11'
-                prt(f'ENV: {env} {desktop_session=} {display=}')
-                return env, is_wayland
-        if 'gnome' in desktop_session:
-            if is_wayland:
-                env='gnome-wayland'
-                prt(f'ENV: {env} {desktop_session=} {wayland_display=}')
-                assert False, f'unsupported env: {env}'
-                return env, is_wayland
-            if display:
-                env='gnome-x11'
-                prt(f'ENV: {env} {desktop_session=} {display=}')
-                assert False, f'unsupported env: {env}'
-                return 'gnome-x11', is_wayland
-        # Default case: no known environment detected
-        assert False, 'cannot determine if i3/sway/(kde|gnome)-(x11|wayland)'
+        prt(f'ENV: XDG_CURRENT_DESKTOP={xdg_desktop!r}'
+            f' DESKTOP_SESSION={desktop_session!r}'
+            f' XDG_SESSION_TYPE={session_type!r}')
 
-    default_variables = {
-        'suspend': 'systemctl suspend',
-        'poweroff': 'systemctl poweroff',
-        'reboot': 'systemctl reboot',
-#       'dimmer': 'brightnessctl set {percent}%',
-#       'undim': 'brightnessctl set 100%',
-        'logoff': '',
-        'monitors_off': '',
-        'locker': '',
-        'get_idle_ms': '',
-        'get_idle_s': '',
-        'reset_idle': '',
-        'reload_wm': '',
-        'restart_wm': '',
-#       'must_haves': 'systemctl brightnessctl'.split(),
-        'must_haves': 'systemctl'.split(),
+        for entry in de_config['desktops']:
+            detect = entry['detect_desktop'].lower()
+            stype = entry['session_type'].lower()
+            if detect in desktop_str and stype == session_type:
+                prt(f'ENV: matched {entry["name"]!r}')
+                return entry
 
-    }
-    overrides = {
-        'x11': {
-            'reset_idle': 'xset s reset',
-            'get_idle_ms': 'xprintidle',
-            'monitors_off': 'sleep 1.0; exec xset dpms force off',
-            'must_haves': 'xset xprintidle'.split(),
-        }, 'sway': {
-            # swayidle timeout 300 'swaylock' resume 'swaymsg "exec kill -USR1 $(pgrep swayidle)"' &
-            # kill -USR1 $(pgrep swayidle)
-            'reload_wm': 'swaymsg reload',
-            'logoff': 'swaymsg exit',
-            'locker': 'swaylock --ignore-empty-password --show-failed-attempt',
-            # 'monitors_off': """sleep 1.0; swaymsg 'output * dpms off'""",
-            'must_haves': 'swaymsg i3lock'.split(),
-
-        }, 'i3': {
-            'reload_wm': 'i3-msg reload',
-            'restart_wm': 'i3-msg restart',
-            'logoff': 'i3-msg exit',
-            'locker': 'pkill i3lock; sleep 0.5; i3lock --ignore-empty-password --show-failed-attempt',
-            'must_haves': 'i3-msg i3lock'.split(),
-
-        }, 'kde-x11': {
-            'locker': 'loginctl lock-session',
-            'logoff': 'qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout',
-            'restart_wm': 'killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray',
-            'must_haves': 'loginctl qdbus'.split(),
-        }, 'kde-wayland': {
-            'locker': 'loginctl lock-session',
-            'logoff': 'qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout',
-            'must_haves': 'loginctl swayidle'.split(),
-        }, 'gnome-x11': {
-
-        }, 'gnome-wayland': {
-            # sudo apt-get install xdg-utils
-            'reset_idle': ('gdbus call --session --dest org.gnome.ScreenSaver --object-path'
-                ' /org/gnome/ScreenSaver --method org.gnome.ScreenSaver.SimulateUserActivity'),
-            # - idle time:
-            # pip install pydbus
-            # from pydbus import SessionBus
-            #   bus = SessionBus()
-            #   screensaver = bus.get("org.gnome.Mutter.IdleMonitor",
-            #        "/org/gnome/Mutter/IdleMonitor/Core")
-            #   idle_time = screensaver.GetIdletime()
-
-            #   print(f"Idle time in milliseconds: {idle_time}")
-            'locker': 'loginctl lock-session',
-            'must_haves': 'qdbus gnome-screensaver-command'.split(),
-
-        }
-    }
+        known = [e['name'] for e in de_config['desktops']]
+        assert False, (f'no DE matched: {desktop_str!r} / {session_type!r}'
+                       f' (known: {known})')
 
     def __init__(self, ini_tool, quick=False):
         PwrTray.singleton = self
@@ -224,32 +147,28 @@ class PwrTray:
 
         # self.down_state = self.opts.down_state
 
-        self.graphical, self.is_wayland = self.get_environment()
-        self.variables = self.default_variables
-        must_haves = self.default_variables['must_haves']
-        if self.graphical in ('i3', 'kde-x11'):
-            self.variables.update(self.overrides['x11'])
-            must_haves += self.default_variables['must_haves']
+        # Load DE config from JSON and detect environment
+        de_json = self.load_de_config(ini_tool.folder)
+        self.de_config = self.detect_de(de_json)
+        self.graphical = self.de_config['name']
+        self.is_wayland = self.de_config['session_type'] == 'wayland'
 
-        self.variables.update(self.overrides[self.graphical])
-        must_haves += self.variables['must_haves']
-        
-        if self.graphical == 'kde-wayland':
-            if self.get_params().kde_wayland_hard_logout:
-            #   self.variables['logoff'] = ("loginctl terminate-session "
-            #       + os.environ.get('XDG_SESSION_ID'))
-                self.variables['logoff'] = 'pkill kwin'
-            if self.DB():
-                prt(str(self.variables))
+        # Build variables: defaults merged with matched desktop commands
+        self.variables = dict(de_json['defaults'])
+        cmd_keys = set(self.variables.keys()) - {'must_haves'}
+        for key in cmd_keys:
+            if key in self.de_config:
+                self.variables[key] = self.de_config[key]
 
-
-        dont_haves = []
-        for must_have in set(must_haves):
-            if shutil.which(must_have) is None:
-                dont_haves.append(must_have)
+        # Validate must_haves
+        must_haves = self.de_config.get('must_haves', de_json['defaults']['must_haves'])
+        dont_haves = [cmd for cmd in set(must_haves) if shutil.which(cmd) is None]
         assert not dont_haves, f'commands NOT on $PATH: {dont_haves}'
 
-        if self.graphical in ('kde-x11', 'kde-wayland'):
+        # qdbus/qdbus6 auto-detection: replace 'qdbus ' in any command value
+        has_qdbus = any(isinstance(v, str) and 'qdbus ' in v
+                        for v in self.variables.values())
+        if has_qdbus:
             qdbus_cmd = shutil.which('qdbus') or shutil.which('qdbus6')
             assert qdbus_cmd, 'neither qdbus nor qdbus6 found on $PATH'
             qdbus_name = os.path.basename(qdbus_cmd)
@@ -260,9 +179,8 @@ class PwrTray:
 
         self.has_playerctl = bool(shutil.which('playerctl'))
 
-
         self.idle_manager = (SwayIdleManager(self)
-            if self.graphical in ('sway', 'kde-wayland') else None)
+            if self.de_config.get('idle_method') == 'swayidle' else None)
 
         self.menu_items = []
         self.menu = None
@@ -747,14 +665,13 @@ class PwrTray:
     def run_command(key):
         this = PwrTray.singleton
         command = this.variables.get(key, None)
-        if command and key == 'locker' and this.graphical in ('i3', 'sway'):
-            if this.graphical == 'i3':
-                append = this.get_params().i3lock_args
-            elif this.graphical == 'sway':
-                append = this.get_params().swaylock_args
-            if not append:
-                append = '-t -i ./lockpaper.png'
-            command += ' ' + append
+        if command and key == 'locker':
+            ini_key = this.de_config.get('lock_args_ini_key', '')
+            if ini_key and hasattr(this.get_params(), ini_key):
+                append = getattr(this.get_params(), ini_key)
+                if not append:
+                    append = '-t -i ./lockpaper.png'
+                command += ' ' + append
 
 #       elif key == 'dimmer':
 #           percent = int(round(int(thisget_params()params.dim_pct_brightness), 0))
@@ -810,7 +727,7 @@ class PwrTray:
         this = PwrTray.singleton
         this.set_state('Asleep')
         this.reset_xidle_ms()
-        if this.graphical in ('i3', ):
+        if this.de_config.get('lock_before_suspend'):
             PwrTray.run_command('locker')
         PwrTray.run_command('suspend')
         # systemctl suspend blocks until resume; restart to restore tray icon
