@@ -5,35 +5,43 @@
         "reboot": "systemctl reboot",
         "logoff": "",
         "monitors_off": "",
-        "locker": "",
+        "locker": "loginctl lock-session",
         "get_idle_ms": "",
         "reset_idle": "",
         "reload_wm": "",
         "restart_wm": "",
         "must_haves": ["systemctl"]
     },
+    "session_types": {
+        "x11": {
+            "idle_method": "poll",
+            "get_idle_ms": "xprintidle",
+            "reset_idle": "xset s reset",
+            "monitors_off": "sleep 1.0; exec xset dpms force off",
+            "must_haves": ["xprintidle", "xset"]
+        },
+        "wayland": {
+            "idle_method": "swayidle",
+            "must_haves": ["swayidle"]
+        }
+    },
     "desktops": [
         {
             "name": "i3",
             "detect_desktop": "i3",
             "session_type": "x11",
-            "idle_method": "poll",
             "lock_args_ini_key": "i3lock_args",
             "lock_before_suspend": true,
-            "get_idle_ms": "xprintidle",
-            "reset_idle": "xset s reset",
-            "monitors_off": "sleep 1.0; exec xset dpms force off",
             "locker": "pkill i3lock; sleep 0.5; i3lock --ignore-empty-password --show-failed-attempt",
             "logoff": "i3-msg exit",
             "reload_wm": "i3-msg reload",
             "restart_wm": "i3-msg restart",
-            "must_haves": ["systemctl", "i3-msg", "i3lock", "xprintidle", "xset"]
+            "must_haves": ["i3-msg", "i3lock"]
         },
         {
             "name": "sway",
             "detect_desktop": "sway",
             "session_type": "wayland",
-            "idle_method": "swayidle",
             "lock_args_ini_key": "swaylock_args",
             "locker": "swaylock --ignore-empty-password --show-failed-attempt",
             "swayidle_locker": "pkill swaylock ; exec swaylock --ignore-empty-password --show-failed-attempts",
@@ -41,29 +49,61 @@
             "swayidle_unblanker": "swaymsg \"output * dpms on\"",
             "logoff": "swaymsg exit",
             "reload_wm": "swaymsg reload",
-            "must_haves": ["systemctl", "swaymsg", "swaylock", "swayidle"]
+            "must_haves": ["swaymsg", "swaylock"]
+        },
+        {
+            "name": "hyprland",
+            "detect_desktop": "hyprland",
+            "session_type": "wayland",
+            "swayidle_blanker": "hyprctl dispatch dpms off",
+            "swayidle_unblanker": "hyprctl dispatch dpms on",
+            "logoff": "hyprctl dispatch exit",
+            "reload_wm": "hyprctl reload",
+            "must_haves": ["hyprctl"]
         },
         {
             "name": "kde-x11",
             "detect_desktop": "kde",
             "session_type": "x11",
-            "idle_method": "poll",
-            "get_idle_ms": "xprintidle",
-            "reset_idle": "xset s reset",
-            "monitors_off": "sleep 1.0; exec xset dpms force off",
-            "locker": "loginctl lock-session",
             "logoff": "qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout",
             "restart_wm": "killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray",
-            "must_haves": ["systemctl", "loginctl", "xprintidle", "xset"]
+            "must_haves": ["loginctl"]
         },
         {
             "name": "kde-wayland",
             "detect_desktop": "kde",
             "session_type": "wayland",
-            "idle_method": "swayidle",
-            "locker": "loginctl lock-session",
             "logoff": "pkill kwin",
-            "must_haves": ["systemctl", "loginctl", "swayidle"]
+            "must_haves": ["loginctl"]
+        },
+        {
+            "name": "xfce",
+            "detect_desktop": "xfce",
+            "session_type": "x11",
+            "logoff": "xfce4-session-logout --logout",
+            "reload_wm": "xfce4-panel -r",
+            "must_haves": ["xfce4-session-logout"]
+        },
+        {
+            "name": "cinnamon",
+            "detect_desktop": "cinnamon",
+            "session_type": "x11",
+            "logoff": "cinnamon-session-quit --logout",
+            "must_haves": ["cinnamon-session-quit"]
+        },
+        {
+            "name": "mate",
+            "detect_desktop": "mate",
+            "session_type": "x11",
+            "logoff": "mate-session-save --logout",
+            "must_haves": ["mate-session-save"]
+        },
+        {
+            "name": "lxqt",
+            "detect_desktop": "lxqt",
+            "session_type": "x11",
+            "logoff": "lxqt-leave --logout",
+            "must_haves": ["lxqt-leave"]
         }
     ]
 }

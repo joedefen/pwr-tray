@@ -61,8 +61,10 @@ class PwrTray:
             return json.load(f)
 
     @staticmethod
-    def detect_de(de_config):
-        """Detect the current DE from environment using JSON config rules."""
+    def detect_de(de_json):
+        """Detect the current DE from environment using JSON config rules.
+        Merges three layers: defaults -> session_type (x11/wayland) -> desktop.
+        Returns merged config dict."""
         xdg_desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
         desktop_session = os.environ.get('DESKTOP_SESSION', '').lower()
         session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
@@ -72,14 +74,27 @@ class PwrTray:
             f' DESKTOP_SESSION={desktop_session!r}'
             f' XDG_SESSION_TYPE={session_type!r}')
 
-        for entry in de_config['desktops']:
-            detect = entry['detect_desktop'].lower()
-            stype = entry['session_type'].lower()
-            if detect in desktop_str and stype == session_type:
-                prt(f'ENV: matched {entry["name"]!r}')
-                return entry
+        # Session type layer (x11 or wayland)
+        session_cfg = de_json.get('session_types', {}).get(session_type, {})
 
-        known = [e['name'] for e in de_config['desktops']]
+        for entry in de_json['desktops']:
+            detect = entry['detect_desktop'].lower()
+            stype = entry.get('session_type', '').lower()
+            if detect in desktop_str and (not stype or stype == session_type):
+                # Merge: session_type defaults, then desktop entry wins
+                merged = dict(session_cfg)
+                merged.update(entry)
+                # Accumulate must_haves from all layers
+                must = (de_json['defaults'].get('must_haves', [])
+                        + session_cfg.get('must_haves', [])
+                        + entry.get('must_haves', []))
+                merged['must_haves'] = sorted(set(must))
+                if 'session_type' not in merged:
+                    merged['session_type'] = session_type
+                prt(f'ENV: matched {merged["name"]!r} ({session_type})')
+                return merged
+
+        known = [e['name'] for e in de_json['desktops']]
         assert False, (f'no DE matched: {desktop_str!r} / {session_type!r}'
                        f' (known: {known})')
 
@@ -160,8 +175,8 @@ class PwrTray:
             if key in self.de_config:
                 self.variables[key] = self.de_config[key]
 
-        # Validate must_haves
-        must_haves = self.de_config.get('must_haves', de_json['defaults']['must_haves'])
+        # Validate must_haves (accumulated from defaults + session_type + desktop)
+        must_haves = self.de_config.get('must_haves', [])
         dont_haves = [cmd for cmd in set(must_haves) if shutil.which(cmd) is None]
         assert not dont_haves, f'commands NOT on $PATH: {dont_haves}'
 
@@ -730,9 +745,8 @@ class PwrTray:
         if this.de_config.get('lock_before_suspend'):
             PwrTray.run_command('locker')
         PwrTray.run_command('suspend')
-        # systemctl suspend blocks until resume; restart to restore tray icon
-        prt('suspend: resumed, restarting applet...')
-        PwrTray.restart_self(None)
+        # systemctl suspend blocks until resume
+        prt('suspend: resumed')
 
     @staticmethod
     def poweroff(_):
@@ -850,10 +864,11 @@ class PwrTray:
             if chunk:
                 self._resume_buf += chunk
                 if b'boolean false' in self._resume_buf:
-                    prt('resume detected, restarting...')
-                    self.restart_self(None)
+                    prt('resume detected')
+                    self._resume_buf = b''
+                    self.poll_100ms = True  # trigger immediate re-poll
                 # Prevent unbounded growth; keep tail for partial matches
-                if len(self._resume_buf) > 1024:
+                elif len(self._resume_buf) > 1024:
                     self._resume_buf = self._resume_buf[-512:]
         except BlockingIOError:
             pass
