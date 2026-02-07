@@ -1,0 +1,69 @@
+{
+    "defaults": {
+        "suspend": "systemctl suspend",
+        "poweroff": "systemctl poweroff",
+        "reboot": "systemctl reboot",
+        "logoff": "",
+        "monitors_off": "",
+        "locker": "",
+        "get_idle_ms": "",
+        "reset_idle": "",
+        "reload_wm": "",
+        "restart_wm": "",
+        "must_haves": ["systemctl"]
+    },
+    "desktops": [
+        {
+            "name": "i3",
+            "detect_desktop": "i3",
+            "session_type": "x11",
+            "idle_method": "poll",
+            "lock_args_ini_key": "i3lock_args",
+            "lock_before_suspend": true,
+            "get_idle_ms": "xprintidle",
+            "reset_idle": "xset s reset",
+            "monitors_off": "sleep 1.0; exec xset dpms force off",
+            "locker": "pkill i3lock; sleep 0.5; i3lock --ignore-empty-password --show-failed-attempt",
+            "logoff": "i3-msg exit",
+            "reload_wm": "i3-msg reload",
+            "restart_wm": "i3-msg restart",
+            "must_haves": ["systemctl", "i3-msg", "i3lock", "xprintidle", "xset"]
+        },
+        {
+            "name": "sway",
+            "detect_desktop": "sway",
+            "session_type": "wayland",
+            "idle_method": "swayidle",
+            "lock_args_ini_key": "swaylock_args",
+            "locker": "swaylock --ignore-empty-password --show-failed-attempt",
+            "swayidle_locker": "pkill swaylock ; exec swaylock --ignore-empty-password --show-failed-attempts",
+            "swayidle_blanker": "swaymsg \"output * dpms off\"",
+            "swayidle_unblanker": "swaymsg \"output * dpms on\"",
+            "logoff": "swaymsg exit",
+            "reload_wm": "swaymsg reload",
+            "must_haves": ["systemctl", "swaymsg", "swaylock", "swayidle"]
+        },
+        {
+            "name": "kde-x11",
+            "detect_desktop": "kde",
+            "session_type": "x11",
+            "idle_method": "poll",
+            "get_idle_ms": "xprintidle",
+            "reset_idle": "xset s reset",
+            "monitors_off": "sleep 1.0; exec xset dpms force off",
+            "locker": "loginctl lock-session",
+            "logoff": "qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout",
+            "restart_wm": "killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray",
+            "must_haves": ["systemctl", "loginctl", "xprintidle", "xset"]
+        },
+        {
+            "name": "kde-wayland",
+            "detect_desktop": "kde",
+            "session_type": "wayland",
+            "idle_method": "swayidle",
+            "locker": "loginctl lock-session",
+            "logoff": "pkill kwin",
+            "must_haves": ["systemctl", "loginctl", "swayidle"]
+        }
+    ]
+}
