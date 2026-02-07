@@ -77,24 +77,24 @@ class PwrTray:
         # Session type layer (x11 or wayland)
         session_cfg = de_json.get('session_types', {}).get(session_type, {})
 
-        for entry in de_json['desktops']:
-            detect = entry['detect_desktop'].lower()
-            stype = entry.get('session_type', '').lower()
-            if detect in desktop_str and (not stype or stype == session_type):
+        # Desktop keys are compound: "kde-wayland", "i3-x11", etc.
+        for compound_name, entry in de_json['desktops'].items():
+            detect, stype = compound_name.rsplit('-', 1)
+            if detect in desktop_str and stype == session_type:
                 # Merge: session_type defaults, then desktop entry wins
                 merged = dict(session_cfg)
                 merged.update(entry)
+                merged['name'] = compound_name
+                merged['session_type'] = stype
                 # Accumulate must_haves from all layers
                 must = (de_json['defaults'].get('must_haves', [])
                         + session_cfg.get('must_haves', [])
                         + entry.get('must_haves', []))
                 merged['must_haves'] = sorted(set(must))
-                if 'session_type' not in merged:
-                    merged['session_type'] = session_type
-                prt(f'ENV: matched {merged["name"]!r} ({session_type})')
+                prt(f'ENV: matched {compound_name!r}')
                 return merged
 
-        known = [e['name'] for e in de_json['desktops']]
+        known = list(de_json['desktops'].keys())
         assert False, (f'no DE matched: {desktop_str!r} / {session_type!r}'
                        f' (known: {known})')
 
