@@ -22,8 +22,6 @@ class IniTool:
     def __init__(self, paths_only=False):
         self.defaults = {
             'Settings': {
-                'i3lock_args': '-t -i ./lockpaper.png',
-                'swaylock_args': '-i ./lockpaper.png',
                 'debug_mode': False,
                 'power_down': False,
                 'turn_off_monitors': False,

@@ -5,6 +5,7 @@
         "reboot": "systemctl reboot",
         "logoff": "",
         "monitors_off": "",
+        "monitors_on": "",
         "locker": "loginctl lock-session",
         "get_idle_ms": "",
         "reset_idle": "",
@@ -27,27 +28,21 @@
     },
     "desktops": {
         "i3-x11": {
-            "lock_args_ini_key": "i3lock_args",
-            "lock_before_suspend": true,
-            "locker": "pkill i3lock; sleep 0.5; i3lock --ignore-empty-password --show-failed-attempt",
             "logoff": "i3-msg exit",
             "reload_wm": "i3-msg reload",
             "restart_wm": "i3-msg restart",
-            "must_haves": ["i3-msg", "i3lock"]
+            "must_haves": ["i3-msg"]
         },
         "sway-wayland": {
-            "lock_args_ini_key": "swaylock_args",
-            "locker": "swaylock --ignore-empty-password --show-failed-attempt",
-            "swayidle_locker": "pkill swaylock ; exec swaylock --ignore-empty-password --show-failed-attempts",
-            "swayidle_blanker": "swaymsg \"output * dpms off\"",
-            "swayidle_unblanker": "swaymsg \"output * dpms on\"",
+            "monitors_off": "swaymsg \"output * dpms off\"",
+            "monitors_on": "swaymsg \"output * dpms on\"",
             "logoff": "swaymsg exit",
             "reload_wm": "swaymsg reload",
-            "must_haves": ["swaymsg", "swaylock"]
+            "must_haves": ["swaymsg"]
         },
         "hyprland-wayland": {
-            "swayidle_blanker": "hyprctl dispatch dpms off",
-            "swayidle_unblanker": "hyprctl dispatch dpms on",
+            "monitors_off": "hyprctl dispatch dpms off",
+            "monitors_on": "hyprctl dispatch dpms on",
             "logoff": "hyprctl dispatch exit",
             "reload_wm": "hyprctl reload",
             "must_haves": ["hyprctl"]

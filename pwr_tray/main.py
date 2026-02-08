@@ -680,17 +680,6 @@ class PwrTray:
     def run_command(key):
         this = PwrTray.singleton
         command = this.variables.get(key, None)
-        if command and key == 'locker':
-            ini_key = this.de_config.get('lock_args_ini_key', '')
-            if ini_key and hasattr(this.get_params(), ini_key):
-                append = getattr(this.get_params(), ini_key)
-                if not append:
-                    append = '-t -i ./lockpaper.png'
-                command += ' ' + append
-
-#       elif key == 'dimmer':
-#           percent = int(round(int(thisget_params()params.dim_pct_brightness), 0))
-#           command = command.replace('{percent}', str(percent))
 
         if command:
             prt(f'+ {command}')
@@ -742,8 +731,7 @@ class PwrTray:
         this = PwrTray.singleton
         this.set_state('Asleep')
         this.reset_xidle_ms()
-        if this.de_config.get('lock_before_suspend'):
-            PwrTray.run_command('locker')
+        PwrTray.run_command('locker')
         PwrTray.run_command('suspend')
         # systemctl suspend blocks until resume
         prt('suspend: resumed')

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sway does not provide a way to get the idle time, and so the fundamental design
-of pwr-tray using idle time does nto work.  Instead, for sway, we must basically
-set up swayidle to run our config, and if there are special actions like
-blank now, we have to kill the running swayidle and start one that does what
-we want.
+Wayland compositors do not provide a way to poll idle time, so the fundamental
+design of pwr-tray using idle time polling does not work.  Instead, for Wayland,
+we manage swayidle to run our config, and if there are special actions like
+blank now, we kill the running swayidle and start one that does what we want.
 """
 # pylint: disable=invalid-name,consider-using-with
 import subprocess
@@ -21,20 +20,18 @@ class SwayIdleManager:
         self.process = None
         self.applet = applet
         self.current_cmd = ''
-        # Build clauses from de_config (no DE-specific branching)
-        de = applet.de_config
-        locker = de.get('swayidle_locker') or applet.variables.get('locker', '')
-        blanker = de.get('swayidle_blanker', '')
-        unblanker = de.get('swayidle_unblanker', '')
+        # Build clauses from merged variables (no DE-specific branching)
+        v = applet.variables
+        locker = v.get('locker', '')
+        blanker = v.get('monitors_off', '')
+        unblanker = v.get('monitors_on', '')
         self.clauses = SimpleNamespace(
             leader="""exec swayidle""",
-            locker=""" timeout [lock_s] '[screenlock] [lockopts]'""",
+            locker=f""" timeout [lock_s] '{locker}'""" if locker else "",
             blanker=f""" timeout [blank_s] '{blanker}'""" if blanker else "",
             sleeper=""" timeout [sleep_s] 'systemctl suspend'""",
-            before_sleep=""" before-sleep '[screenlock] [lockopts]'""",
-            after_resume=""" after-resume '[unblank]'""" if unblanker else "",
-            screenlock=locker,
-            unblank=f'; {unblanker}' if unblanker else '',
+            before_sleep=f""" before-sleep '{locker}'""" if locker else "",
+            after_resume=f""" after-resume '{unblanker}'""" if unblanker else "",
         )
         self.kill_other_swayidle()
 
@@ -57,54 +54,37 @@ class SwayIdleManager:
             return # none left
 
     def build_cmd(self, mode=None):
-        """ Build the swayidle command line from the current statue. """
+        """ Build the swayidle command line from the current state. """
 
-        # lock_s, lockopts, sleep_s, blank_s, dim_s = None, '', None, None, None
-        lock_s, lockopts, sleep_s, blank_s = None, '', None, None
+        lock_s, sleep_s, blank_s = None, None, None
         mode = mode if mode else self.applet.get_effective_mode()
-        til_sleep_s, sleeping = None, False
+        sleeping = False
 
-        ini_key = self.applet.de_config.get('lock_args_ini_key', '')
-        lockopts = getattr(self.applet.get_params(), ini_key, '') if ini_key else ''
         quick = self.applet.quick
         a_minute = 30 if quick else 60
 
         if mode in ('LockOnly', 'SleepAfterLock'):
             lock_s = self.applet.get_lock_min_list()[0] * a_minute
-            til_sleep_s = lock_s
             if self.applet.get_params().turn_off_monitors:
                 blank_s = 20 + lock_s
         if mode in ('SleepAfterLock', ):
             sleep_s = self.applet.get_sleep_min_list()[0] * a_minute
-            til_sleep_s = sleep_s
             sleeping = True
 
         til_sleep_s, blanking = 0, False
         cmd = self.clauses.leader
         if isinstance(lock_s, (int,float)) and lock_s >= 0:
             til_sleep_s += lock_s
-            cmd += self.clauses.locker.replace(
-                "[lock_s]", str(lock_s)).replace(
-                '[lockopts]', lockopts).replace(
-                '[screenlock]', self.clauses.screenlock)
+            cmd += self.clauses.locker.replace("[lock_s]", str(lock_s))
         if sleeping:
             til_sleep_s += sleep_s
             cmd += self.clauses.sleeper.replace("[sleep_s]", str(til_sleep_s))
         if blank_s is not None:
             blanking = True
             cmd += self.clauses.blanker.replace('[blank_s]', str(blank_s))
-#       if isinstance(dim_s, (int,float)) and dim_s >= 0:
-#           dimming = True
-#           cmd += self.clauses.dimmer.replace('[dim_s]', str(dim_s))
-        cmd += self.clauses.before_sleep.replace(
-             "[sleep_s]", str(til_sleep_s)).replace(
-                 '[lockopts]', lockopts).replace(
-                 '[screenlock]', self.clauses.screenlock)
-#       cmd += self.clauses.after_resume.replace(
-#            "[undim]", self.clauses.undim if dimming else '')
+        cmd += self.clauses.before_sleep
         if blanking:
-            cmd += self.clauses.after_resume.replace(
-                 "[unblank]", self.clauses.unblank if blanking else '')
+            cmd += self.clauses.after_resume
 
         rv, self.current_cmd = bool(cmd != self.current_cmd), cmd
         if rv:
