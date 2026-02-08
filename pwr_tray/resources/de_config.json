@@ -28,24 +28,27 @@
     },
     "desktops": {
         "i3-x11": {
+            "locker": "i3lock --ignore-empty-password --show-failed-attempts",
             "logoff": "i3-msg exit",
             "reload_wm": "i3-msg reload",
             "restart_wm": "i3-msg restart",
-            "must_haves": ["i3-msg"]
+            "must_haves": ["i3-msg", "i3lock"]
         },
         "sway-wayland": {
+            "locker": "swaylock --ignore-empty-password --show-failed-attempts",
             "monitors_off": "swaymsg \"output * dpms off\"",
             "monitors_on": "swaymsg \"output * dpms on\"",
             "logoff": "swaymsg exit",
             "reload_wm": "swaymsg reload",
-            "must_haves": ["swaymsg"]
+            "must_haves": ["swaymsg", "swaylock"]
         },
         "hyprland-wayland": {
+            "locker": "swaylock --ignore-empty-password --show-failed-attempts",
             "monitors_off": "hyprctl dispatch dpms off",
             "monitors_on": "hyprctl dispatch dpms on",
             "logoff": "hyprctl dispatch exit",
             "reload_wm": "hyprctl reload",
-            "must_haves": ["hyprctl"]
+            "must_haves": ["hyprctl", "swaylock"]
         },
         "kde-x11": {
             "logoff": "qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout",

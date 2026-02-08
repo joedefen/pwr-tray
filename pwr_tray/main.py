@@ -61,44 +61,55 @@ class PwrTray:
             return json.load(f)
 
     @staticmethod
-    def detect_de(de_json):
+    def detect_de(de_json, force_de=None):
         """Detect the current DE from environment using JSON config rules.
         Merges three layers: defaults -> session_type (x11/wayland) -> desktop.
-        Returns merged config dict."""
+        Returns merged config dict.  Use force_de to skip detection."""
         xdg_desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+        xdg_session_desktop = os.environ.get('XDG_SESSION_DESKTOP', '').lower()
         desktop_session = os.environ.get('DESKTOP_SESSION', '').lower()
         session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
-        desktop_str = xdg_desktop or desktop_session
+        desktop_str = f'{xdg_desktop} {xdg_session_desktop} {desktop_session}'
 
         prt(f'ENV: XDG_CURRENT_DESKTOP={xdg_desktop!r}'
+            f' XDG_SESSION_DESKTOP={xdg_session_desktop!r}'
             f' DESKTOP_SESSION={desktop_session!r}'
             f' XDG_SESSION_TYPE={session_type!r}')
 
-        # Session type layer (x11 or wayland)
-        session_cfg = de_json.get('session_types', {}).get(session_type, {})
+        session_types = de_json.get('session_types', {})
+
+        def _merge(compound_name, entry):
+            _, stype = compound_name.rsplit('-', 1)
+            scfg = session_types.get(stype, {})
+            merged = dict(scfg)
+            merged.update(entry)
+            merged['name'] = compound_name
+            merged['session_type'] = stype
+            must = (de_json['defaults'].get('must_haves', [])
+                    + scfg.get('must_haves', [])
+                    + entry.get('must_haves', []))
+            merged['must_haves'] = sorted(set(must))
+            return merged
+
+        # --de override: skip detection
+        if force_de:
+            assert force_de in de_json['desktops'], (
+                f'--de {force_de!r} not in {list(de_json["desktops"].keys())}')
+            prt(f'ENV: forced {force_de!r}')
+            return _merge(force_de, de_json['desktops'][force_de])
 
         # Desktop keys are compound: "kde-wayland", "i3-x11", etc.
         for compound_name, entry in de_json['desktops'].items():
             detect, stype = compound_name.rsplit('-', 1)
             if detect in desktop_str and stype == session_type:
-                # Merge: session_type defaults, then desktop entry wins
-                merged = dict(session_cfg)
-                merged.update(entry)
-                merged['name'] = compound_name
-                merged['session_type'] = stype
-                # Accumulate must_haves from all layers
-                must = (de_json['defaults'].get('must_haves', [])
-                        + session_cfg.get('must_haves', [])
-                        + entry.get('must_haves', []))
-                merged['must_haves'] = sorted(set(must))
                 prt(f'ENV: matched {compound_name!r}')
-                return merged
+                return _merge(compound_name, entry)
 
         known = list(de_json['desktops'].keys())
         assert False, (f'no DE matched: {desktop_str!r} / {session_type!r}'
                        f' (known: {known})')
 
-    def __init__(self, ini_tool, quick=False):
+    def __init__(self, ini_tool, quick=False, force_de=None):
         PwrTray.singleton = self
         self.app = QApplication([])
         self.app.setQuitOnLastWindowClosed(False)
@@ -164,7 +175,7 @@ class PwrTray:
 
         # Load DE config from JSON and detect environment
         de_json = self.load_de_config(ini_tool.folder)
-        self.de_config = self.detect_de(de_json)
+        self.de_config = self.detect_de(de_json, force_de=force_de)
         self.graphical = self.de_config['name']
         self.is_wayland = self.de_config['session_type'] == 'wayland'
 
@@ -884,6 +895,8 @@ def main():
             help='exec ${EDITOR:-vim} on config.ini file')
     parser.add_argument('-q', '--quick', action='store_true',
             help='quick mode (1m lock + 1m sleep')
+    parser.add_argument('--de', metavar='NAME',
+            help='force desktop (e.g. i3-x11, sway-wayland, kde-wayland)')
     opts = parser.parse_args()
 
     if opts.edit_config:
@@ -916,7 +929,7 @@ def main():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override
 
 
-    tray = PwrTray(ini_tool=ini_tool, quick=opts.quick)
+    tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de)
     tray.app.exec_()
 
 if __name__ == "__main__":
