@@ -1,6 +1,6 @@
 # pwr-tray
 
-`pwr-tray` is a PyQt5 Tray Applet for Power/Energy Saving and System/DE Controls; currently supported/tested DEs are: i3wm, swaywm, and KDE (X11 and Wayland). `systemd` is required. The `pwr-tray` menu will look similar to:
+`pwr-tray` is a PyQt5 Tray Applet for Power/Energy Saving and System/DE Controls. Tested DEs include i3wm, swaywm, Hyprland, and KDE (X11 and Wayland). Additional DEs with built-in configs: XFCE, Cinnamon, MATE, and LXQt. `systemd` is required. The `pwr-tray` menu will look similar to:
 
 <p align="center">
   <img src="https://github.com/joedefen/pwr-tray/blob/main/images/pwr-tray-screenshot.png?raw=true" alt="screenshot">
@@ -21,7 +21,7 @@ With just a right-click and a left-click, you can do most operations such as cha
 ---
 
 ### Requirements
-* **Python** 3.8+ with **PyQt5** (5.15+)
+* **Python** 3.8+ with **PyQt5** (5.15+) and **ruamel.yaml** (0.17+)
 * **systemd** (for `systemctl`, `loginctl`, `systemd-inhibit`)
 * **pipx** (recommended for installation)
 
@@ -29,10 +29,15 @@ Per-DE requirements:
 
 | DE | Required Packages | Notes |
 |----|-------------------|-------|
-| **i3wm** | `i3lock`, `xprintidle`, `xset`, `xss-lock` | X11 only |
+| **i3wm** | `i3lock`, `xprintidle`, `xset` | X11 only; `xss-lock` recommended (see below) |
 | **sway** | `swaylock`, `swayidle` (1.8+) | `pwr-tray` manages `swayidle` |
-| **KDE Wayland** | `qdbus6`, `swayidle` (1.8+) | Requires **Plasma 6**; `pwr-tray` manages `swayidle` |
-| **KDE X11** | `qdbus`/`qdbus6`, `xprintidle`, `xset` | Plasma 6 (Plasma 5 untested) |
+| **Hyprland** | `swaylock`, `swayidle` (1.8+) | `pwr-tray` manages `swayidle` |
+| **KDE Wayland** | `swayidle` (1.8+) | Requires **Plasma 6**; `pwr-tray` manages `swayidle` |
+| **KDE X11** | `xprintidle`, `xset` | Plasma 6 (Plasma 5 untested); `qdbus`/`qdbus6` auto-detected |
+| **XFCE** | `xprintidle`, `xset` | X11 only |
+| **Cinnamon** | `xprintidle`, `xset` | X11 only |
+| **MATE** | `xprintidle`, `xset` | X11 only |
+| **LXQt** | `xprintidle`, `xset` | X11 only |
 
 **Distro notes:**
 * Developed and tested on **Debian 13 (trixie)**. Should work on any distro with sufficiently recent packages.
@@ -46,6 +51,7 @@ Per-DE requirements:
 * Basically: `pipx install pwr-tray` (exactly how depends on your installation and its state)
 * Manually run as `pwr-tray -o`:
     * Creates config (in `~/.config/pwr-tray/config.ini`).
+    * Copies default DE commands to `~/.config/pwr-tray/commands.yaml`.
     * Shows system-level commands (DE dependent) that must be installed if missing. Note:
       * `systemctl` is always required.
       * Optionally, install `playerctl` if you wish playing media to inhibit screen saving and sleeping.
@@ -66,6 +72,7 @@ Per-DE requirements:
 | `-q`, `--quick` | Quick mode: sets lock and sleep timeouts to 1 minute and runs double-time (timers expire in 30s wall clock). Useful for testing. |
 | `-e`, `--edit-config` | Open `~/.config/pwr-tray/config.ini` in `$EDITOR` (default: `vim`). |
 | `-f`, `--follow-log` | Tail the log file (`~/.config/pwr-tray/debug.log`). |
+| `--de NAME` | Force desktop detection (e.g., `--de i3-x11`, `--de sway-wayland`, `--de kde-wayland`). Useful when env vars are unreliable. |
 
 For initial setup and troubleshooting, `pwr-tray -D -o` is a good starting point.
 
@@ -114,6 +121,8 @@ Or act on the applet itself:
 ---
 
 ### HowTo Configure pwr-tray
+
+#### config.ini
 - When the program is started w/o a `config.ini`, that file is created with defaults.
 - It has three sections:
     * **Settings**: The settings for when plugged in.  Missing/invalid settings are inherited from the defaults. Here are the defaults:
@@ -123,8 +132,6 @@ Or act on the applet itself:
 Here are the current 'Settings' defaults with explanation.
 ```
     [Settings]
-    i3lock_args = -t -i ./lockpaper.png # extra arguments for i3lock
-    swaylock_args = -i ./lockpaper.png  # extra arguments for swaylock
     debug_mode = False                  # more frequent and elaborate logging
     power_down = False                  # power down (rather than suspend)
     turn_off_monitors = False           # turn off monitors after locking screen
@@ -137,10 +144,23 @@ Here are the current 'Settings' defaults with explanation.
 * If you have issues with monitors failing to sleep or the system cannot wake when the monitors are off, then disable the `turn_off_monitors` feature.
 * You can set `gui_editor = konsole -e vim`, for example, to use vim in a terminal window.  If you don't have `geany` installed, then be sure to change `gui_editor`.
 * `pwr-tray` changes directory to `~/.config/pwr-tray`.
-* If its .ini file is missing, it is created and `lockpaper.png` is copied there too.
 * Your picks of mode, timeouts, etc. are saved to disk when changed, and restored on the next start.
 * Items may be absent depending on the mode and battery state.
 - **NOTE**: when in LoBattery, SleepAfterLock becomes the effective mode. The icon will change per your selection and the battery state.
+
+#### commands.yaml (DE commands)
+On each startup, `pwr-tray` copies its built-in `commands.yaml` to `~/.config/pwr-tray/commands.yaml` so you can always see the current defaults. To customize DE commands (e.g., fix a logoff command, change the locker, add a new DE):
+
+1. Copy `commands.yaml` to `my-commands.yaml` in the same folder:
+   ```
+   cp ~/.config/pwr-tray/commands.yaml ~/.config/pwr-tray/my-commands.yaml
+   ```
+2. Edit `my-commands.yaml` as needed.
+3. Restart `pwr-tray`.
+
+`pwr-tray` loads `my-commands.yaml` if it exists, otherwise falls back to the built-in `commands.yaml`. The `my-commands.yaml` file is never overwritten by `pwr-tray`.
+
+The config uses a three-layer merge: **defaults** → **session_type** (x11 or wayland) → **desktop**. Later layers override earlier ones. Desktop entries are keyed by compound names like `i3-x11` or `kde-wayland`; the part before the last `-` is matched against environment variables (`$XDG_CURRENT_DESKTOP`, `$XDG_SESSION_DESKTOP`, `$DESKTOP_SESSION`), and the suffix must match `$XDG_SESSION_TYPE`.
 
 ---
 
@@ -151,18 +171,17 @@ Here are the current 'Settings' defaults with explanation.
 ```
         exec --no-startup-id xset s off ; xset s noblank ; xset -dpms
 ```
-* Edit `/etc/systemd/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, set each action to `suspend`, and then either reboot or restart `systemd-logind`.  That enables `xss-lock` to handle those keys.
-* In your config, arrange for the power key (when set to suspend) to also have the system locked on power up with:
+* **Recommended**: Install `xss-lock` and configure it in your i3 config to handle lid close and power button events:
 ```
 set $screenlock i3lock -t -i ~/.config/pwr-tray/lockpaper.png --ignore-empty-password --show-failed-attempts
 exec --no-startup-id xss-lock --transfer-sleep-lock -- $screenlock --nofork
 bindsym XF86PowerOff exec --no-startup-id $screenlock && systemctl suspend
 bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock screen only
-
 ```
+* Edit `/etc/systemd/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, set each action to `suspend`, and then either reboot or restart `systemd-logind`.
 * Finally, start your pwr-tray somehow. Below is a simplest case using `i3status`, but it may depend on your status bar:
 ```
-        bar { 
+        bar {
             status_command i3status
             tray_output primary
         }
@@ -171,15 +190,28 @@ bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock 
 * If you use `polybar` for status, then it may be best to run `pwr-tray` from polybar's 'launch' script; e.g., `sleep 1.5 && setsid ~/.local/bin/pwr-tray &`;  the delay may be need to allow time for the tray to become ready.
 
 ### sway Specific Notes
-* Uninstall or disable all competing energy saving programs (e.g., `swayidle`, `xfce4-power-manager`, etc.) when running `sway` whether started by `systemd` or `sway/config` or whatever.
-* **NOTE**: on `sway`, `pwr-tray` cannot read the idle time and do its usual micromanagement; instead, it runs a `swayidle` command whose arguments may vary with your settings.
+* Uninstall or disable any **other** `swayidle` instances or competing energy savers. `pwr-tray` manages its own `swayidle` process and will kill any stray instances on startup.
+* **NOTE**: on `sway`, `pwr-tray` cannot read the idle time directly; instead, it manages a `swayidle` process whose arguments vary with your settings.
 * Edit `/etc/systemd/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, and set each action to `suspend`; then either reboot or restart `systemd-logind`.  That enables the ever-running `swayidle` to handle the suspend / resume events.
 * Again, find a way to start `pwr-tray`; perhaps adding to sway's config: `exec_always --no-startup-id sleep 2 && ~/.local/bin/pwr-tray`; a delay may be required to let the tray initialize.
+
+### Hyprland Specific Notes
+* Disable any other idle managers. `pwr-tray` manages its own `swayidle` process.
+* Start `pwr-tray` via Hyprland's `exec-once`:
+```
+exec-once = sleep 2 && ~/.local/bin/pwr-tray
+```
+* Screen locking uses `swaylock`; monitor control uses `hyprctl dispatch dpms`.
 
 ### KDE Specific Notes
 * In Settings/Energy Saving, disable "Screen Energy Saving", "Suspend session", etc., except keep the "Button events handling" and make it as you wish (e.g., "When power button pressed", "Sleep").
 * In Settings/AutoStart, add the full path of `~/.local/bin/pwr-tray`.
-* `qdbus` (or `qdbus6` on Plasma 6) is required; `pwr-tray` auto-detects which is available.
-* On **KDE Wayland**, `swayidle` is required (install it if missing). `pwr-tray` manages `swayidle` for idle timeout handling since KDE Wayland does not expose idle time via D-Bus. Locking uses `loginctl lock-session`.
+* `qdbus` (or `qdbus6` on Plasma 6) is required for X11; `pwr-tray` auto-detects which is available.
+* On **KDE Wayland**, `swayidle` is required (install it if missing). `pwr-tray` manages `swayidle` for idle timeout handling. Locking uses `loginctl lock-session`.
 * On **KDE X11**, idle time is read via `xprintidle` and screen locking uses `loginctl lock-session`.
 
+### Other DEs (XFCE, Cinnamon, MATE, LXQt)
+* These DEs have built-in configs that should work out of the box on X11.
+* Disable any competing energy saving features in the DE's own power settings.
+* Screen locking uses `loginctl lock-session` (the DE provides the lock handler).
+* If the built-in commands don't work for your setup, create a `my-commands.yaml` override (see above).

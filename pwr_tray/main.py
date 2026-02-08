@@ -20,6 +20,7 @@ import re
 import subprocess
 import json
 import shutil
+from ruamel.yaml import YAML
 import atexit
 import time
 import traceback
@@ -53,12 +54,18 @@ class PwrTray:
 
     @staticmethod
     def load_de_config(config_dir):
-        """Load DE config JSON, copying default to user config dir if needed."""
-        user_json = os.path.join(config_dir, 'de_config.json')
-        if not os.path.exists(user_json):
-            Utils.copy_to_folder('de_config.json', config_dir)
-        with open(user_json, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        """Load DE commands YAML config.
+        - Always copies default commands.yaml to config dir (so user sees latest)
+        - If my-commands.yaml exists in config dir, loads that instead
+        """
+        yaml = YAML()
+        Utils.copy_to_folder('commands.yaml', config_dir)
+        user_yaml = os.path.join(config_dir, 'my-commands.yaml')
+        if not os.path.exists(user_yaml):
+            user_yaml = os.path.join(config_dir, 'commands.yaml')
+        prt(f'loading DE config: {user_yaml}')
+        with open(user_yaml, 'r', encoding='utf-8') as f:
+            return dict(yaml.load(f))
 
     @staticmethod
     def detect_de(de_json, force_de=None):
