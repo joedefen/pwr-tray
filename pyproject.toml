@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "pwr_tray"
-version = "1.0.6"
+version = "1.0.7"
 description = "A GTK tray applet for power management for i3/sway/KDE"
 authors = [
     { name = "Joe Defen", email = "joedef@google.com" }

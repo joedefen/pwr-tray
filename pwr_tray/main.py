@@ -198,6 +198,14 @@ class PwrTray:
         dont_haves = [cmd for cmd in set(must_haves) if shutil.which(cmd) is None]
         assert not dont_haves, f'commands NOT on $PATH: {dont_haves}'
 
+        # Expand {{variable}} references in command values
+        for key, val in list(self.variables.items()):
+            if isinstance(val, str) and '{{' in val:
+                self.variables[key] = re.sub(
+                    r'\{\{(\w+)\}\}',
+                    lambda m: self.variables.get(m.group(1), m.group(0)),
+                    val)
+
         # qdbus/qdbus6 auto-detection: replace 'qdbus ' in any command value
         has_qdbus = any(isinstance(v, str) and 'qdbus ' in v
                         for v in self.variables.values())
