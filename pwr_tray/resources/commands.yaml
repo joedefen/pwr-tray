@@ -58,6 +58,18 @@ desktops:
     reload_wm: hyprctl reload
     must_haves: [hyprctl, swaylock]
 
+  niri-wayland:
+    locker: swaylock -i {{wallpaper}} --ignore-empty-password --show-failed-attempts
+    monitors_off: niri msg action power-off-monitors
+    # Niri doesn't have a 'monitors-on' action because moving the mouse/typing 
+    # wakes them automatically, but you can leave it blank or use a no-op.
+    monitors_on: "" 
+    logoff: niri msg action quit
+    # Niri configuration is usually reloaded automatically on save, 
+    # but you can trigger it manually:
+    reload_wm: niri msg action reload-config
+    must_haves: [niri, swaylock]
+
   kde-x11:
     logoff: qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout
     restart_wm: killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray

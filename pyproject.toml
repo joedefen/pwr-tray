@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "pwr_tray"
-version = "1.0.7"
+version = "1.0.8"
 description = "A GTK tray applet for power management for i3/sway/KDE"
 authors = [
     { name = "Joe Defen", email = "joedef@google.com" }
@@ -12,7 +12,7 @@ authors = [
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.8"
-keywords = ["power", "energy", "GTK", "applet", "tray", "kde", "i3wm", "sway"]
+keywords = ["power", "energy", "GTK", "applet", "tray", "kde", "i3wm", "sway", "niri"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
