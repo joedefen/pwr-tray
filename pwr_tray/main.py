@@ -26,6 +26,7 @@ import time
 import traceback
 from types import SimpleNamespace
 import psutil
+import pydbus
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction #, QMessageBox
 from PyQt5.QtGui import QIcon, QCursor
 from PyQt5.QtCore import QTimer
@@ -752,7 +753,7 @@ class PwrTray:
                 prt(f"Edit Config ERR: {e}")
 
     @staticmethod
-    def suspend(_):
+    def old_suspend(_):
         """TBD"""
         this = PwrTray.singleton
         this.set_state('Asleep')
@@ -760,6 +761,28 @@ class PwrTray:
         PwrTray.run_command('locker')
         PwrTray.run_command('suspend')
         # systemctl suspend blocks until resume
+        prt('suspend: resumed')
+
+    @staticmethod
+    def suspend(_):
+        this = PwrTray.singleton
+        this.set_state('Asleep')
+        this.reset_xidle_ms()
+        
+        locker_cmd = this.variables.get('locker')
+        
+        # Logic: Only manually lock if we aren't in a 'Full' DE that handles it.
+        # Most tiling WMs (niri, sway, i3) need the manual kick.
+        is_full_de = any(name in this.de_config['name'] for name in ['kde', 'xfce', 'cinnamon'])
+
+        if locker_cmd and not is_full_de:
+            prt(f'+ {locker_cmd} (async spawn)')
+            subprocess.Popen(locker_cmd, shell=True)
+            # Give the locker a tiny head-start to grab the screen
+            time.sleep(0.2) 
+
+        # This is the "Point of No Return"
+        PwrTray.run_command('suspend')
         prt('suspend: resumed')
 
     @staticmethod
@@ -892,6 +915,22 @@ class PwrTray:
     def goodbye(message=''):
         prt(f'ENDED {message}')
 
+from pydbus import SessionBus
+import time
+
+def wait_for_tray(timeout=30):
+    """Wait for the StatusNotifierWatcher (the tray) to appear on DBus."""
+    bus = SessionBus()
+    for i in range(timeout):
+        try:
+            # Check if the tray watcher service is registered
+            if "org.kde.StatusNotifierWatcher" in bus.dbus.ListNames():
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
+
 
 def main():
     # pylint: disable=import-outside-toplevel
@@ -944,6 +983,8 @@ def main():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override
 
 
+    # Wait for the tray to be ready so we don't need 'sleep' in the config
+    wait_for_tray()
     tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de)
     tray.app.exec_()
 
