@@ -71,6 +71,34 @@ def prt(*args, **kwargs):
                 return False
         def reopen():
             global prt_to_init
+            
+            # Capture the old stdout/stderr to close them
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+
+            # Open the new one
+            new_f = open(prt_path, "a+", encoding='utf-8')
+            
+            # Redirect
+            sys.stdout = new_f
+            sys.stderr = new_f
+            os.dup2(new_f.fileno(), 1)
+            os.dup2(new_f.fileno(), 2)
+
+            # CLOSE the old ones if they weren't the original system TTYs
+            # This prevents the leak
+            try:
+                if old_stdout and not old_stdout.isatty():
+                    old_stdout.close()
+                if old_stderr and old_stderr is not old_stdout and not old_stderr.isatty():
+                    old_stderr.close()
+            except Exception:
+                pass
+
+            prt_to_init = False
+
+        def old_reopen():
+            global prt_to_init
             sys.stdout = open(prt_path, "a+", encoding='utf-8')
             sys.stderr = sys.stdout
             os.dup2(sys.stdout.fileno(), 1)
