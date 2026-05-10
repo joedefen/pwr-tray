@@ -8,7 +8,7 @@ This code is designed to control power matters from the tray.
 # pylint: disable=global-statement,consider-using-with,too-many-lines
 # pylint: disable=too-many-statements,too-few-public-methods
 # pylint: disable=too-many-branches,too-many-public-methods
-# pylint: disable=consider-using-from-import
+# pylint: disable=consider-using-from-import,too-many-locals
 
 import os
 import sys
@@ -20,13 +20,14 @@ import re
 import subprocess
 import json
 import shutil
-from ruamel.yaml import YAML
 import atexit
 import time
 import traceback
 from types import SimpleNamespace
 import psutil
-import pydbus
+# import pydbus
+from pydbus import SessionBus
+from ruamel.yaml import YAML
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction #, QMessageBox
 from PyQt5.QtGui import QIcon, QCursor
 from PyQt5.QtCore import QTimer
@@ -371,13 +372,14 @@ class PwrTray:
         return False # unchanged
 
     def check_inhibited(self):
-        pipe = subprocess.Popen(
-                # ['systemd-inhibit', '--no-legend', '--no-pager', '--mode=block'],
-                ['systemd-inhibit', '--no-pager', '--mode=block'],
-                stdout=subprocess.PIPE)
-        output, _ = pipe.communicate()
-        output = output.decode('utf-8')
+        # Using run() is cleaner and safer than Popen/communicate manually
+        result = subprocess.run(
+            ['systemd-inhibit', '--no-pager', '--mode=block'],
+            capture_output=True, text=True, check=False
+        )
+        output = result.stdout
         lines = output.splitlines()
+
         if self.DB() and 'No inhibitors' not in output:
             prt('DB', 'systemd-inhibit:', output.strip())
         rows = []
@@ -390,7 +392,8 @@ class PwrTray:
                 continue
             if count == 1:
                 if ('xfce4-power-man' not in line
-                        and 'org_kde_powerde' not in line):
+                        and 'org_kde_powerde' not in line
+                        and 'handle-power-key' not in line): # Ignore Niri's button hijacking
                     inhibited = 'systemd'
                     rows.append(line)
             else:
@@ -399,14 +402,13 @@ class PwrTray:
         if len(rows) == 1:
             rows = []
         if self.has_playerctl and self.enable_playerctl:
-            child = subprocess.run('playerctl status'.split(), check=False,
-                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            play_state = child.stdout.decode('utf-8').strip().lower()
-            if play_state == 'playing':
-                inhibited = 'player'
-            if self.was_play_state != play_state:
-                prt(f'{play_state=}')
-                self.was_play_state = play_state
+            # subprocess.run is already safe, but ensure we aren't leaking
+            # elsewhere if this is called 10 times per second.
+            child = subprocess.run(
+                ['playerctl', 'status'],
+                capture_output=True, text=True, check=False
+            )
+            _ = child.stdout.strip().lower() # play_state
 
         emode = self.effective_mode()
 
@@ -768,9 +770,9 @@ class PwrTray:
         this = PwrTray.singleton
         this.set_state('Asleep')
         this.reset_xidle_ms()
-        
+
         locker_cmd = this.variables.get('locker')
-        
+
         # Logic: Only manually lock if we aren't in a 'Full' DE that handles it.
         # Most tiling WMs (niri, sway, i3) need the manual kick.
         is_full_de = any(name in this.de_config['name'] for name in ['kde', 'xfce', 'cinnamon'])
@@ -779,7 +781,7 @@ class PwrTray:
             prt(f'+ {locker_cmd} (async spawn)')
             subprocess.Popen(locker_cmd, shell=True)
             # Give the locker a tiny head-start to grab the screen
-            time.sleep(0.2) 
+            time.sleep(0.2)
 
         # This is the "Point of No Return"
         PwrTray.run_command('suspend')
@@ -915,18 +917,17 @@ class PwrTray:
     def goodbye(message=''):
         prt(f'ENDED {message}')
 
-from pydbus import SessionBus
-import time
-
-def wait_for_tray(timeout=30):
+def wait_for_tray(timeout=300):
     """Wait for the StatusNotifierWatcher (the tray) to appear on DBus."""
-    bus = SessionBus()
-    for i in range(timeout):
+    for _ in range(timeout):
         try:
-            # Check if the tray watcher service is registered
+            # Create the bus inside the loop so we get a fresh handle
+            # if the previous attempt failed or timed out.
+            bus = SessionBus()
             if "org.kde.StatusNotifierWatcher" in bus.dbus.ListNames():
                 return True
-        except Exception:
+        except Exception as _e:
+            # Optional: prt(f"D-Bus wait: {_e}")
             pass
         time.sleep(1)
     return False

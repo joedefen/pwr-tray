@@ -7,6 +7,7 @@ we manage swayidle to run our config, and if there are special actions like
 blank now, we kill the running swayidle and start one that does what we want.
 """
 # pylint: disable=invalid-name,consider-using-with
+# pylint: disable=broad-exception-caught,subprocess-run-check
 import subprocess
 import time
 import os
