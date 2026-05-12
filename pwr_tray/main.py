@@ -37,6 +37,9 @@ from pwr_tray.Utils import prt, PyKill
 from pwr_tray.SwayIdleMgr import SwayIdleManager
 from pwr_tray.IniTool import IniTool
 
+SESSION_BUS = SessionBus()
+
+
 class PwrTray:
     """ pwr-tray main class.
     NOTES:
@@ -122,10 +125,10 @@ class PwrTray:
         PwrTray.singleton = self
         self.app = QApplication([])
         self.app.setQuitOnLastWindowClosed(False)
-        while not QSystemTrayIcon.isSystemTrayAvailable():
-            prt("System tray is not available. Retry in 1 second...")
-            time.sleep(1.0)
-        prt("System tray is available. Continuing...")
+#       while not QSystemTrayIcon.isSystemTrayAvailable():
+#           prt("System tray is not available. Retry in 1 second...")
+#           time.sleep(1.0)
+#       prt("System tray is available. Continuing...")
 
         self.ini_tool = ini_tool
         self.battery = SimpleNamespace(present=None,
@@ -470,9 +473,9 @@ class PwrTray:
         self.loop += 1
         if self.DB():
             prt('DB', f'on_timeout() {self.loop=}/{self.loop_sample} ...')
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            prt('SystemTray is gone ... restarting')
-            self.restart_self(None)
+#       if not QSystemTrayIcon.isSystemTrayAvailable():
+#           prt('SystemTray is gone ... restarting')
+#           self.restart_self(None)
 
         self._check_resume()
         self.reconfig()
@@ -919,15 +922,12 @@ class PwrTray:
 
 def wait_for_tray(timeout=300):
     """Wait for the StatusNotifierWatcher (the tray) to appear on DBus."""
-    for _ in range(timeout):
+    for i in range(timeout):
         try:
-            # Create the bus inside the loop so we get a fresh handle
-            # if the previous attempt failed or timed out.
-            bus = SessionBus()
-            if "org.kde.StatusNotifierWatcher" in bus.dbus.ListNames():
+            # Check if the name exists specifically rather than listing all
+            if SESSION_BUS.dbus.NameHasOwner("org.kde.StatusNotifierWatcher"):
                 return True
-        except Exception as _e:
-            # Optional: prt(f"D-Bus wait: {_e}")
+        except Exception:
             pass
         time.sleep(1)
     return False
@@ -985,7 +985,9 @@ def main():
 
 
     # Wait for the tray to be ready so we don't need 'sleep' in the config
+    prt("Waiting for tray...")
     wait_for_tray()
+    prt("                ... tray detected.")
     tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de)
     tray.app.exec_()
 
