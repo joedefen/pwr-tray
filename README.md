@@ -164,6 +164,64 @@ The config uses a three-layer merge: **defaults** → **session_type** (x11 or w
 
 ---
 
+## Running pwr-tray as a systemd Service
+
+Instead of your DE/WM's own autostart, you can run `pwr-tray` as a `systemd --user` service. That restarts the applet if it exits and keeps its logging consistent regardless of how the session was started. Save the unit below as `~/.config/systemd/user/pwr-tray.service`, then:
+
+```
+mkdir -p ~/.config/systemd/user ~/.local/log
+systemctl --user daemon-reload
+systemctl --user enable --now pwr-tray.service
+```
+
+Example unit for **sway / Wayland**:
+
+```
+[Unit]
+Description=pwr-tray (power/energy tray applet)
+PartOf=graphical-session.target
+After=graphical-session.target
+BindsTo=graphical-session.target
+Requires=dbus.socket
+After=dbus.socket
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=XDG_CURRENT_DESKTOP=sway
+Environment=XDG_SESSION_TYPE=wayland
+Environment=WAYLAND_DISPLAY=wayland-1
+ExecStartPre=/bin/sleep 1
+ExecStart=%h/.local/bin/pwr-tray -o --de sway-wayland
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.local/log/pwr-tray.log
+StandardError=append:%h/.local/log/pwr-tray.err.log
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+### Adapting the Example for Other DEs/WMs
+
+Change the following to match your session:
+
+* `XDG_CURRENT_DESKTOP` and the `--de` value -- for example `i3` / `i3-x11`, `Hyprland` / `hyprland-wayland`, `KDE` / `kde-wayland`.
+* The display variables -- Wayland sessions set `WAYLAND_DISPLAY`, while X11 sessions set `DISPLAY` (e.g. `:0`) and `XAUTHORITY`.
+* Any compositor-specific variable the tools need, for example `HYPRLAND_INSTANCE_SIGNATURE` for Hyprland.
+* `WantedBy=` -- `graphical-session.target` is portable; a WM-specific target such as `sway-session.target` exists only where that WM ships systemd units.
+
+### systemd Service Caveats
+
+* A `systemd --user` service is **not tied to a DE/WM**. With `WantedBy=graphical-session.target` it starts in *any* graphical session on your account, so on a machine where you switch between DEs it will also launch under the others (and, with `--de` forced, then act on the wrong session). To limit it, bind it to a WM-specific target or add a condition line such as `ConditionEnvironment=XDG_CURRENT_DESKTOP=sway`.
+* `systemd --user` does not inherit your session environment, so the variables above are set explicitly.
+* Do **not** enable the service *and* a DE/WM autostart for the same session, or you will get two tray icons.
+* Keep the standard `PATH` entries -- `pwr-tray` calls `systemctl`, `loginctl`, `pgrep`/`pkill`, `swayidle`, `swaymsg`, and friends from `/usr/bin`.
+
+---
+
 ## Per-DE Specific Notes
 
 ### i3wm Specific Notes
@@ -179,7 +237,7 @@ bindsym XF86PowerOff exec --no-startup-id $screenlock && systemctl suspend
 bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock screen only
 ```
 * Edit `/etc/systemd/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, set each action to `suspend`, and then either reboot or restart `systemd-logind`.
-* Finally, start your pwr-tray somehow. Below is a simplest case using `i3status`, but it may depend on your status bar:
+* Finally, start `pwr-tray` as a systemd service (see above) or some other way. For example, a simplest case using `i3status`, though it may depend on your status bar:
 ```
         bar {
             status_command i3status
@@ -193,11 +251,11 @@ bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock 
 * Uninstall or disable any **other** `swayidle` instances or competing energy savers. `pwr-tray` manages its own `swayidle` process and will kill any stray instances on startup.
 * **NOTE**: on `sway`, `pwr-tray` cannot read the idle time directly; instead, it manages a `swayidle` process whose arguments vary with your settings.
 * Edit `/etc/systemd/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, and set each action to `suspend`; then either reboot or restart `systemd-logind`.  That enables the ever-running `swayidle` to handle the suspend / resume events.
-* Again, find a way to start `pwr-tray`; perhaps adding to sway's config: `exec_always --no-startup-id sleep 2 && ~/.local/bin/pwr-tray`; a delay may be required to let the tray initialize.
+* Again, start `pwr-tray` as a systemd service (see above) or find another way; for example, adding to sway's config: `exec_always --no-startup-id sleep 2 && ~/.local/bin/pwr-tray` -- a delay may be required to let the tray initialize.
 
 ### Hyprland Specific Notes
 * Disable any other idle managers. `pwr-tray` manages its own `swayidle` process.
-* Start `pwr-tray` via Hyprland's `exec-once`:
+* Start `pwr-tray` as a systemd service (see above) or, for example, via Hyprland's `exec-once`:
 ```
 exec-once = sleep 2 && ~/.local/bin/pwr-tray
 ```
@@ -205,7 +263,7 @@ exec-once = sleep 2 && ~/.local/bin/pwr-tray
 
 ### KDE Specific Notes
 * In Settings/Energy Saving, disable "Screen Energy Saving", "Suspend session", etc., except keep the "Button events handling" and make it as you wish (e.g., "When power button pressed", "Sleep").
-* In Settings/AutoStart, add the full path of `~/.local/bin/pwr-tray`.
+* Start it as a systemd service (see above), or in Settings/AutoStart add the full path of `~/.local/bin/pwr-tray`.
 * `qdbus` (or `qdbus6` on Plasma 6) is required for X11; `pwr-tray` auto-detects which is available.
 * On **KDE Wayland**, `swayidle` is required (install it if missing). `pwr-tray` manages `swayidle` for idle timeout handling. Locking uses `loginctl lock-session`.
 * On **KDE X11**, idle time is read via `xprintidle` and screen locking uses `loginctl lock-session`.
