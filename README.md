@@ -179,6 +179,7 @@ Example unit for **sway / Wayland**:
 ```
 [Unit]
 Description=pwr-tray (power/energy tray applet)
+ConditionEnvironment=XDG_CURRENT_DESKTOP=sway
 PartOf=graphical-session.target
 After=graphical-session.target
 BindsTo=graphical-session.target
@@ -204,14 +205,18 @@ StandardError=append:%h/.local/log/pwr-tray.err.log
 WantedBy=graphical-session.target
 ```
 
-### Adapting the Example for Other DEs/WMs
+> All service file examples above and below are best-effort and untested -- review them before use.
 
-Change the following to match your session:
+### Example systemd Service Config for other DEs/WMs
 
-* `XDG_CURRENT_DESKTOP` and the `--de` value -- for example `i3` / `i3-x11`, `Hyprland` / `hyprland-wayland`, `KDE` / `kde-wayland`.
-* The display variables -- Wayland sessions set `WAYLAND_DISPLAY`, while X11 sessions set `DISPLAY` (e.g. `:0`) and `XAUTHORITY`.
-* Any compositor-specific variable the tools need, for example `HYPRLAND_INSTANCE_SIGNATURE` for Hyprland.
-* `WantedBy=` -- `graphical-session.target` is portable; a WM-specific target such as `sway-session.target` exists only where that WM ships systemd units.
+* [i3](docs/examples/pwr-tray-i3.service)
+* [Hyprland](docs/examples/pwr-tray-hyprland.service)
+* [KDE X11](docs/examples/pwr-tray-kde-x11.service)
+* [KDE Wayland](docs/examples/pwr-tray-kde-wayland.service)
+* [XFCE](docs/examples/pwr-tray-xfce.service)
+* [Cinnamon](docs/examples/pwr-tray-cinnamon.service)
+* [MATE](docs/examples/pwr-tray-mate.service)
+* [LXQt](docs/examples/pwr-tray-lxqt.service)
 
 ### systemd Service Caveats
 

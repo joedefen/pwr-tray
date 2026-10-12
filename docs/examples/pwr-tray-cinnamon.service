@@ -1,0 +1,37 @@
+# pwr-tray as a systemd --user service -- Cinnamon (X11) example
+#
+# Best-effort / untested: review before use.
+# Cinnamon reports XDG_CURRENT_DESKTOP as "X-Cinnamon".
+# Install (copy as ~/.config/systemd/user/pwr-tray.service):
+#   mkdir -p ~/.local/log ~/.config/systemd/user
+#   cp pwr-tray-cinnamon.service ~/.config/systemd/user/pwr-tray.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pwr-tray.service
+
+[Unit]
+Description=pwr-tray (power/energy tray applet)
+ConditionEnvironment=XDG_CURRENT_DESKTOP=X-Cinnamon
+PartOf=graphical-session.target
+After=graphical-session.target
+BindsTo=graphical-session.target
+Requires=dbus.socket
+After=dbus.socket
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=XDG_CURRENT_DESKTOP=X-Cinnamon
+Environment=XDG_SESSION_TYPE=x11
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%h/.Xauthority
+ExecStartPre=/bin/sleep 1
+ExecStart=%h/.local/bin/pwr-tray -o --de cinnamon-x11
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.local/log/pwr-tray.log
+StandardError=append:%h/.local/log/pwr-tray.err.log
+
+[Install]
+WantedBy=graphical-session.target

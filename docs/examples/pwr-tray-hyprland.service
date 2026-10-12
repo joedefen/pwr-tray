@@ -1,0 +1,39 @@
+# pwr-tray as a systemd --user service -- Hyprland (Wayland) example
+#
+# Best-effort / untested: review before use.
+# Install (copy as ~/.config/systemd/user/pwr-tray.service):
+#   mkdir -p ~/.local/log ~/.config/systemd/user
+#   cp pwr-tray-hyprland.service ~/.config/systemd/user/pwr-tray.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pwr-tray.service
+#
+# NOTE: Hyprland also exposes HYPRLAND_INSTANCE_SIGNATURE. If pwr-tray's
+# hyprctl calls fail under the service, import it into the session env, e.g.
+# set it from `hyprctl instances` or add an Environment= line with your value.
+
+[Unit]
+Description=pwr-tray (power/energy tray applet)
+ConditionEnvironment=XDG_CURRENT_DESKTOP=Hyprland
+PartOf=graphical-session.target
+After=graphical-session.target
+BindsTo=graphical-session.target
+Requires=dbus.socket
+After=dbus.socket
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=XDG_CURRENT_DESKTOP=Hyprland
+Environment=XDG_SESSION_TYPE=wayland
+Environment=WAYLAND_DISPLAY=wayland-1
+ExecStartPre=/bin/sleep 1
+ExecStart=%h/.local/bin/pwr-tray -o --de hyprland-wayland
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.local/log/pwr-tray.log
+StandardError=append:%h/.local/log/pwr-tray.err.log
+
+[Install]
+WantedBy=graphical-session.target

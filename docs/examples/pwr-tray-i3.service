@@ -1,0 +1,36 @@
+# pwr-tray as a systemd --user service -- i3 (X11) example
+#
+# Best-effort / untested: review before use.
+# Install (copy as ~/.config/systemd/user/pwr-tray.service):
+#   mkdir -p ~/.local/log ~/.config/systemd/user
+#   cp pwr-tray-i3.service ~/.config/systemd/user/pwr-tray.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pwr-tray.service
+
+[Unit]
+Description=pwr-tray (power/energy tray applet)
+ConditionEnvironment=XDG_CURRENT_DESKTOP=i3
+PartOf=graphical-session.target
+After=graphical-session.target
+BindsTo=graphical-session.target
+Requires=dbus.socket
+After=dbus.socket
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=XDG_CURRENT_DESKTOP=i3
+Environment=XDG_SESSION_TYPE=x11
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%h/.Xauthority
+ExecStartPre=/bin/sleep 1
+ExecStart=%h/.local/bin/pwr-tray -o --de i3-x11
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.local/log/pwr-tray.log
+StandardError=append:%h/.local/log/pwr-tray.err.log
+
+[Install]
+WantedBy=graphical-session.target
