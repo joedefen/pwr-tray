@@ -30,8 +30,15 @@ dependencies = [
 "Homepage" = "https://github.com/joedefen/pwr-tray"
 "Bug Tracker" = "https://github.com/joedefen/pwr-tray/issues"
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.scripts]
 pwr-tray = "pwr_tray.main:main"
 
 [tool.flit.sdist]
 include = ["pwr_tray/resources/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

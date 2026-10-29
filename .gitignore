@@ -6,3 +6,4 @@ env/
 pi-venv/
 build/
 pwr-tray-exe
+.pytest_cache/

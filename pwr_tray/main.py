@@ -176,7 +176,9 @@ class PwrTray:
         self.current_icon_num = -1  # triggers immediate icon update
         self.enable_playerctl = True
 
-        self.restore_picks()
+        self.picks_restored = self.restore_picks()
+        if not self.picks_restored:
+            prt('NOTE: picks restore incomplete; configured values used where missing')
         if quick:
             for selector in self.ini_tool.get_selectors():
                 params = self.ini_tool.params_by_selector[selector]
@@ -303,22 +305,73 @@ class PwrTray:
 
 
     def restore_picks(self):
+        """ Apply the state saved by save_picks().
+
+        A missing, partial or hand-edited picks file is tolerated: every entry
+        is restored independently, anything unusable is logged and skipped, and
+        that selector keeps its configured values. Returns True only when the
+        whole saved state was applied.
+        """
         try:
             with open(self.picks_file, 'r', encoding='utf-8') as handle:
                 picks = json.load(handle)
-            self.mode = picks.get('mode', 'SleepAfterLock')
-            self.enable_playerctl = picks.get('enable_playerctl', True)
-            for attr in 'lock_mins sleep_mins'.split():
-                for selector in 'LoBattery HiBattery Settings'.split():
-                    self.get_lock_rotated_list(selector, first=picks[attr][selector])
-            prt('restored Picks OK:', picks)
-            return True
-
-        except Exception as e:
+        except FileNotFoundError:
+            prt('no picks file to restore; using configured values')
+            return False
+        except (OSError, ValueError) as e:
             prt(f'restored picks FAILED: {e}')
-            prt(f'mode=self.mode lock_mins={self.get_lock_min_list()}'
-                f' sleep_mins={self.get_sleep_min_list()}')
-            return True
+            selector = getattr(getattr(self, 'battery', None), 'selector', 'Settings')
+            prt(f'mode={self.mode} lock_mins={self.get_lock_min_list(selector)}'
+                f' sleep_mins={self.get_sleep_min_list(selector)}')
+            return False
+
+        if not isinstance(picks, dict):
+            prt(f'restored picks FAILED: {type(picks).__name__} is not a JSON object')
+            return False
+
+        complete = True
+
+        mode = picks.get('mode')
+        if mode is None:
+            pass
+        elif isinstance(mode, str):
+            self.mode = mode
+        else:
+            prt(f'WARN: picks.mode is {mode!r}; keeping {self.mode!r}')
+            complete = False
+
+        enable_playerctl = picks.get('enable_playerctl')
+        if enable_playerctl is None:
+            pass
+        elif isinstance(enable_playerctl, bool):
+            self.enable_playerctl = enable_playerctl
+        else:
+            prt(f'WARN: picks.enable_playerctl is {enable_playerctl!r};'
+                f' keeping {self.enable_playerctl!r}')
+            complete = False
+
+        rotators = {'lock_mins': self.get_lock_rotated_list,
+                    'sleep_mins': self.get_sleep_rotated_list}
+        for attr, rotate in rotators.items():
+            saved = picks.get(attr)
+            if not isinstance(saved, dict):
+                prt(f'WARN: picks has no usable {attr}; keeping configured values')
+                complete = False
+                continue
+            for selector in 'LoBattery HiBattery Settings'.split():
+                first = saved.get(selector)
+                if not isinstance(first, int) or isinstance(first, bool):
+                    prt(f'WARN: picks.{attr}.{selector} is {first!r};'
+                        f' keeping configured value')
+                    complete = False
+                    continue
+                rotate(selector, first=first)
+
+        if complete:
+            prt('restored picks OK:', picks)
+        else:
+            prt('restored picks PARTIAL:', picks)
+        return complete
 
 
 
