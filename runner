@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 """
-runner - Development wrapper for app
+runner - Development wrapper for the pwr-tray app
 Located in the top-level app directory.
-Allows running app from source for debugging with support for command-line arguments.
+Allows running the app from source for debugging with support for command-line arguments.
 
 Usage:
     ./runner {options-and-args}
     ./runner --help     (show all available options)
+
+The app is executed as ``python -m pwr_tray.main`` rather than through runpy so
+that its command line looks exactly like a restarted instance; PyKill matches
+on that command line to terminate every instance of the app.
 """
 
-import runpy
+import os
 import sys
 
 if __name__ == '__main__':
-    # Set program name but preserve all command-line arguments
-    sys.argv[0] = 'pwr-tray'
-    # Run the dwipe.main module with alter_sys=True to propagate sys.argv
-    runpy.run_module('pwr_tray.main', run_name='__main__', alter_sys=True)
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    env = dict(os.environ)
+    # Keep the sources importable even when ./runner is called from elsewhere.
+    env['PYTHONPATH'] = os.pathsep.join(
+        [project_root] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
+    # execv keeps this pid but replaces the command line, so 'ps' (and PyKill)
+    # see 'python -m pwr_tray.main' instead of 'python runner'.
+    os.execve(sys.executable,
+              [sys.executable, '-m', 'pwr_tray.main'] + sys.argv[1:],
+              env)

@@ -839,7 +839,13 @@ class PwrTray:
 
     @staticmethod
     def restart_self(_):
-        """TBD"""
+        """Replace this process with a fresh instance of the applet.
+
+        The replacement is launched as ``python -m pwr_tray.main`` so that
+        PyKill recognises it via command_names().  The single-instance lock is
+        released first: os._exit() skips atexit handlers, and the replacement
+        must be able to take the lock as soon as it starts.
+        """
         prt('+', 'restarting applet...')
         this = PwrTray.singleton
         if this:
@@ -847,6 +853,7 @@ class PwrTray:
         PwrTray.save_picks()
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         args = [sys.executable, '-m', 'pwr_tray.main'] + sys.argv[1:]
+        Utils.SingleInstance.release_current()
         subprocess.Popen(args, cwd=project_root)
         os._exit(0)
 
@@ -1134,6 +1141,19 @@ def main():
     Utils.capture_console()
     prt('START-UP', to_stdout=opts.stdout)
     PyKill().kill_loop('pwr-tray')
+
+    # The killer only recognises command lines it knows about; the lock is the
+    # real guarantee that two applets (and two swayidle managers) never coexist.
+    lock = Utils.SingleInstance(os.path.join(ini_tool.folder, 'pwr-tray.lock'))
+    if not lock.acquire(retries=5, delay=0.2):
+        holder = Utils.SingleInstance.read_pid(lock.path)
+        message = 'another pwr-tray is already running'
+        if holder:
+            message += f' (pid {holder})'
+        prt(f'ERROR: {message}')
+        Utils.error_print(f'ERROR: {message}')
+        sys.exit(3)
+    atexit.register(lock.release)
     atexit.register(PwrTray.goodbye)
 
 

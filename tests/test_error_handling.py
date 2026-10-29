@@ -252,10 +252,26 @@ def test_main_reports_pwr_tray_error_without_traceback(monkeypatch):
             raise MissingCommandsError(['xprintidle'], desktop='i3-x11',
                                        session_type='x11')
 
+    class FakeLock:
+        """Stands in for Utils.SingleInstance (real one would touch the FS)."""
+        def __init__(self, path):
+            self.path = path
+
+        def acquire(self, **kwargs):
+            return True
+
+        def release(self):
+            pass
+
+        @staticmethod
+        def read_pid(path):
+            return None
+
     reported = []
     fake_utils = types.SimpleNamespace(prt_path='',
                                        capture_console=lambda: None,
-                                       error_print=reported.append)
+                                       error_print=reported.append,
+                                       SingleInstance=FakeLock)
 
     monkeypatch.setattr(main_module, 'IniTool', FakeIniTool)
     monkeypatch.setattr(main_module, 'PwrTray', ExplodingTray)
