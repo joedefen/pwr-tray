@@ -8,8 +8,8 @@ is registered so the modules can still be imported.  Real dependencies are
 used whenever they are present, so the suite also runs on a developer desktop.
 
 Every test is also given a throw-away HOME: IniTool writes config.ini and
-picks.json under ~/.config/pwr-tray and chdir()s into that directory, so
-without isolation the suite would clobber a real user profile.
+picks.json under ~/.config/pwr-tray, so without isolation the suite would
+clobber a real user profile.
 """
 
 import os

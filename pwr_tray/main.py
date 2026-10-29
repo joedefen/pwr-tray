@@ -35,7 +35,7 @@ from PyQt5.QtCore import QTimer
 import pwr_tray.Utils as Utils
 from pwr_tray.Utils import prt, PyKill
 from pwr_tray.Errors import PwrTrayError, DesktopDetectionError
-from pwr_tray.Errors import MissingCommandsError
+from pwr_tray.Errors import MissingCommandsError, MissingResourcesError
 from pwr_tray.SwayIdleMgr import SwayIdleManager
 from pwr_tray.IniTool import IniTool
 
@@ -152,6 +152,34 @@ class PwrTray:
             'no desktop environment matched the current session',
             known_desktops=known, env=env)
 
+    @staticmethod
+    def ensure_resources(folder, resources):
+        """Return absolute paths for `resources`, installing them if needed.
+
+        Paths are always built from `folder`: the applet no longer chdir()s
+        into its config directory, so a bare resource name would resolve
+        against whatever directory it was started from.  A resource that is
+        still absent after the copy is a startup error -- a short icon list
+        used to surface much later as an IndexError from show_icon().
+        """
+        paths = []
+        missing = []
+        for resource in resources:
+            path = os.path.join(folder, resource)
+            if not os.path.isfile(path):
+                try:
+                    Utils.copy_to_folder(resource, folder)
+                except OSError as exc:
+                    prt(f'WARN: cannot copy {resource!r} to {folder!r}: {exc}')
+            if os.path.isfile(path):
+                paths.append(path)
+            else:
+                prt(f'WARN: cannot find {path!r}')
+                missing.append(resource)
+        if missing:
+            raise MissingResourcesError(missing, folder)
+        return paths
+
     def __init__(self, ini_tool, quick=False, force_de=None):
         PwrTray.singleton = self
         self.app = QApplication([])
@@ -178,20 +206,16 @@ class PwrTray:
         self.was_selector = None
         self.was_output = ''
         self.here_dir = os.path.dirname(os.path.abspath(__file__))
-        self.svgs = []
-        self.icons = []
-        for base in self.svg_info.bases:
-            self.svgs.append(f'{base}-v{self.svg_info.version}.svg')
-        for resource in self.svgs + ['lockpaper.png']:
-            if not os.path.isfile(resource):
-                Utils.copy_to_folder(resource, ini_tool.folder)
-            if not os.path.isfile(resource):
-                prt(f'WARN: cannot find {repr(resource)}')
-                continue
-            self.icons.append(QIcon(os.path.join(self.ini_tool.folder, resource)))
+        self.svgs = [f'{base}-v{self.svg_info.version}.svg'
+                     for base in self.svg_info.bases]
+        # One icon per entry in svg_info.bases; show_icon() indexes this list
+        # by state, so a partial list would be an IndexError later.
+        self.icons = [QIcon(path) for path in self.ensure_resources(self.svgs)]
+        # Not a tray icon: the wallpaper the default locker command uses.
+        self.ensure_resources(['lockpaper.png'])
 
-            # states are Awake, Locked, Blanked, Asleep
-            # when is idle time
+        # states are Awake, Locked, Blanked, Asleep
+        # when is idle time
         self.tray_icon = QSystemTrayIcon(self.icons[0], self.app)
         self.tray_icon.setToolTip("pwr-tray")
         self.tray_icon.setVisible(True)
@@ -845,6 +869,11 @@ class PwrTray:
         PyKill recognises it via command_names().  The single-instance lock is
         released first: os._exit() skips atexit handlers, and the replacement
         must be able to take the lock as soon as it starts.
+
+        The package root goes on PYTHONPATH rather than into ``cwd=``: the
+        applet no longer chdir()s, so the replacement inherits whatever
+        directory the user is in and must still be able to import the module
+        when running from a source checkout.
         """
         prt('+', 'restarting applet...')
         this = PwrTray.singleton
@@ -854,10 +883,13 @@ class PwrTray:
             # usually reaped; without this each restart orphans a dbus-monitor.
             this._stop_resume_monitor()
         PwrTray.save_picks()
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ)
+        env['PYTHONPATH'] = os.pathsep.join(
+            [package_root] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
         args = [sys.executable, '-m', 'pwr_tray.main'] + sys.argv[1:]
         Utils.SingleInstance.release_current()
-        subprocess.Popen(args, cwd=project_root)
+        subprocess.Popen(args, env=env)
         os._exit(0)
 
     @staticmethod
@@ -1127,7 +1159,6 @@ def main():
     # pylint: disable=import-outside-toplevel
     import argparse
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    # os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-D', '--debug', action='store_true',

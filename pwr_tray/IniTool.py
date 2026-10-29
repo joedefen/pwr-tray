@@ -88,7 +88,6 @@ class IniTool:
         self.params_by_selector = {}
         if not paths_only:
             self.ensure_ini_file()
-            os.chdir(self.folder)
 
     @staticmethod
     def get_selectors():
