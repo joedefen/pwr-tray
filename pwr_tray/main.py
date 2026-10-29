@@ -12,9 +12,6 @@ This code is designed to control power matters from the tray.
 
 import os
 import sys
-needed = '/usr/lib/python3/dist-packages'
-if needed not in sys.path:
-    sys.path.append(needed) # pick up external dependencies
 import signal
 import re
 import subprocess
@@ -31,6 +28,7 @@ from PyQt5.QtGui import QIcon, QCursor
 from PyQt5.QtCore import QTimer
 
 import pwr_tray.Utils as Utils
+from pwr_tray import __version__
 from pwr_tray.Utils import prt, PyKill
 from pwr_tray.Errors import PwrTrayError, DesktopDetectionError
 from pwr_tray.Errors import MissingCommandsError, MissingResourcesError
@@ -1317,6 +1315,9 @@ def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('-V', '--version', action='version',
+            version=f'%(prog)s {__version__}',
+            help='show version and exit')
     parser.add_argument('-D', '--debug', action='store_true',
             help='override debug_mode from .ini initially')
     parser.add_argument('-o', '--stdout', action='store_true',
@@ -1328,7 +1329,8 @@ def main():
     parser.add_argument('-q', '--quick', action='store_true',
             help='quick mode (1m lock + 1m sleep')
     parser.add_argument('--de', metavar='NAME',
-            help='force desktop (e.g. i3-x11, sway-wayland, kde-wayland)')
+            help='force desktop (e.g. i3-x11, sway-wayland, niri-wayland,'
+                 ' kde-wayland)')
     parser.add_argument('--list-des', action='store_true',
             help='list known desktops and the commands each requires, then exit')
     opts = parser.parse_args()

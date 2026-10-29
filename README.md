@@ -1,6 +1,6 @@
 # pwr-tray
 
-`pwr-tray` is a PyQt5 Tray Applet for Power/Energy Saving and System/DE Controls. Tested DEs include i3wm, swaywm, Hyprland, and KDE (X11 and Wayland). Additional DEs with built-in configs: XFCE, Cinnamon, MATE, and LXQt. `systemd` is required. The `pwr-tray` menu will look similar to:
+`pwr-tray` is a PyQt5 Tray Applet for Power/Energy Saving and System/DE Controls. Tested DEs include i3wm, swaywm, Hyprland, and KDE (X11 and Wayland). niri is supported by the bundled `niri-wayland` commands. Additional DEs with built-in configs: XFCE, Cinnamon, MATE, and LXQt. `systemd` is required. The `pwr-tray` menu will look similar to:
 
 <p align="center">
   <img src="https://github.com/joedefen/pwr-tray/blob/main/images/pwr-tray-screenshot.png?raw=true" alt="screenshot">
@@ -21,7 +21,7 @@ With just a right-click and a left-click, you can do most operations such as cha
 ---
 
 ### Requirements
-* **Python** 3.8+ with **PyQt5** (5.15+) and **ruamel.yaml** (0.17+)
+* **Python** 3.11+ with **PyQt5** (5.15+) and **ruamel.yaml** (0.17+)
 * **systemd** (for `systemctl`, `loginctl`, `systemd-inhibit`)
 * **pipx** (recommended for installation)
 
@@ -32,6 +32,7 @@ Per-DE requirements:
 | **i3wm** | `i3lock`, `xprintidle`, `xset` | X11 only; `xss-lock` recommended (see below) |
 | **sway** | `swaylock`, `swayidle` (1.8+) | `pwr-tray` manages `swayidle` |
 | **Hyprland** | `swaylock`, `swayidle` (1.8+) | `pwr-tray` manages `swayidle` |
+| **niri** | `niri`, `swaylock`, `swayidle` (1.8+) | Wayland only; `pwr-tray` manages `swayidle` |
 | **KDE Wayland** | `swayidle` (1.8+) | Requires **Plasma 6**; `pwr-tray` manages `swayidle` |
 | **KDE X11** | `xprintidle`, `xset` | Plasma 6 (Plasma 5 untested); `qdbus`/`qdbus6` auto-detected |
 | **XFCE** | `xprintidle`, `xset` | X11 only |
@@ -80,6 +81,7 @@ Per-DE requirements:
 | `-f`, `--follow-log` | Tail the log file (`~/.config/pwr-tray/debug.log`). |
 | `--de NAME` | Force desktop detection (e.g., `--de i3-x11`, `--de sway-wayland`, `--de kde-wayland`). Useful when env vars are unreliable. |
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
+| `-V`, `--version` | Print the package version and exit. |
 
 For initial setup and troubleshooting, `pwr-tray -D -o` is a good starting point.
 
@@ -219,6 +221,7 @@ WantedBy=graphical-session.target
 
 * [i3](docs/examples/pwr-tray-i3.service)
 * [Hyprland](docs/examples/pwr-tray-hyprland.service)
+* [niri](docs/examples/pwr-tray-niri.service)
 * [KDE X11](docs/examples/pwr-tray-kde-x11.service)
 * [KDE Wayland](docs/examples/pwr-tray-kde-wayland.service)
 * [XFCE](docs/examples/pwr-tray-xfce.service)
@@ -273,6 +276,17 @@ bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock 
 exec-once = sleep 2 && ~/.local/bin/pwr-tray
 ```
 * Screen locking uses `swaylock`; monitor control uses `hyprctl dispatch dpms`.
+
+### niri Specific Notes
+* `pwr-tray` ships a `niri-wayland` profile in `commands.yaml`. It is selected from `$XDG_CURRENT_DESKTOP`/`$XDG_SESSION_DESKTOP`, or force it with `--de niri-wayland`.
+* Install `niri`, `swaylock`, and `swayidle` (1.8+). As with sway and Hyprland, disable any other idle manager: `pwr-tray` manages its own `swayidle` process and kills stray instances on startup.
+* Monitor blanking uses `niri msg action power-off-monitors`. niri has no "monitors on" action because keyboard or pointer input wakes the display, so `monitors_on` is intentionally empty.
+* Log off and config reload use `niri msg action quit` and `niri msg action reload-config`.
+* niri handles the power key itself; the `handle-power-key` inhibitor it registers is ignored when deciding whether to show the StopSign icon.
+* Start `pwr-tray` as a systemd service (see above) or from niri's `spawn-at-startup` with a short delay:
+```
+spawn-at-startup "sh" "-c" "sleep 2 && ~/.local/bin/pwr-tray"
+```
 
 ### KDE Specific Notes
 * In Settings/Energy Saving, disable "Screen Energy Saving", "Suspend session", etc., except keep the "Button events handling" and make it as you wish (e.g., "When power button pressed", "Sleep").
