@@ -136,7 +136,6 @@ _module('PyQt5.QtCore', QTimer=_Stub)
 _module('PyQt5.QtGui', QIcon=_Stub, QCursor=_Stub)
 _module('PyQt5.QtWidgets', QApplication=_Stub, QSystemTrayIcon=_Stub,
         QMenu=_Stub, QAction=_Stub)
-_module('pydbus', SessionBus=_Stub)
 _module('ruamel.yaml', YAML=_Stub)
 _module('psutil', sensors_battery=lambda: None)
 

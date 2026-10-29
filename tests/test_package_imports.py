@@ -5,9 +5,9 @@ been part of this project, so the module shipped in the wheel could not be
 imported at all.  It and the unused `PrtUtil.py` have been deleted; these tests
 keep a module with an unresolvable import from being packaged again.
 
-Imports that need an optional runtime dependency (PyQt5, pydbus, ruamel.yaml)
-are satisfied by the stubs in the root conftest.py, so the suite still runs in
-a bare container.
+Imports that need an optional runtime dependency (PyQt5, ruamel.yaml) are
+satisfied by the stubs in the root conftest.py, so the suite still runs in a
+bare container.
 """
 
 import importlib

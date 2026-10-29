@@ -206,11 +206,36 @@ exits — the affected inputs fall back to the old once-per-tick polling, so the
 change cannot make behaviour worse.  [`tests/test_power_events.py`](test_power_events.py:1)
 pins the signal filtering, event coalescing and the dirty-flag gating.
 
-### 11. Module-level D-Bus dependency
+### 11. Module-level D-Bus dependency — resolved
 
-`SESSION_BUS = SessionBus()` at [main.py:40](../pwr_tray/main.py:40) means even `--help` requires a session bus. `pydbus` is effectively unmaintained upstream and is used for a single `NameHasOwner("org.kde.StatusNotifierWatcher")` call in [`wait_for_tray()`](../pwr_tray/main.py:940).
+`SESSION_BUS = SessionBus()` sat at module scope, so even `--help` needed a
+session bus, and `pydbus` (effectively unmaintained upstream) was pulled in for
+a single `NameHasOwner("org.kde.StatusNotifierWatcher")` call. The wait itself
+blocked silently for up to **five minutes** and its result was discarded: on an
+X11 bar without a StatusNotifierWatcher the applet stalled the full timeout and
+then started regardless.
 
-`wait_for_tray(timeout=300)` also blocks silently for up to **five minutes**, and its return value is discarded at [line 1006](../pwr_tray/main.py:1006). On an X11 bar without a StatusNotifierWatcher it burns the full five minutes, then proceeds regardless.
+[`tray_watcher_present()`](../pwr_tray/main.py:1211) now asks the same question
+over **QtDBus** (`QDBusConnectionInterface.isServiceRegistered`), imported
+*inside* the function. PyQt5 is already a hard dependency, so the check adds no
+package, and importing the module — or running `pwr-tray --help` — never touches
+D-Bus. The Qt call gets a 2 s timeout instead of the 25 s D-Bus default, and a
+missing QtDBus module, an unreachable bus or a D-Bus error all return `None`
+("cannot ask") rather than raising.
+
+[`wait_for_tray()`](../pwr_tray/main.py:1243) polls at 0.5 s, is bounded by
+`TRAY_WAIT_SECONDS` (20 s, was 300), logs progress every 5 s, returns `False`
+immediately when the bus cannot be queried, and its result is used:
+[`main()`](../pwr_tray/main.py:1391) logs either "... tray detected." or
+"... no tray watcher found; starting anyway." `pydbus` is gone from
+[`pyproject.toml`](../pyproject.toml:21) and from the test stubs;
+[`tests/test_tray_wait.py`](test_tray_wait.py:1) pins the launch path with no
+bus, with no watcher, and with a watcher.
+
+Measured with `dbus-run-session` (bus present, no watcher): `present=False` in
+0.00 s, `wait_for_tray(timeout=7)` returned `False` after exactly 7.00 s with
+one progress line. With an unreachable bus: `None` in 0.01 s and `False`
+without sleeping at all.
 
 ### 12. Metadata drift
 
@@ -276,7 +301,7 @@ The honest counterweight: that target user is exactly the user most comfortable 
 3. `running = params` inheritance and `if list_value is None` — [IniTool.py:127](../pwr_tray/IniTool.py:127), [IniTool.py:147](../pwr_tray/IniTool.py:147)
 4. Delete `YamlDump.py` and `PrtUtil.py`, then rebuild the wheel
 5. Replace both asserts with a readable error plus a `--list-des` diagnostic; implement what README line 55 promises
-6. Add `--version`; drop `pydbus` in favour of `QtDBus`/`busctl`; terminate `dbus-monitor` on exit; add a PID lock file
+6. Add `--version`; terminate `dbus-monitor` on exit; add a PID lock file
 7. Add a test suite covering `IniTool` merge/parse and `SwayIdleManager.build_cmd` — both are I/O-light and untested, despite holding all the logic that has already produced the bugs above
 
 ---

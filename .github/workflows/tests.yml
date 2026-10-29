@@ -1,9 +1,9 @@
 name: tests
 
 # The suite is deliberately dependency-light: the root conftest.py stubs the
-# GUI / D-Bus / YAML imports that pwr_tray.main performs at module scope, so CI
-# needs nothing beyond pytest.  Real dependencies are used automatically when
-# they happen to be installed (as on a developer desktop).
+# GUI / YAML imports that pwr_tray.main performs at module scope, so CI needs
+# nothing beyond pytest.  Real dependencies are used automatically when they
+# happen to be installed (as on a developer desktop).
 
 on:
   push:
@@ -49,7 +49,7 @@ jobs:
           python - <<'PY'
           import importlib.util
 
-          for name in ('PyQt5', 'pydbus', 'ruamel.yaml', 'psutil'):
+          for name in ('PyQt5', 'ruamel.yaml', 'psutil'):
               try:
                   found = importlib.util.find_spec(name) is not None
               except (ImportError, AttributeError):

@@ -1,8 +1,8 @@
 """Shared pytest setup for the pwr-tray test suite.
 
-pwr_tray.main imports a GUI toolkit, a session D-Bus binding and a YAML
-library at module scope, none of which are needed to test the pure decision
-logic (timeout rotation, pick persistence, battery tier selection).  When a
+pwr_tray.main imports a GUI toolkit and a YAML library at module scope, neither
+of which is needed to test the pure decision logic (timeout rotation, pick
+persistence, battery tier selection).  When a
 dependency is not installed -- as in a bare CI container -- a permissive stub
 is registered so the modules can still be imported.  Real dependencies are
 used whenever they are present, so the suite also runs on a developer desktop.
@@ -83,9 +83,9 @@ if not _available('PyQt5'):
     _stub('PyQt5.QtGui', QIcon=_Stub, QCursor=_Stub)
     _stub('PyQt5.QtWidgets', QApplication=_Stub, QSystemTrayIcon=_Stub,
           QMenu=_Stub, QAction=_Stub)
-
-if not _available('pydbus'):
-    _stub('pydbus', SessionBus=_Stub)
+    # No QtDBus stub on purpose: tray_watcher_present() imports it lazily and
+    # treats its absence as "cannot ask the bus", which is what a CI container
+    # should exercise.
 
 if not _available('ruamel.yaml'):
     _stub('ruamel.yaml', YAML=_Stub)

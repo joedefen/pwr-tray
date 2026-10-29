@@ -21,9 +21,8 @@ classifiers = [
 dependencies = [
     'importlib-metadata; python_version<"3.8"',
     'psutil>=5.9',
-    'PyQt5>=5.15',
+    'PyQt5>=5.15',     # also supplies QtDBus, used for tray detection
     'ruamel.yaml>=0.17',
-    'pydbus>=0.6.0',
 ]
 
 [project.urls]

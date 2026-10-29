@@ -25,8 +25,6 @@ import time
 import traceback
 from types import SimpleNamespace
 import psutil
-# import pydbus
-from pydbus import SessionBus
 from ruamel.yaml import YAML
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction #, QMessageBox
 from PyQt5.QtGui import QIcon, QCursor
@@ -40,7 +38,13 @@ from pwr_tray.SwayIdleMgr import SwayIdleManager
 from pwr_tray.IniTool import IniTool
 from pwr_tray.PowerEvents import PowerEvents
 
-SESSION_BUS = SessionBus()
+# Every tray host -- plasmashell, xfce4-panel, waybar, swaybar+snixembed, ... --
+# claims this name.  Its absence is not an error: a bare X11 bar has no
+# StatusNotifierWatcher and the applet still runs, it just may not be visible.
+STATUS_NOTIFIER_WATCHER = 'org.kde.StatusNotifierWatcher'
+TRAY_WAIT_SECONDS = 20.0        # whole wait, reported while it happens
+TRAY_POLL_SECONDS = 0.5
+TRAY_REPORT_SECONDS = 5.0
 
 
 class PwrTray:
@@ -1204,17 +1208,64 @@ class PwrTray:
     def goodbye(message=''):
         prt(f'ENDED {message}')
 
-def wait_for_tray(timeout=300):
-    """Wait for the StatusNotifierWatcher (the tray) to appear on DBus."""
-    for i in range(timeout):
-        try:
-            # Check if the name exists specifically rather than listing all
-            if SESSION_BUS.dbus.NameHasOwner("org.kde.StatusNotifierWatcher"):
-                return True
-        except Exception:
-            pass
-        time.sleep(1)
-    return False
+def tray_watcher_present():
+    """Ask the session bus whether a StatusNotifierWatcher is registered.
+
+    Returns True/False, or None when the question cannot be asked at all
+    (no QtDBus module, no session bus, D-Bus error).  QtDBus is used instead of
+    pydbus: PyQt5 is already a hard dependency, so the check adds no package
+    and does not depend on an unmaintained binding.  The import is local, so
+    importing this module -- and therefore `pwr-tray --help` -- never touches
+    D-Bus.
+    """
+    try:
+        # pylint: disable=import-outside-toplevel
+        from PyQt5.QtDBus import QDBusConnection
+    except ImportError:
+        prt('WARN: QtDBus unavailable; cannot detect a tray')
+        return None
+    try:
+        bus = QDBusConnection.sessionBus()
+        if not bus.isConnected():
+            prt('WARN: no D-Bus session bus; cannot detect a tray')
+            return None
+        interface = bus.interface()
+        # The default D-Bus timeout is 25s, which would defeat the caller's
+        # deadline if the bus is wedged.
+        interface.setTimeout(2000)
+        reply = interface.isServiceRegistered(STATUS_NOTIFIER_WATCHER)
+        return bool(reply.isValid() and reply.value())
+    except Exception as exc:                    # QDBusError reaches us this way
+        prt(f'WARN: tray detection failed: {exc}')
+        return None
+
+
+def wait_for_tray(timeout=TRAY_WAIT_SECONDS):
+    """Wait up to `timeout` seconds for the tray to register itself.
+
+    Returns True when the watcher appears, False when it does not (or when the
+    bus cannot be queried at all).  The wait is bounded and logs progress, so a
+    session without a watcher -- a bare X11 bar, for instance -- costs at most
+    `timeout` seconds and is visible in the log; the caller decides whether to
+    carry on, and normally it does.
+    """
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    next_report = time.monotonic() + TRAY_REPORT_SECONDS
+    while True:
+        present = tray_watcher_present()
+        if present is None:            # D-Bus unusable: retrying cannot help
+            return False
+        if present:
+            return True
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            return False
+        if now >= next_report:
+            prt(f'  ... still no {STATUS_NOTIFIER_WATCHER}'
+                f' ({remaining:.0f}s left)')
+            next_report = now + TRAY_REPORT_SECONDS
+        time.sleep(min(TRAY_POLL_SECONDS, remaining))
 
 
 def load_known_de_json():
@@ -1333,10 +1384,14 @@ def main():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override
 
 
-    # Wait for the tray to be ready so we don't need 'sleep' in the config
+    # Wait for the tray to be ready so we don't need 'sleep' in the config.
+    # The result is used, not discarded: no watcher is a warning, not an error,
+    # because an X11 bar without one still runs the applet.
     prt("Waiting for tray...")
-    wait_for_tray()
-    prt("                ... tray detected.")
+    if wait_for_tray():
+        prt("                ... tray detected.")
+    else:
+        prt("                ... no tray watcher found; starting anyway.")
     try:
         tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de)
     except PwrTrayError as exc:
