@@ -34,6 +34,8 @@ from PyQt5.QtCore import QTimer
 
 import pwr_tray.Utils as Utils
 from pwr_tray.Utils import prt, PyKill
+from pwr_tray.Errors import PwrTrayError, DesktopDetectionError
+from pwr_tray.Errors import MissingCommandsError
 from pwr_tray.SwayIdleMgr import SwayIdleManager
 from pwr_tray.IniTool import IniTool
 
@@ -73,53 +75,82 @@ class PwrTray:
             return dict(yaml.load(f))
 
     @staticmethod
+    def must_haves_for(de_json, compound_name):
+        """Return the sorted commands a compound desktop name needs.
+
+        The three config layers accumulate: defaults, session type, desktop.
+        """
+        _, _, stype = compound_name.rpartition('-')
+        session_types = de_json.get('session_types', {})
+        desktops = de_json.get('desktops', {})
+        must = (de_json.get('defaults', {}).get('must_haves', [])
+                + session_types.get(stype, {}).get('must_haves', [])
+                + desktops.get(compound_name, {}).get('must_haves', []))
+        return sorted(set(must))
+
+    @staticmethod
+    def missing_commands(de_config):
+        """Return the must_haves of `de_config` that are not on $PATH."""
+        return sorted(cmd for cmd in set(de_config.get('must_haves', []))
+                      if shutil.which(cmd) is None)
+
+    @staticmethod
     def detect_de(de_json, force_de=None):
         """Detect the current DE from environment using JSON config rules.
         Merges three layers: defaults -> session_type (x11/wayland) -> desktop.
-        Returns merged config dict.  Use force_de to skip detection."""
-        xdg_desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
-        xdg_session_desktop = os.environ.get('XDG_SESSION_DESKTOP', '').lower()
-        desktop_session = os.environ.get('DESKTOP_SESSION', '').lower()
-        session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
-        desktop_str = f'{xdg_desktop} {xdg_session_desktop} {desktop_session}'
+        Returns merged config dict.  Use force_de to skip detection.
 
-        prt(f'ENV: XDG_CURRENT_DESKTOP={xdg_desktop!r}'
-            f' XDG_SESSION_DESKTOP={xdg_session_desktop!r}'
-            f' DESKTOP_SESSION={desktop_session!r}'
-            f' XDG_SESSION_TYPE={session_type!r}')
+        Raises DesktopDetectionError when nothing matches: an assert would be
+        stripped by python -O, leaving the app running with empty commands.
+        """
+        env = {key: os.environ.get(key, '')
+               for key in ('XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP',
+                           'DESKTOP_SESSION', 'XDG_SESSION_TYPE')}
+        lowered = {key: value.lower() for key, value in env.items()}
+        session_type = lowered['XDG_SESSION_TYPE']
+        desktop_str = ' '.join(lowered[key] for key in
+                               ('XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP',
+                                'DESKTOP_SESSION'))
+
+        prt(f'ENV: XDG_CURRENT_DESKTOP={env["XDG_CURRENT_DESKTOP"]!r}'
+            f' XDG_SESSION_DESKTOP={env["XDG_SESSION_DESKTOP"]!r}'
+            f' DESKTOP_SESSION={env["DESKTOP_SESSION"]!r}'
+            f' XDG_SESSION_TYPE={env["XDG_SESSION_TYPE"]!r}')
 
         session_types = de_json.get('session_types', {})
+        desktops = de_json.get('desktops', {})
+        known = list(desktops)
 
         def _merge(compound_name, entry):
-            _, stype = compound_name.rsplit('-', 1)
+            _, _, stype = compound_name.rpartition('-')
             scfg = session_types.get(stype, {})
             merged = dict(scfg)
             merged.update(entry)
             merged['name'] = compound_name
             merged['session_type'] = stype
-            must = (de_json['defaults'].get('must_haves', [])
-                    + scfg.get('must_haves', [])
-                    + entry.get('must_haves', []))
-            merged['must_haves'] = sorted(set(must))
+            merged['must_haves'] = PwrTray.must_haves_for(de_json,
+                                                          compound_name)
             return merged
 
         # --de override: skip detection
         if force_de:
-            assert force_de in de_json['desktops'], (
-                f'--de {force_de!r} not in {list(de_json["desktops"].keys())}')
+            if force_de not in desktops:
+                raise DesktopDetectionError(
+                    f'--de {force_de!r} is not a known desktop',
+                    known_desktops=known, env=env)
             prt(f'ENV: forced {force_de!r}')
-            return _merge(force_de, de_json['desktops'][force_de])
+            return _merge(force_de, desktops[force_de])
 
         # Desktop keys are compound: "kde-wayland", "i3-x11", etc.
-        for compound_name, entry in de_json['desktops'].items():
-            detect, stype = compound_name.rsplit('-', 1)
+        for compound_name, entry in desktops.items():
+            detect, _, stype = compound_name.rpartition('-')
             if detect in desktop_str and stype == session_type:
                 prt(f'ENV: matched {compound_name!r}')
                 return _merge(compound_name, entry)
 
-        known = list(de_json['desktops'].keys())
-        assert False, (f'no DE matched: {desktop_str!r} / {session_type!r}'
-                       f' (known: {known})')
+        raise DesktopDetectionError(
+            'no desktop environment matched the current session',
+            known_desktops=known, env=env)
 
     def __init__(self, ini_tool, quick=False, force_de=None):
         PwrTray.singleton = self
@@ -201,9 +232,11 @@ class PwrTray:
                 self.variables[key] = self.de_config[key]
 
         # Validate must_haves (accumulated from defaults + session_type + desktop)
-        must_haves = self.de_config.get('must_haves', [])
-        dont_haves = [cmd for cmd in set(must_haves) if shutil.which(cmd) is None]
-        assert not dont_haves, f'commands NOT on $PATH: {dont_haves}'
+        dont_haves = self.missing_commands(self.de_config)
+        if dont_haves:
+            raise MissingCommandsError(
+                dont_haves, desktop=self.de_config['name'],
+                session_type=self.de_config['session_type'])
 
         # Expand {{variable}} references in command values
         for key, val in list(self.variables.items()):
@@ -218,7 +251,10 @@ class PwrTray:
                         for v in self.variables.values())
         if has_qdbus:
             qdbus_cmd = shutil.which('qdbus') or shutil.which('qdbus6')
-            assert qdbus_cmd, 'neither qdbus nor qdbus6 found on $PATH'
+            if not qdbus_cmd:
+                raise MissingCommandsError(
+                    ['qdbus or qdbus6'], desktop=self.de_config['name'],
+                    session_type=self.de_config['session_type'])
             qdbus_name = os.path.basename(qdbus_cmd)
             if qdbus_name != 'qdbus':
                 for key, val in list(self.variables.items()):
@@ -1003,6 +1039,49 @@ def wait_for_tray(timeout=300):
     return False
 
 
+def load_known_de_json():
+    """Return (de_json, source) for --list-des.
+
+    A user override in my-commands.yaml wins over the packaged defaults, so the
+    listing matches what the running application would actually use.
+    """
+    ini_tool = IniTool(paths_only=True)
+    user_yaml = os.path.join(ini_tool.folder, 'my-commands.yaml')
+    if os.path.exists(user_yaml):
+        with open(user_yaml, 'r', encoding='utf-8') as handle:
+            return dict(YAML().load(handle)), user_yaml
+    return (dict(YAML().load(Utils.resource_text('commands.yaml'))),
+            'built-in commands.yaml')
+
+
+def format_desktops(de_json, source=''):
+    """Return the --list-des report as a list of lines.
+
+    Each known desktop is shown with every command it needs (defaults,
+    session type and desktop layers merged).  Commands missing from $PATH are
+    marked, which is the "must be installed if missing" report.
+    """
+    desktops = de_json.get('desktops', {})
+    lines = [f'desktops known to pwr-tray (from {source or "commands.yaml"}):']
+    width = max((len(name) for name in desktops), default=0)
+    any_missing = False
+    for name in sorted(desktops):
+        shown = []
+        for cmd in PwrTray.must_haves_for(de_json, name):
+            if shutil.which(cmd) is None:
+                shown.append(f'{cmd} [!]')
+                any_missing = True
+            else:
+                shown.append(cmd)
+        lines.append(f'  {name:<{width}}  requires:'
+                     f' {" ".join(shown) if shown else "nothing"}')
+    if any_missing:
+        lines.append('  [!] = not found on $PATH'
+                     ' (install it before using that desktop)')
+    lines.append('force a desktop with: pwr-tray --de NAME')
+    return lines
+
+
 def main():
     # pylint: disable=import-outside-toplevel
     import argparse
@@ -1022,7 +1101,14 @@ def main():
             help='quick mode (1m lock + 1m sleep')
     parser.add_argument('--de', metavar='NAME',
             help='force desktop (e.g. i3-x11, sway-wayland, kde-wayland)')
+    parser.add_argument('--list-des', action='store_true',
+            help='list known desktops and the commands each requires, then exit')
     opts = parser.parse_args()
+
+    if opts.list_des:
+        for line in format_desktops(*load_known_de_json()):
+            print(line)
+        return
 
     if opts.edit_config:
         ini_tool = IniTool(paths_only=True)
@@ -1043,6 +1129,9 @@ def main():
 
     ini_tool = IniTool(paths_only=False)
     Utils.prt_path = ini_tool.log_path
+    # Must happen before the first prt(): prt() may redirect fd 2 into
+    # debug.log, which would hide the startup errors reported below.
+    Utils.capture_console()
     prt('START-UP', to_stdout=opts.stdout)
     PyKill().kill_loop('pwr-tray')
     atexit.register(PwrTray.goodbye)
@@ -1058,7 +1147,12 @@ def main():
     prt("Waiting for tray...")
     wait_for_tray()
     prt("                ... tray detected.")
-    tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de)
+    try:
+        tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de)
+    except PwrTrayError as exc:
+        prt(f'ERROR: {exc}')      # keep a copy in debug.log
+        Utils.error_print(str(exc))  # ...and put it where the user can see it
+        sys.exit(2)
     tray.app.exec_()
 
 if __name__ == "__main__":

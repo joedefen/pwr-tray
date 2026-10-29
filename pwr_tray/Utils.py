@@ -32,6 +32,50 @@ def copy_to_folder(resource_name, dest):
     return file_path
 
 
+def resource_text(resource_name):
+    """ Return the text of a packaged resource (e.g. 'commands.yaml'). """
+    with pkg_resources.path('pwr_tray.resources', resource_name) as file_path:
+        with open(file_path, 'r', encoding='utf-8') as handle:
+            return handle.read()
+
+
+_console_fd = None
+
+def capture_console():
+    """Keep a duplicate of stderr, so startup errors cannot be swallowed.
+
+    prt() redirects both stdout and stderr into debug.log whenever it is not
+    attached to a tty (e.g. started from a systemd unit).  A message the user
+    must act on -- unknown desktop, missing command -- has to bypass that
+    redirect, so main() calls this before the first prt() call and reports
+    through error_print().
+    """
+    global _console_fd
+    if _console_fd is None:
+        try:
+            _console_fd = os.dup(2)
+        except OSError:
+            _console_fd = -1
+    return _console_fd
+
+
+def error_print(message):
+    """Print `message` to the console the user started us from."""
+    text = message if message.endswith('\n') else f'{message}\n'
+    if _console_fd is not None and _console_fd >= 0:
+        try:
+            os.write(_console_fd, text.encode('utf-8', 'replace'))
+            return
+        except OSError:
+            pass
+    try:
+        stream = sys.__stderr__ or sys.stderr
+        stream.write(text)
+        stream.flush()
+    except Exception:
+        pass
+
+
 def where(above=0):
     """Get the file and line of the caller. Arguments:
      -  above -- how many frames to go up (or down) from the reference

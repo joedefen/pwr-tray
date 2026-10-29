@@ -52,7 +52,13 @@ Per-DE requirements:
 * Manually run as `pwr-tray -o`:
     * Creates config (in `~/.config/pwr-tray/config.ini`).
     * Copies default DE commands to `~/.config/pwr-tray/commands.yaml`.
-    * Shows system-level commands (DE dependent) that must be installed if missing. Note:
+    * Detects your desktop environment. If none is recognised, it prints the
+      session variables it saw, the list of known desktops, and exits -- use
+      `--de NAME` to force the right one. `pwr-tray --list-des` prints every
+      known desktop together with the commands it needs, marking any that are
+      not currently on `$PATH`.
+    * Checks the DE-dependent commands it needs and exits with an install hint
+      if any are missing. Note:
       * `systemctl` is always required.
       * Optionally, install `playerctl` if you wish playing media to inhibit screen saving and sleeping.
     * If you find you are missing PyQt5, then you'll need to install it; examples:
@@ -67,12 +73,13 @@ Per-DE requirements:
 ### Command Line Options
 | Option | Description |
 |--------|-------------|
-| `-o`, `--stdout` | Log to stdout (in addition to the log file); useful for debugging from a terminal. |
+| `-o`, `--stdout` | Log to stdout (if a tty). |
 | `-D`, `--debug` | Enable debug mode (more frequent/elaborate logging); overrides the `debug_mode` config setting. |
 | `-q`, `--quick` | Quick mode: sets lock and sleep timeouts to 1 minute and runs double-time (timers expire in 30s wall clock). Useful for testing. |
 | `-e`, `--edit-config` | Open `~/.config/pwr-tray/config.ini` in `$EDITOR` (default: `vim`). |
 | `-f`, `--follow-log` | Tail the log file (`~/.config/pwr-tray/debug.log`). |
 | `--de NAME` | Force desktop detection (e.g., `--de i3-x11`, `--de sway-wayland`, `--de kde-wayland`). Useful when env vars are unreliable. |
+| `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
 
 For initial setup and troubleshooting, `pwr-tray -D -o` is a good starting point.
 
