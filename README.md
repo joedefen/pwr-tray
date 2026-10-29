@@ -116,6 +116,7 @@ Or act on the applet itself:
 - You can run in various modes, but the default, `SleepAfterLock`, exercises the most code paths.
 - Then, ensure closing the lid, hitting the power button, etc., have the desired effects.
 - To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`
+- To test media inhibit: with `playerctl` installed, play media in any MPRIS-capable player; the `PlayingNow` icon appears and the lock/sleep timeouts are suspended until playback stops.
 - To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states.
 
 ---

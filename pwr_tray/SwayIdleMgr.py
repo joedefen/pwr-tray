@@ -59,16 +59,19 @@ class SwayIdleManager:
 
         lock_s, sleep_s, blank_s = None, None, None
         mode = mode if mode else self.applet.get_effective_mode()
+        # While media plays (playerctl), no idle timeouts are passed to
+        # swayidle, which is how the inhibit takes effect on Wayland.
+        media_playing = getattr(self.applet, 'was_inhibited', '') == 'player'
         sleeping = False
 
         quick = self.applet.quick
         a_minute = 30 if quick else 60
 
-        if mode in ('LockOnly', 'SleepAfterLock'):
+        if mode in ('LockOnly', 'SleepAfterLock') and not media_playing:
             lock_s = self.applet.get_lock_min_list()[0] * a_minute
             if self.applet.get_params().turn_off_monitors:
                 blank_s = 20 + lock_s
-        if mode in ('SleepAfterLock', ):
+        if mode in ('SleepAfterLock', ) and not media_playing:
             sleep_s = self.applet.get_sleep_min_list()[0] * a_minute
             sleeping = True
 

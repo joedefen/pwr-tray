@@ -404,6 +404,7 @@ class PwrTray:
                 rows.append(line)
         if len(rows) == 1:
             rows = []
+        play_state = ''
         if self.has_playerctl and self.enable_playerctl:
             # subprocess.run is already safe, but ensure we aren't leaking
             # elsewhere if this is called 10 times per second.
@@ -411,11 +412,27 @@ class PwrTray:
                 ['playerctl', 'status'],
                 capture_output=True, text=True, check=False
             )
-            _ = child.stdout.strip().lower() # play_state
+            play_state = child.stdout.strip().lower()
+
+        # Media playback inhibits locking/sleeping, but an existing systemd
+        # inhibitor keeps priority (it is already visible as the StopSign).
+        if play_state == 'playing' and not inhibited:
+            inhibited = 'player'
+
+        if self.was_play_state != play_state:
+            prt(f'playerctl play_state={play_state!r}')
+            self.was_play_state = play_state
+            self.poll_100ms = True
 
         emode = self.effective_mode()
 
-        if self.show_icon(inhibited=inhibited):
+        # A change of the inhibit kind (not just the icon number) must also
+        # restart the idle manager: on Wayland, swayidle is rebuilt w/o
+        # timeouts while media plays, even if the icon did not change.
+        # Assign first, because the idle manager reads self.was_inhibited.
+        was_inhibited = self.was_inhibited
+        self.was_inhibited = inhibited
+        if self.show_icon(inhibited=inhibited) or was_inhibited != inhibited:
             self.poll_100ms = True
             self.idle_manager_start()
 
@@ -423,7 +440,6 @@ class PwrTray:
         self.was_selector = self.battery.selector
         was_output = self.was_output
         self.was_output = output
-        self.was_inhibited = inhibited
         return rows, bool(was_output != output)
 
     def update_battery_status(self):
@@ -588,6 +604,7 @@ class PwrTray:
             self.enable_playerctl = not bool(self.enable_playerctl)
             self.save_picks()
             self.rebuild_menu = True
+            self.poll_100ms = True # apply the new setting immediately
 
     def _sleep_rotate_next(self, advance=None):
         advance = True if advance is None else advance
