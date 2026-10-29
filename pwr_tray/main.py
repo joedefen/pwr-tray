@@ -533,7 +533,7 @@ class PwrTray:
 
             elif (self.running_idle_s >= down_secs and emode not in ('LockOnly',)
                     and self.state.name in ('Awake', 'Locked', 'Blanked')):
-                if self._get_down_state() == 'PowerOff':
+                if self._get_down_state() == 'PowerDown':
                     self.poweroff(None)
                 else:
                     self.suspend(None)
