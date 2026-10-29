@@ -17,6 +17,37 @@ import copy
 import json
 from pwr_tray.Utils import prt
 
+
+def to_array(val_str):
+    """Parse a list spec into a list of positive ints, or None if malformed.
+
+    Expecting a string of form: "[1,2,...]" or just "20".  Values that are
+    unparsable, not a list/int, or contain no positive int at all yield None,
+    so callers can fall back to the configured default instead of storing a
+    half-parsed value.
+    """
+    if isinstance(val_str, list):
+        vals = val_str
+    else:
+        try:
+            vals = json.loads(val_str)
+        except Exception:
+            return None
+    if isinstance(vals, int) and not isinstance(vals, bool):
+        vals = [vals]
+    if not isinstance(vals, list):
+        return None
+    rvs = []
+    for val in vals:
+        if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+            rvs.append(val)
+    if not rvs:
+        return None
+    if len(rvs) == 1: # always want two
+        rvs.append(rvs[0])
+    return rvs
+
+
 class IniTool:
     """ Configued Params for this class"""
     def __init__(self, paths_only=False):
@@ -66,7 +97,27 @@ class IniTool:
 
     def the_default(self, selector, key):
         """ return the default value given the selector and key """
-        return self.defaults[selector][key]
+        default = self.defaults[selector][key]
+        if key.endswith('_list'):
+            # Defaults are stored as the literal config text so they can be
+            # written with config.read_dict(); hand callers the parsed list so
+            # a fallback never leaks the raw string into params.
+            parsed = to_array(default)
+            return default if parsed is None else parsed
+        return default
+
+    def with_list_defaults(self, selector, params):
+        """Return `params` as a SimpleNamespace whose `_list` values are lists.
+
+        A list key already holding a parsed list is kept as is, whether it came
+        from this section or was inherited from [Settings].  A key still holding
+        the raw default string (absent from the section) or None (a spec that
+        failed to parse) is replaced by the selector's default list.
+        """
+        for key in self.defaults[selector]:
+            if key.endswith('_list') and not isinstance(params[key], list):
+                params[key] = self.the_default(selector, key)
+        return SimpleNamespace(**params)
 
     def get_current_vals(self, selector, list_name):
         """ Expecting a list of two or more non-zero ints """
@@ -96,26 +147,6 @@ class IniTool:
 
     def update_config(self):
         """ Check if the file has been modified since the last read """
-        def to_array(val_str):
-            # Expecting string of form: "[1,2,...]" or just "20"
-            try:
-                vals = json.loads(val_str)
-            except Exception:
-                return None
-            if isinstance(vals, int):
-                vals = [vals]
-            if not isinstance(vals, list):
-                return None
-            rvs = []
-            for val in vals:
-                if isinstance(val, int) and val > 0:
-                    rvs.append(val)
-            if not rvs:
-                return None
-            if len(rvs) == 1: # always want two
-                rvs.append(vals[0])
-            return rvs
-
         current_mod_time = os.path.getmtime(self.ini_path)
         if current_mod_time == self.last_mod_time:
             return False # not updated
@@ -137,7 +168,7 @@ class IniTool:
             if selector == 'Settings':
                 running = params
             if selector not in self.config:
-                all_params[selector] = SimpleNamespace(**params)
+                all_params[selector] = self.with_list_defaults(selector, params)
                 continue
 
             # iterate the candidates
@@ -150,9 +181,16 @@ class IniTool:
                 if key.endswith('_list'):
                     list_value = to_array(value)
                     if list_value is None:
-                        # Keep the value inherited from [Settings] (or the
-                        # built-in default while parsing [Settings] itself).
-                        prt(f'skip {selector}.{key}: {value!r} [bad list spec]')
+                        # Malformed spec: keep a list already inherited from
+                        # [Settings], otherwise fall back to the default list
+                        # (with_list_defaults() also covers the missing-key case).
+                        if isinstance(params[key], list):
+                            prt(f'skip {selector}.{key}: {value!r}'
+                                f' [bad list spec; keeping {params[key]}]')
+                        else:
+                            params[key] = self.the_default(selector, key)
+                            prt(f'skip {selector}.{key}: {value!r}'
+                                f' [bad list spec; using default {params[key]}]')
                     else:
                         params[key] = list_value
                     continue
@@ -185,7 +223,7 @@ class IniTool:
                     continue
 
                 assert False, f'unhandled goldens[{key}]: {value!r}'
-            all_params[selector] = SimpleNamespace(**params)
+            all_params[selector] = self.with_list_defaults(selector, params)
 
         self.params_by_selector = all_params
 
