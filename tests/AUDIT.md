@@ -172,9 +172,9 @@ If a copy fails, `self.icons` holds fewer than eight entries and [`show_icon()`]
 
 ## P2 — Design, cost, and hygiene
 
-### 10. Polling architecture
+### 10. Polling architecture — resolved
 
-Every 2-second tick (`self.poll_s = 2.000`) performs:
+Every 2-second tick used to perform:
 
 - `systemd-inhibit --no-pager --mode=block` (process spawn + D-Bus roundtrip);
 - `playerctl status` (second process spawn, only while enabled);
@@ -182,7 +182,29 @@ Every 2-second tick (`self.poll_s = 2.000`) performs:
 - `os.path.getmtime()` on `config.ini`;
 - a non-blocking read of the `dbus-monitor` pipe.
 
-That is roughly 43,000 process spawns per day to observe events logind and UPower already publish as D-Bus signals — and the codebase already consumes `PrepareForSleep` that way ([`_start_resume_monitor()`](../pwr_tray/main.py:902)). For a power-saving utility the polling is a design smell rather than a defect, but it is the largest cheap win available.
+That was roughly 43,000 process spawns per day to observe events logind, UPower
+and the MPRIS players already publish as D-Bus signals.
+
+[`PowerEvents`](../pwr_tray/PowerEvents.py:1) now subscribes to those signals
+instead of polling for them:
+
+- one long-lived `dbus-monitor` per bus (system: logind `BlockInhibited` /
+  `DelayInhibited` and UPower `OnBattery` / battery percentage; session: MPRIS
+  `PlaybackStatus`), read through `QSocketNotifier` so the pipes are not polled
+  either;
+- `QFileSystemWatcher` on `config.ini` *and* its directory, so an editor that
+  saves by rename is not missed;
+- [`on_timeout()`](../pwr_tray/main.py:677) still runs the cheap state machine,
+  but calls `systemd-inhibit`, `playerctl`, `psutil` and `reconfig()` only when
+  an event marked that input dirty;
+- a five-minute `_resync()` safety net covers a missed signal (a restarted
+  service, a player that vanished without one): ~288 queries per day instead of
+  43,000.
+
+If `dbus-monitor` or `QtDBus`/`QSocketNotifier` is unavailable — or a monitor
+exits — the affected inputs fall back to the old once-per-tick polling, so the
+change cannot make behaviour worse.  [`tests/test_power_events.py`](test_power_events.py:1)
+pins the signal filtering, event coalescing and the dirty-flag gating.
 
 ### 11. Module-level D-Bus dependency
 

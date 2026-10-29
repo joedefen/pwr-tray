@@ -38,6 +38,7 @@ from pwr_tray.Errors import PwrTrayError, DesktopDetectionError
 from pwr_tray.Errors import MissingCommandsError, MissingResourcesError
 from pwr_tray.SwayIdleMgr import SwayIdleManager
 from pwr_tray.IniTool import IniTool
+from pwr_tray.PowerEvents import PowerEvents
 
 SESSION_BUS = SessionBus()
 
@@ -231,6 +232,18 @@ class PwrTray:
         self.current_icon_num = -1  # triggers immediate icon update
         self.enable_playerctl = True
 
+        # Event-driven refresh: a D-Bus signal or a config-file watch marks the
+        # matching flag dirty and schedules one fast poll.  The timer itself
+        # only runs the cheap state machine; nothing is spawned per tick.
+        self._config_dirty = False
+        self._battery_dirty = True
+        self._inhibit_dirty = True
+        self._inhibit_rows = []
+        self._refresh_pending = False
+        self._events_bus_ok = False
+        self._events_config_ok = False
+        self.events = None
+
         self.picks_restored = self.restore_picks()
         if not self.picks_restored:
             prt('NOTE: picks restore incomplete; configured values used where missing')
@@ -304,6 +317,70 @@ class PwrTray:
         self.timer.timeout.connect(self.on_timeout)
         self.timer.start()
 
+        self._start_event_sources(ini_tool.ini_path)
+
+        # Safety net: signals keep us current, but a missed event (a service
+        # that restarted, a player that vanished without a signal) must not
+        # leave a stale icon forever.  This is 288 cheap checks per day rather
+        # than a systemd-inhibit spawn every two seconds.
+        self.sync_timer = QTimer()
+        self.sync_timer.setInterval(300_000)
+        self.sync_timer.timeout.connect(self._resync)
+        self.sync_timer.start()
+
+    def _start_event_sources(self, config_path):
+        """Wire D-Bus signals and the config watch, or fall back to polling."""
+        self.events = PowerEvents(
+            on_inhibitors=self._on_inhibitors_event,
+            on_battery=self._on_battery_event,
+            on_playback=self._on_playback_event,
+            on_config=self._on_config_event,
+            on_source_lost=self._on_event_source_lost)
+        self.events.start(config_path)
+        self._events_bus_ok = self.events.bus_ok
+        self._events_config_ok = self.events.config_ok
+        if self._events_bus_ok or self._events_config_ok:
+            prt(f'event sources: bus={self._events_bus_ok}'
+                f' config={self._events_config_ok} (polling disabled)')
+        else:
+            prt('WARN: no event sources available; falling back to polling')
+
+    def _on_event_source_lost(self):
+        """A dbus-monitor child died: stop trusting it, resume polling."""
+        self._events_bus_ok = False
+        prt('WARN: D-Bus event monitor exited; falling back to polling')
+
+    def _schedule_fast_poll(self):
+        """Coalesce any number of events into a single 100 ms tick."""
+        if self._refresh_pending:
+            return
+        self._refresh_pending = True
+        self.timer.start(100)
+
+    def _on_inhibitors_event(self):
+        self._inhibit_dirty = True
+        self._schedule_fast_poll()
+
+    def _on_battery_event(self):
+        self._battery_dirty = True
+        self._schedule_fast_poll()
+
+    def _on_playback_event(self):
+        # Playback state feeds check_inhibited(), so the icon and the swayidle
+        # command have to be rebuilt when a player starts or stops.
+        self._inhibit_dirty = True
+        self._schedule_fast_poll()
+
+    def _on_config_event(self):
+        self._config_dirty = True
+        self._schedule_fast_poll()
+
+    def _resync(self):
+        """Periodic safety net for a D-Bus signal we might have missed."""
+        self._inhibit_dirty = True
+        self._battery_dirty = True
+        self._schedule_fast_poll()
+
     def get_params(self, selector=None):
         selector = self.battery.selector if selector is None else selector
         return self.ini_tool.params_by_selector[selector]
@@ -359,6 +436,9 @@ class PwrTray:
                 with open(this.picks_file, 'w', encoding='utf-8') as f:
                     f.write(picks_str + '\n')
                 print("Picks saved:", picks_str)
+                # The mode/timeout change affects the icon as well as the
+                # menu, so make the next tick re-read the inhibit state.
+                this._inhibit_dirty = True
                 this.poll_100ms = True
             except Exception as e:
                 print(f"An error occurred while saving picks: {e}", file=sys.stderr)
@@ -519,8 +599,8 @@ class PwrTray:
             rows = []
         play_state = ''
         if self.has_playerctl and self.enable_playerctl:
-            # subprocess.run is already safe, but ensure we aren't leaking
-            # elsewhere if this is called 10 times per second.
+            # Event-driven: this query runs when logind or an MPRIS player
+            # reported a change, not on every poll tick.
             child = subprocess.run(
                 ['playerctl', 'status'],
                 capture_output=True, text=True, check=False
@@ -598,28 +678,49 @@ class PwrTray:
         self.state.when = self.running_idle_s
 
     def on_timeout(self):
-        """TBD"""
+        """Run the cheap state machine; expensive checks only on events."""
         self.loop += 1
+        self._refresh_pending = False
         if self.DB():
             prt('DB', f'on_timeout() {self.loop=}/{self.loop_sample} ...')
 #       if not QSystemTrayIcon.isSystemTrayAvailable():
 #           prt('SystemTray is gone ... restarting')
 #           self.restart_self(None)
 
+        # Without an event source for a given input there is nothing to tell
+        # us it changed, so keep the old once-per-tick polling for that input.
+        if not self._events_bus_ok:
+            self._inhibit_dirty = True
+            self._battery_dirty = True
+        if not self._events_config_ok:
+            self._config_dirty = True
+
         self._check_resume()
-        self.reconfig()
+        if self._config_dirty:
+            self._config_dirty = False
+            self.reconfig()
         if self.idle_manager:
             self.idle_manager.checkup()
-        self.update_battery_status()
-
-        rows, updated = self.check_inhibited()
-        if updated or self.rebuild_menu:
-            self.build_menu(rows)
+        if self._battery_dirty:
+            self._battery_dirty = False
+            self.update_battery_status()
+            # A new battery tier changes the icon even when no inhibitor did.
+            self.show_icon(inhibited=self.was_inhibited or '')
+        if self._inhibit_dirty:
+            self._inhibit_dirty = False
+            rows, updated = self.check_inhibited()
+            self._inhibit_rows = rows
+            if updated:
+                self.rebuild_menu = True
+        if self.rebuild_menu:
+            self.build_menu(self._inhibit_rows)
             self.rebuild_menu = False
             prt('re-built menu')
 
         if self.loop >= self.loop_sample:
             self.update_running_idle_s()
+            # "Locking Soon" is an idle-time transition with no D-Bus signal.
+            self.show_icon(inhibited=self.was_inhibited or '')
             lock_secs = self.get_lock_min_list()[0]*60
             down_secs = self.get_sleep_min_list()[0]*60 + lock_secs
             blank_secs = 5 if self.quick else 20
@@ -692,6 +793,7 @@ class PwrTray:
             self.battery.selector = selector
             # self.ini_tool.set_effective_params(selector)
             self.rebuild_menu = True
+            self._inhibit_dirty = True   # the selector changes the icon
 
     def _lock_rotate_next(self, advance=None):
         advance = True if advance is None else advance
@@ -879,9 +981,12 @@ class PwrTray:
         this = PwrTray.singleton
         if this:
             this.tray_icon.hide()
-            # os._exit() below skips atexit, which is where the monitor is
-            # usually reaped; without this each restart orphans a dbus-monitor.
+            # os._exit() below skips atexit, which is where the monitors are
+            # usually reaped; without this each restart orphans dbus-monitor.
             this._stop_resume_monitor()
+            events = getattr(this, 'events', None)
+            if events is not None:
+                events.stop()
         PwrTray.save_picks()
         package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env = dict(os.environ)
