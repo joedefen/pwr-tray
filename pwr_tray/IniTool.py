@@ -131,6 +131,11 @@ class IniTool:
         prt('parsing config.ini...')
         for selector in self.get_selectors():
             all_params[selector] = params = copy.deepcopy(running)
+            # After [Settings] is parsed, the tiers inherit the user's values,
+            # not the hard-coded defaults (see README: HiBattery and LoBattery
+            # inherit missing/invalid settings from 'Settings').
+            if selector == 'Settings':
+                running = params
             if selector not in self.config:
                 all_params[selector] = SimpleNamespace(**params)
                 continue
@@ -144,8 +149,9 @@ class IniTool:
 
                 if key.endswith('_list'):
                     list_value = to_array(value)
-                    if not value:
-                        params[key] = self.the_default(selector, key)
+                    if list_value is None:
+                        # Keep the value inherited from [Settings] (or the
+                        # built-in default while parsing [Settings] itself).
                         prt(f'skip {selector}.{key}: {value!r} [bad list spec]')
                     else:
                         params[key] = list_value
@@ -160,7 +166,6 @@ class IniTool:
                     if isinstance(value, bool):
                         params[key] = value
                     else:
-                        params[key] = self.the_default(selector, key)
                         prt(f'skip {selector}.{key}: {value!r} [expecting bool]')
                     continue
 
@@ -169,7 +174,6 @@ class IniTool:
                         params[key] = int(value)
                         continue
                     except Exception:
-                        params[key] = self.the_default(selector, key)
                         prt(f'skip {selector}.{key}: {value!r} [expecting int repr]')
                         continue
 
@@ -177,7 +181,6 @@ class IniTool:
                     if isinstance(value, str):
                         params[key] = value
                     else:
-                        params[key] = self.the_default(selector, key)
                         prt(f'skip {selector}.{key}: {value!r} [expecting string]')
                     continue
 
