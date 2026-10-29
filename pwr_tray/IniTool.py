@@ -7,8 +7,6 @@ TBD
 # pylint: disable=too-many-branches,too-many-statements
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=consider-using-from-import
-# pylint: disable=
-# pylint: disable=
 
 import os
 import configparser
@@ -60,22 +58,16 @@ class IniTool:
                 'sleep_min_list': '[5, 30]',
                 'lo_battery_pct': 10,
                 'gui_editor': 'geany',
-            #   'dim_pct_brightness': 100,
-            #   'dim_pct_lock_min': 100,
 
             }, 'HiBattery': { #was OnBattery
                 'power_down': False,
                 'lock_min_list': '[10, 20]',
                 'sleep_min_list': '[1, 10]',
-            #   'dim_pct_brightness': 50,
-            #   'dim_pct_lock_min': 70,
 
             }, 'LoBattery': {
                 'power_down': True,
                 'lock_min_list': '[1]',
                 'sleep_min_list': '[1]',
-            #   'dim_pct_brightness': 50,
-            #   'dim_pct_lock_min': 70,
             }
         }
         self.folder = os.path.expanduser("~/.config/pwr-tray")
@@ -86,6 +78,7 @@ class IniTool:
         self.last_mod_time = None
         self.section_params = {'Settings': {}, 'HiBattery': {}, 'LoBattery': {}, }
         self.params_by_selector = {}
+        self._config_problem = ''
         if not paths_only:
             self.ensure_ini_file()
 
@@ -136,23 +129,97 @@ class IniTool:
         return vals
 
     def ensure_ini_file(self):
-        """Check if the config file exists, create it if not."""
-        if not os.path.exists(self.folder):
+        """Create the config folder and file when missing; True if created.
+
+        A read-only or unmounted config folder must not abort start-up: the
+        applet can run on the built-in defaults, so the failure is logged and
+        left to `update_config()` to report.
+        """
+        try:
             os.makedirs(self.folder, exist_ok=True)
-        if not os.path.exists(self.ini_path):
+            if os.path.exists(self.ini_path):
+                return False
             self.config.read_dict(self.defaults)
             with open(self.ini_path, 'w', encoding='utf-8') as configfile:
                 self.config.write(configfile)
+        except OSError as exc:
+            self._report_config_problem(f'cannot create ({exc})')
+            return False
+        return True
+
+    def _report_config_problem(self, reason):
+        """Warn about a config.ini problem once, not once per poll tick."""
+        message = f'{self.ini_path}: {reason}'
+        if message == self._config_problem:
+            return
+        self._config_problem = message
+        fallback = ('last good values' if self.params_by_selector
+                    else 'built-in defaults')
+        prt(f'WARN: {message}; keeping {fallback}')
+
+    def _read_ini_file(self):
+        """Load config.ini into a fresh parser; False (after a warning) on error.
+
+        Reading is a full replace, not a merge: a section removed from the file
+        must not survive from an earlier read, and a partially parsed file must
+        never reach `_parse_config()`.
+        """
+        parser = configparser.ConfigParser()
+        try:
+            with open(self.ini_path, 'r', encoding='utf-8') as handle:
+                parser.read_file(handle)
+        except (OSError, configparser.Error, UnicodeDecodeError) as exc:
+            self._report_config_problem(f'cannot read ({exc})')
+            return False
+        self.config = parser
+        return True
+
+    def _use_fallback(self):
+        """Build params from the defaults if nothing was parsed yet.
+
+        Returns True when the defaults were used, so a first read failure still
+        leaves callers with a complete parameter set instead of an empty
+        `params_by_selector`.
+        """
+        if self.params_by_selector:
+            return False
+        self.config = configparser.ConfigParser()
+        self.config.read_dict(self.defaults)
+        self._parse_config()
+        return True
 
     def update_config(self):
-        """ Check if the file has been modified since the last read """
-        current_mod_time = os.path.getmtime(self.ini_path)
+        """Check if the file has been modified since the last read.
+
+        Returns True when `params_by_selector` was rebuilt.  This runs from a Qt
+        slot on every tick, so it never raises: a deleted, unreadable or
+        malformed config.ini keeps the last good values and is reported once per
+        change rather than once per tick.
+        """
+        try:
+            current_mod_time = os.path.getmtime(self.ini_path)
+        except OSError as exc:
+            self._report_config_problem(f'unavailable ({exc.strerror or exc})')
+            return self._use_fallback()
+
         if current_mod_time == self.last_mod_time:
             return False # not updated
-        # Re-read the configuration file if it has changed
-        self.config.read(self.ini_path)
-        self.last_mod_time = current_mod_time
 
+        # The stat succeeded: the file exists again, so a later problem is new
+        # and deserves its own warning.
+        self._config_problem = ''
+        if not self._read_ini_file():
+            # Remember the mtime: a malformed file is reported when it is
+            # saved again, not on every tick.
+            self.last_mod_time = current_mod_time
+            return self._use_fallback()
+
+        self.last_mod_time = current_mod_time
+        self._parse_config()
+        return True # updated
+
+    def _parse_config(self):
+        """Rebuild `params_by_selector` from the parsed `self.config`."""
         goldens = self.defaults['Settings']
         running = goldens
         all_params = {}

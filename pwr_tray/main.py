@@ -3,12 +3,12 @@
 """
 This code is designed to control power matters from the tray.
 """
-# pylint: disable=invalid-name,wrong-import-position,missing-function-docstring
-# pylint: disable=broad-except,too-many-instance-attributes
-# pylint: disable=global-statement,consider-using-with,too-many-lines
-# pylint: disable=too-many-statements,too-few-public-methods
-# pylint: disable=too-many-branches,too-many-public-methods
-# pylint: disable=consider-using-from-import,too-many-locals
+# The applet is one cohesive module and its state machine is deliberately a
+# single branch ladder; rule-specific suppressions sit next to their code.
+# pylint: disable=missing-function-docstring,broad-except
+# pylint: disable=too-many-instance-attributes,consider-using-with
+# pylint: disable=too-many-lines,too-many-statements
+# pylint: disable=too-many-branches,too-many-public-methods,too-many-locals
 
 import os
 import sys
@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction #, QMe
 from PyQt5.QtGui import QIcon, QCursor
 from PyQt5.QtCore import QTimer
 
-import pwr_tray.Utils as Utils
+from pwr_tray import Utils
 from pwr_tray import __version__
 from pwr_tray.Utils import prt, PyKill
 from pwr_tray.Errors import PwrTrayError, DesktopDetectionError
@@ -50,7 +50,7 @@ class PwrTray:
     NOTES:
      - when icons are moved/edited, rename them or reboot to avoid cache confusion
     """
-    svg_info = SimpleNamespace(version='03', subdir='resources/SetD'
+    svg_info = SimpleNamespace(version='03'
                 , bases= ['SettingSun',   # Normal (SleepAfterLock)
                           'FullSun',      # Presentation Mode
                           'Unlocked',     # LockOnly Mode
@@ -227,8 +227,6 @@ class PwrTray:
         self.running_idle_s = 0.000
         self.poll_s = 2.000
         self.poll_100ms = False
-        self.lock_began_secs = None   # TBD: remove
-        self.inh_lock_began_secs = False # TBD: refactor?
         self.rebuild_menu = False
         self.picks_file = ini_tool.picks_path
         self.current_icon_num = -1  # triggers immediate icon update
@@ -536,14 +534,10 @@ class PwrTray:
             except Exception as e:
                 prt(f'WARN: idle time command failed: {e}')
 
-    def DB(self):
+    def DB(self):  # pylint: disable=invalid-name  # historic name
         """ is debug on? """
         rv = self.get_params().debug_mode
         return rv
-
-    def effective_mode(self):
-        """ TBD """
-        return 'SleepAfterLock' if self.battery.selector == 'LoBattery' else self.mode
 
     def show_icon(self, inhibited=''):
         """ Display Icon if updated """
@@ -619,7 +613,7 @@ class PwrTray:
             self.was_play_state = play_state
             self.poll_100ms = True
 
-        emode = self.effective_mode()
+        emode = self.get_effective_mode()
 
         # A change of the inhibit kind (not just the icon number) must also
         # restart the idle manager: on Wayland, swayidle is rebuilt w/o
@@ -726,10 +720,6 @@ class PwrTray:
             lock_secs = self.get_lock_min_list()[0]*60
             down_secs = self.get_sleep_min_list()[0]*60 + lock_secs
             blank_secs = 5 if self.quick else 20
-#           if 0 <= int(self.get_params().dim_pct_brightness) < 100:
-#               dim_secs = int(round(lock_secs * int(self.get_params().dim_pct_lock_min) / 100, 0))
-#           else:
-#               dim_secs = 2000 + lock_secs * 2  # make it never happen
 
             emit = f'idle_s={self.running_idle_s} state={self.state.name},{self.state.when}s'
             emode = self.get_effective_mode()
@@ -758,18 +748,11 @@ class PwrTray:
                     and self.state.name in ('Awake', 'Dim')):
                 self.lock_screen(None)
 
-#           elif (self.running_idle_s >= dim_secs and emode not in ('Presentation',)
-#                   and self.state.name in ('Awake',)):
-#               self.dimmer(None)
-
             elif (self.running_idle_s >= self.state.when + blank_secs
                     and self.get_params().turn_off_monitors
                     and emode not in ('Presentation',)
                     and self.state.name in ('Locked',)):
                 self.blank_primitive()
-
-            elif self.inh_lock_began_secs:
-                self.inh_lock_began_secs = False
 
             elif self.running_idle_s < lock_secs and self.state.name not in ('Awake', ):
                 self.set_state('Awake')
@@ -1013,17 +996,6 @@ class PwrTray:
                 prt(f"Edit Config ERR: {e}")
 
     @staticmethod
-    def old_suspend(_):
-        """TBD"""
-        this = PwrTray.singleton
-        this.set_state('Asleep')
-        this.reset_xidle_ms()
-        PwrTray.run_command('locker')
-        PwrTray.run_command('suspend')
-        # systemctl suspend blocks until resume
-        prt('suspend: resumed')
-
-    @staticmethod
     def suspend(_):
         this = PwrTray.singleton
         this.set_state('Asleep')
@@ -1056,22 +1028,10 @@ class PwrTray:
         PwrTray.run_command('reboot')
 
     @staticmethod
-    def dimmer(_):
-        """TBD"""
-        PwrTray.run_command('dimmer')
-
-    @staticmethod
-    def undim(_):
-        """TBD"""
-        PwrTray.run_command('undim')
-
-    @staticmethod
     def lock_screen(_):
         this = PwrTray.singleton
         PwrTray.run_command('locker')
         this.update_running_idle_s()
-#       if 0 <= int(thisget_params()params.dim_pct_brightness) < 100:
-#           this.undim(None)
         this.set_state('Locked')
 
     def blank_primitive(self, lock_screen=False):

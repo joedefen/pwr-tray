@@ -245,13 +245,22 @@ without sleeping at all.
 - [`sys.path.append('/usr/lib/python3/dist-packages')`](../pwr_tray/main.py:15) mixes system packages into a pipx venv. It is a band-aid predating the `PyQt5` dependency declaration and now mostly obsolete, but still capable of shadowing.
 - `pwr_tray/__init__.py` is empty: no `__version__`, and there is no `--version` flag.
 
-### 13. Dead weight
+### 13. Dead weight — resolved
 
-- `svg_info.subdir='resources/SetD'` ([main.py:48](../pwr_tray/main.py:48)) names a directory that does not exist; the field is never read.
-- `resources/SetA`, `SetB`, `SetC` ship six SVGs that nothing loads — roughly two-thirds of the SVG payload in the wheel.
-- `get_effective_mode()` and `effective_mode()` are byte-identical duplicates ([269](../pwr_tray/main.py:269) / [349](../pwr_tray/main.py:349)).
-- Inert state and methods: `lock_began_secs`, `inh_lock_began_secs` (only ever cleared at [line 556](../pwr_tray/main.py:556)), `old_suspend`, `dimmer`, `undim`, and the commented-out dimming configuration in `IniTool`.
-- `main.py` carries 11 file-level pylint blanket disables ([line 6](../pwr_tray/main.py:6)).
+- `svg_info.subdir` was never read and pointed at a directory (`resources/SetD`)
+  that did not exist; the field is gone.
+- `resources/SetA`, `SetB`, `SetC` were removed. Only the eight icons named in
+  `svg_info.bases` are installed and loaded, so the wheel no longer carries
+  unused SVG payload.
+- `effective_mode()` was a byte-for-byte duplicate of `get_effective_mode()`;
+  the duplicate is gone and its one caller uses `get_effective_mode()`.
+- Inert state and methods removed: `lock_began_secs`, `inh_lock_began_secs`
+  (and its always-false branch in `on_timeout()`), `old_suspend`, `dimmer`,
+  `undim`, and the commented-out `dim_pct_*` configuration in `IniTool`.
+- `main.py`'s module header now carries nine named suppressions in four lines
+  instead of eighteen across six. `invalid-name` is disabled only on `DB()`,
+  and the import was changed to `from pwr_tray import Utils` so
+  `consider-using-from-import` is no longer needed.
 
 ### 14. Repository hygiene
 
@@ -261,9 +270,36 @@ without sleeping at all.
 - `.venv/` is not listed in [`.gitignore`](../.gitignore:1) (currently untracked, so this is latent).
 - `docs/examples/*.service` are, by their own admission ([README line 208](../README.md:208)), untested.
 
-### 15. Config-path robustness
+### 15. Config-path robustness — resolved
 
-If the user deletes `config.ini`, `os.path.getmtime()` in [`update_config()`](../pwr_tray/IniTool.py:119) raises, and `update_config()` is called from `on_timeout()` inside a Qt slot — an exception per tick rather than a single recoverable error.
+`update_config()` used to call `os.path.getmtime()` unguarded, and it runs from
+[`on_timeout()`](../pwr_tray/main.py:697) inside a Qt slot: deleting
+`config.ini` raised a `FileNotFoundError` every tick, and a malformed file
+raised a `configparser` error on every re-read.
+
+[`update_config()`](../pwr_tray/IniTool.py:191) now never raises:
+
+- `os.path.getmtime()` and the read itself are guarded; a missing, unreadable
+  or unparsable file keeps the last good `params_by_selector` and returns
+  `False` ("no change");
+- the read goes through
+  [`_read_ini_file()`](../pwr_tray/IniTool.py:160), which parses into a *fresh*
+  `ConfigParser` and only swaps it in on success, so a half-parsed or
+  section-removed file can never leak into the params; the file's mtime is
+  recorded anyway, so a broken file is reported when it is saved, not on every
+  tick;
+- [`_report_config_problem()`](../pwr_tray/IniTool.py:150) logs each distinct
+  problem once (it is cleared when a stat succeeds again), instead of one
+  traceback per tick;
+- if nothing has ever been parsed successfully, `_use_fallback()` derives the
+  params from the built-in defaults, so callers never see an empty
+  `params_by_selector`;
+- [`ensure_ini_file()`](../pwr_tray/IniTool.py:131) turns a read-only or
+  unmounted config folder into a warning at start-up rather than an exception.
+
+When the file reappears or is fixed, its new mtime picks the values up again.
+[`tests/test_config_path.py`](test_config_path.py:1) pins all five behaviours
+(deleted, recreated, malformed, never readable, not creatable).
 
 ---
 
