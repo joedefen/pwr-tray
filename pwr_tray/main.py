@@ -850,6 +850,9 @@ class PwrTray:
         this = PwrTray.singleton
         if this:
             this.tray_icon.hide()
+            # os._exit() below skips atexit, which is where the monitor is
+            # usually reaped; without this each restart orphans a dbus-monitor.
+            this._stop_resume_monitor()
         PwrTray.save_picks()
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         args = [sys.executable, '-m', 'pwr_tray.main'] + sys.argv[1:]
@@ -1005,14 +1008,45 @@ class PwrTray:
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             os.set_blocking(proc.stdout.fileno(), False)
             prt('resume monitor: started')
+            # Any orderly exit (atexit, SIGTERM handler, app.exec_() return)
+            # must not leave dbus-monitor running.  restart_self() leaves via
+            # os._exit() -- which skips atexit -- and calls the stopper itself.
+            atexit.register(self._stop_resume_monitor)
             return proc
         except FileNotFoundError:
             prt('WARN: dbus-monitor not found; resume detection disabled')
             return None
 
+    def _stop_resume_monitor(self):
+        """Terminate and reap the dbus-monitor child.  Safe to call twice."""
+        proc, self._resume_proc = getattr(self, '_resume_proc', None), None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()      # dbus-monitor exits promptly on SIGTERM
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    prt('WARN: dbus-monitor ignored SIGTERM; killing it')
+                    proc.kill()
+                    proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+        prt('resume monitor: stopped')
+
     def _check_resume(self):
         """Poll dbus-monitor for resume signal (called from on_timeout)."""
         if not self._resume_proc:
+            return
+        if self._resume_proc.poll() is not None:
+            prt('WARN: dbus-monitor exited; resume detection disabled')
+            self._stop_resume_monitor()
             return
         try:
             chunk = os.read(self._resume_proc.stdout.fileno(), 4096)
