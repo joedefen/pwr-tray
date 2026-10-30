@@ -12,7 +12,7 @@ This document describes the code as it stands. Nothing here is a changelog.
 ## 1. Verdict
 
 Sound, deliberately engineered, and small enough to keep sound. The suite is real
-(206 tests, 0.81 s) and the lint gate is clean; the architecture separates event
+(267 tests, 0.91 s) and the lint gate is clean; the architecture separates event
 detection from policy and both from presentation. Nothing found is a
 use-it-and-lose-data bug.
 
@@ -46,13 +46,14 @@ Policy is per battery tier; behaviour is per desktop, chosen from a YAML table.
 
 | File | Lines | Responsibility |
 | --- | ---: | --- |
-| [`pwr_tray/main.py`](../pwr_tray/main.py:1) | 1,361 | `PwrTray` class (state machine, menu, icons, actions), DE detection, tray waiting, lock takeover, `main()` |
+| [`pwr_tray/main.py`](../pwr_tray/main.py:1) | 1,462 | `PwrTray` class (state machine, menu, icons, actions), DE detection, tray waiting, lock takeover, `main()` |
 | [`pwr_tray/PowerEvents.py`](../pwr_tray/PowerEvents.py:54) | 296 | Event sources: two long-lived `dbus-monitor` children (system bus, session bus) plus a config-file watcher |
 | [`pwr_tray/IniTool.py`](../pwr_tray/IniTool.py:49) | 336 | `config.ini` parsing, tier inheritance, defaults, list parsing, change detection |
 | [`pwr_tray/Utils.py`](../pwr_tray/Utils.py:1) | 370 | Console capture, logging, process discovery/killing, `flock` single-instance lock |
 | [`pwr_tray/SwayIdleMgr.py`](../pwr_tray/SwayIdleMgr.py:19) | 123 | Builds and supervises the `swayidle` command line on Wayland |
 | [`pwr_tray/Errors.py`](../pwr_tray/Errors.py:1) | 98 | Three user-facing exceptions with actionable messages |
-| `pwr_tray/resources/` | — | `commands.yaml` plus 9 SVG/PNG icons, installed at first run |
+| [`pwr_tray/service.py`](../pwr_tray/service.py:1) | 462 | `--svc-*` verbs: desktop-to-unit mapping, install-time rendering, status probe, plan/execute split |
+| `pwr_tray/resources/` | — | `commands.yaml`, 9 SVG/PNG icons installed at first run, and the 10 `systemd` units `--svc-install` copies out |
 
 ### 2.2 Startup sequence
 
@@ -123,7 +124,7 @@ separately in `picks.json`
 
 ### 2.5 Tests, packaging, CI
 
-* 15 test modules, 206 tests, shared isolation in
+* 16 test modules, 267 tests, shared isolation in
   [`conftest.py`](../conftest.py:97): `HOME` is redirected to a temporary
   directory for every test, and modules that cannot be imported on the runner
   are replaced by permissive stubs.
@@ -153,7 +154,7 @@ $ python3 -m compileall -q pwr_tray conftest.py tests
 rc=0
 
 $ python3 -m pytest -q
-206 passed in 0.81s
+267 passed in 0.91s
 
 $ python -m pwr_tray.main --version
 pwr-tray 1.0.13
@@ -194,10 +195,10 @@ but never uploads or verifies against the index.
 
 ### F2 — The shipped units retried permanent failures indefinitely (P1) — resolved
 
-All ten example units formerly used `Restart=always` with `RestartSec=5` and no
+All ten shipped units formerly used `Restart=always` with `RestartSec=5` and no
 `RestartPreventExitStatus` — e.g.
-[`pwr-tray-niri.service:30`](../docs/examples/pwr-tray-niri.service:30). That had
-two consequences.
+[`pwr-tray-niri.service:33`](../pwr_tray/resources/systemd/pwr-tray-niri.service:33).
+That had two consequences.
 
 Two exit codes are permanent, not transient:
 
@@ -217,10 +218,14 @@ a failed unit with the applet's message in the unit log instead of a loop, and
 an explicit `StartLimitIntervalSec=60`/`StartLimitBurst=5` pair lets the limiter
 stop a genuine crash loop after five attempts in a minute. Both properties are
 asserted for every unit in
-[`tests/test_service_examples.py`](../tests/test_service_examples.py:91), which
+[`tests/test_service_examples.py`](../tests/test_service_examples.py:117), which
 also checks the prevented codes against the exits
 [`main()`](../pwr_tray/main.py:1248) actually uses, so the units cannot silently
 diverge from the code again.
+
+The units also moved from `docs/examples/` into `pwr_tray/resources/systemd/`,
+so they ride along in the wheel and are installed by `pwr-tray --svc-install`
+instead of being copied by hand.
 
 ### F3 — Inhibition is decided by parsing a table and ignoring exit status (P1)
 
@@ -305,17 +310,26 @@ class, not between modules.
 ### F7 — There is no coverage measurement (P3)
 
 `[project.optional-dependencies]` lists `pytest` and `ruff`; CI runs both and no
-coverage tool, so "206 tests" is a count, not a statement about which lines run.
+coverage tool, so "267 tests" is a count, not a statement about which lines run.
 The monkeypatched action layer in [F4](#f4--the-action-layer-is-not-exercised-p2)
 is exactly the kind of gap a coverage report surfaces immediately.
 
-### F8 — The units are syntax-checked, not field-tested (P3)
+### F8 — The units are syntax-checked, not field-tested (P3) — partly mitigated
 
 [`tests/test_service_examples.py`](../tests/test_service_examples.py:1) validates
 structure, required directives, and that each unit's `--de` key exists in
 `commands.yaml`. The README states plainly that the units have not been run on
 every desktop, and that is the honest position: unit correctness against a live
 session manager, tray host, and idle daemon cannot be asserted in CI.
+
+What changed since: the units now ship in the wheel and are installed from the
+artifact by `pwr-tray --svc-install`, so "the file a user runs" and "the file the
+tests validate" are the same bytes -- except for the two machine-specific values
+`render()` substitutes, which
+[`tests/test_service_examples.py`](../tests/test_service_examples.py:175) checks
+leave every other directive intact. `pwr-tray --svc-status` is also a runtime
+probe of the installed unit, so a user can tell a syntax-valid unit from one the
+manager actually started. Field-testing each desktop is still open.
 
 ---
 
@@ -342,7 +356,7 @@ session manager, tray host, and idle daemon cannot be asserted in CI.
   failures reach the terminal that launched the applet.
 * **Packaging discipline.** Wheel contents, metadata, and the installed console
   script are asserted in CI, not assumed; the sdist carries the resources.
-* **Test isolation and speed.** 206 tests in 0.81 s with `HOME` redirected, so
+* **Test isolation and speed.** 267 tests in 0.91 s with `HOME` redirected, so
   the suite cannot read or write a developer's real configuration.
 
 ---
@@ -385,7 +399,9 @@ distribution hygiene (F1), one defensive parse (F3), and test/ops polish
 2. **F2 — done.** `RestartPreventExitStatus=2 3` and
    `StartLimitIntervalSec=60`/`StartLimitBurst=5` are on all ten units, and
    [`tests/test_service_examples.py`](../tests/test_service_examples.py:1)
-   asserts both.
+   asserts both. The units also moved into `pwr_tray/resources/systemd/` and are
+   installed by `pwr-tray --svc-install`, so the policy reaches users instead of
+   sitting in `docs/`.
 3. **F3** — log a warning when `systemd-inhibit`/`playerctl` exits non-zero or
    its output does not parse, and pin one real output sample per supported
    systemd version in a test. A D-Bus read of `BlockInhibited` is the durable
@@ -401,8 +417,8 @@ distribution hygiene (F1), one defensive parse (F3), and test/ops polish
 ## Appendix — how this was checked
 
 * Read all 7 application modules, `conftest.py`, all 15 test modules,
-  `pyproject.toml`, `.github/workflows/tests.yml`, all 10 units under
-  `docs/examples/`, and the README.
+  `pyproject.toml`, `.github/workflows/tests.yml`, all 10 units (then under
+  `docs/examples/`, since moved to `pwr_tray/resources/systemd/`), and the README.
 * Ran `ruff check .`, `compileall`, and `pytest -q` in the tree (results in §3).
 * Ran the installed CLI (`--version`, `--list-des`) through the pipx virtualenv
   with `PYTHONPATH` pointed at this tree; the applet itself was not launched, to

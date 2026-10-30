@@ -27,7 +27,7 @@ from PyQt5.QtGui import QCursor, QIcon
 from PyQt5.QtWidgets import QAction, QApplication, QMenu, QSystemTrayIcon  #, QMessageBox
 from ruamel.yaml import YAML
 
-from pwr_tray import Utils, __version__
+from pwr_tray import Utils, __version__, service
 from pwr_tray.Errors import (
     DesktopDetectionError,
     MissingCommandsError,
@@ -101,13 +101,16 @@ class PwrTray:
                       if shutil.which(cmd) is None)
 
     @staticmethod
-    def detect_de(de_json, force_de=None):
+    def detect_de(de_json, force_de=None, log=prt):
         """Detect the current DE from environment using JSON config rules.
         Merges three layers: defaults -> session_type (x11/wayland) -> desktop.
         Returns merged config dict.  Use force_de to skip detection.
 
         Raises DesktopDetectionError when nothing matches: an assert would be
         stripped by python -O, leaving the app running with empty commands.
+
+        `log` is the narration sink: the applet passes prt(), while the
+        ``--svc-*`` verbs pass a no-op so their stdout stays machine-readable.
         """
         env = {key: os.environ.get(key, '')
                for key in ('XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP',
@@ -118,7 +121,7 @@ class PwrTray:
                                ('XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP',
                                 'DESKTOP_SESSION'))
 
-        prt(f'ENV: XDG_CURRENT_DESKTOP={env["XDG_CURRENT_DESKTOP"]!r}'
+        log(f'ENV: XDG_CURRENT_DESKTOP={env["XDG_CURRENT_DESKTOP"]!r}'
             f' XDG_SESSION_DESKTOP={env["XDG_SESSION_DESKTOP"]!r}'
             f' DESKTOP_SESSION={env["DESKTOP_SESSION"]!r}'
             f' XDG_SESSION_TYPE={env["XDG_SESSION_TYPE"]!r}')
@@ -144,14 +147,14 @@ class PwrTray:
                 raise DesktopDetectionError(
                     f'--de {force_de!r} is not a known desktop',
                     known_desktops=known, env=env)
-            prt(f'ENV: forced {force_de!r}')
+            log(f'ENV: forced {force_de!r}')
             return _merge(force_de, desktops[force_de])
 
         # Desktop keys are compound: "kde-wayland", "i3-x11", etc.
         for compound_name, entry in desktops.items():
             detect, _, stype = compound_name.rpartition('-')
             if detect in desktop_str and stype == session_type:
-                prt(f'ENV: matched {compound_name!r}')
+                log(f'ENV: matched {compound_name!r}')
                 return _merge(compound_name, entry)
 
         raise DesktopDetectionError(
@@ -1278,6 +1281,47 @@ def acquire_lock_or_take_over(lock, replace=False):
     return lock.acquire(retries=25, delay=0.2)
 
 
+def confirm(question):
+    """Ask the user on the terminal; anything but an explicit yes is no."""
+    if not sys.stdin.isatty():
+        print('  (standard input is not a terminal; pass --yes to confirm)')
+        return False
+    try:
+        answer = input(f'{question} [y/N] ')
+    except EOFError:
+        return False
+    return answer.strip().lower() in ('y', 'yes')
+
+
+def run_service_command(opts):
+    """Run one --svc-* verb and return the process exit status.
+
+    None of these verbs construct the applet: they render the shipped unit for
+    the detected desktop, install it, and hand control to systemctl.  Desktop
+    detection is shared with the applet, so --de means the same thing here.
+    """
+    de_json, _ = load_known_de_json()
+    try:
+        desktop = PwrTray.detect_de(
+            de_json, opts.de, log=lambda *args, **kwargs: None)['name']
+    except PwrTrayError as exc:
+        Utils.error_print(str(exc))
+        return 2
+    try:
+        holder = service.applet_holder(IniTool(paths_only=True).folder)
+    except OSError:
+        holder = None    # unreadable lock: not a reason to refuse the request
+    try:
+        return service.dispatch(opts.svc, desktop,
+                                force=opts.force,
+                                yes=opts.yes or opts.force,
+                                ask=confirm,
+                                holder=holder)
+    except service.ServiceError as exc:
+        Utils.error_print(f'pwr-tray: {exc}')
+        return 1
+
+
 def main():
     # pylint: disable=import-outside-toplevel
     import argparse
@@ -1305,7 +1349,31 @@ def main():
     parser.add_argument('--replace', action='store_true',
             help='if another pwr-tray holds the single-instance lock, terminate'
                  ' it and take over (default: refuse to start)')
+    parser.add_argument('-y', '--yes', action='store_true',
+            help='never prompt; assume yes for --svc-* questions')
+    parser.add_argument('--force', action='store_true',
+            help='replace or delete a unit file pwr-tray did not write'
+                 ' (implies --yes)')
+    svc = parser.add_mutually_exclusive_group()
+    svc.add_argument('--svc', '--svc-status', dest='svc', action='store_const',
+            const='status',
+            help='report the systemd --user unit state, then exit')
+    svc.add_argument('--svc-install', dest='svc', action='store_const',
+            const='install',
+            help='write the unit for this desktop and enable it (not started)')
+    svc.add_argument('--svc-start', dest='svc', action='store_const',
+            const='start',
+            help='install if needed, enable, and start it now')
+    svc.add_argument('--svc-stop', dest='svc', action='store_const',
+            const='stop',
+            help='stop it now; it stays enabled for your next login')
+    svc.add_argument('--svc-uninstall', dest='svc', action='store_const',
+            const='uninstall',
+            help='stop, disable and delete the unit (config and logs are kept)')
     opts = parser.parse_args()
+
+    if opts.svc:
+        sys.exit(run_service_command(opts))
 
     if opts.list_des:
         for line in format_desktops(*load_known_de_json()):

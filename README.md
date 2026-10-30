@@ -82,6 +82,13 @@ Per-DE requirements:
 | `--de NAME` | Force desktop detection (e.g., `--de i3-x11`, `--de sway-wayland`, `--de kde-wayland`). Useful when env vars are unreliable. |
 | `--replace` | Replace the `pwr-tray` that is already running: terminate it and start in its place. Without this flag a second start refuses and exits. |
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
+| `--svc` / `--svc-status` | Report the `systemd --user` unit: installed, enabled, running. Exits `0` running, `1` installed-but-stopped, `2` not installed. |
+| `--svc-install` | Write the unit matching this desktop to `~/.config/systemd/user/`, reload, and enable it (does not start it now). |
+| `--svc-start` | `--svc-install` if needed, then enable and start it now. |
+| `--svc-stop` | Stop the unit. It stays enabled, so it returns at your next login. |
+| `--svc-uninstall` | Stop, disable and delete the unit. `config.ini`, picks and logs are kept. |
+| `-y`, `--yes` | Never prompt for the `--svc-*` verbs (needed when stdin is not a terminal). |
+| `--force` | Replace or delete a unit file pwr-tray did not write; implies `--yes`. |
 | `-V`, `--version` | Print the package version and exit. |
 
 For initial setup and troubleshooting, `pwr-tray -D -o` is a good starting point.
@@ -181,15 +188,33 @@ The config uses a three-layer merge: **defaults** → **session_type** (x11 or w
 
 ## Running pwr-tray as a systemd Service
 
-Instead of your DE/WM's own autostart, you can run `pwr-tray` as a `systemd --user` service. That restarts the applet if it exits and keeps its logging consistent regardless of how the session was started. Save the unit below as `~/.config/systemd/user/pwr-tray.service`, then:
+Instead of your DE/WM's own autostart, you can run `pwr-tray` as a `systemd --user` service. That restarts the applet if it exits and keeps its logging consistent regardless of how the session was started. The units ship inside the package, so installing one is a single command:
 
 ```
-mkdir -p ~/.config/systemd/user ~/.local/log
+pwr-tray --svc-status      # installed? enabled? running?
+pwr-tray --svc-install     # write the unit for this desktop and enable it
+pwr-tray --svc-start       # ...or do both and start it now
+pwr-tray --svc-stop        # stop it; it comes back at your next login
+pwr-tray --svc-uninstall   # stop, disable and delete the unit
+```
+
+`--svc-install` picks the unit for the detected desktop (`--de NAME` overrides the detection), substitutes the real path of the `pwr-tray` executable plus your live `WAYLAND_DISPLAY`/`DISPLAY`, writes `~/.config/systemd/user/pwr-tray.service`, reloads the manager and enables it. It does not start the applet, and it will not overwrite a unit you have edited without showing the difference first. `--yes` answers the question in advance; `--force` replaces or deletes a unit pwr-tray did not write.
+
+`--svc-status` is meant for scripts: it exits `0` when the service is running, `1` when it is installed but stopped, and `2` when no unit is installed.
+
+```
+pwr-tray --svc-status || pwr-tray --svc-start --yes
+```
+
+The same units are readable in the source tree and in the wheel under [`pwr_tray/resources/systemd/`](pwr_tray/resources/systemd/). To install one by hand, copy it as `~/.config/systemd/user/pwr-tray.service`, then:
+
+```
+mkdir -p ~/.local/log
 systemctl --user daemon-reload
 systemctl --user enable --now pwr-tray.service
 ```
 
-Example unit for **sway / Wayland**:
+Example unit for **sway / Wayland** (as `--svc-install` would render it):
 
 ```
 [Unit]
@@ -228,21 +253,21 @@ WantedBy=graphical-session.target
 
 ### Example systemd Service Config for other DEs/WMs
 
-* [i3](docs/examples/pwr-tray-i3.service)
-* [Hyprland](docs/examples/pwr-tray-hyprland.service)
-* [niri](docs/examples/pwr-tray-niri.service)
-* [KDE X11](docs/examples/pwr-tray-kde-x11.service)
-* [KDE Wayland](docs/examples/pwr-tray-kde-wayland.service)
-* [XFCE](docs/examples/pwr-tray-xfce.service)
-* [Cinnamon](docs/examples/pwr-tray-cinnamon.service)
-* [MATE](docs/examples/pwr-tray-mate.service)
-* [LXQt](docs/examples/pwr-tray-lxqt.service)
+* [i3](pwr_tray/resources/systemd/pwr-tray-i3.service)
+* [Hyprland](pwr_tray/resources/systemd/pwr-tray-hyprland.service)
+* [niri](pwr_tray/resources/systemd/pwr-tray-niri.service)
+* [KDE X11](pwr_tray/resources/systemd/pwr-tray-kde-x11.service)
+* [KDE Wayland](pwr_tray/resources/systemd/pwr-tray-kde-wayland.service)
+* [XFCE](pwr_tray/resources/systemd/pwr-tray-xfce.service)
+* [Cinnamon](pwr_tray/resources/systemd/pwr-tray-cinnamon.service)
+* [MATE](pwr_tray/resources/systemd/pwr-tray-mate.service)
+* [LXQt](pwr_tray/resources/systemd/pwr-tray-lxqt.service)
 
 ### systemd Service Caveats
 
 * A `systemd --user` service is **not tied to a DE/WM**. With `WantedBy=graphical-session.target` it starts in *any* graphical session on your account, so on a machine where you switch between DEs it will also launch under the others (and, with `--de` forced, then act on the wrong session). To limit it, bind it to a WM-specific target or add a condition line such as `ConditionEnvironment=XDG_CURRENT_DESKTOP=sway`.
-* `systemd --user` does not inherit your session environment, so the variables above are set explicitly.
-* Do **not** enable the service *and* a DE/WM autostart for the same session. A second launch exits with "another pwr-tray is already running" instead of starting a duplicate. The units pass `RestartPreventExitStatus=2 3`, so that refusal (exit 3) and a failed startup (exit 2: unknown desktop, missing resource, or a required command absent from `PATH`) are reported as a unit failure rather than retried; only transient exits are restarted, and `StartLimitIntervalSec`/`StartLimitBurst` stop a crash loop after five attempts in a minute. Pick one supervisor per session.
+* `systemd --user` does not inherit your session environment, so the variables above are set explicitly. `--svc-install` fills in the two that cannot be guessed: the absolute path of the `pwr-tray` executable and the `WAYLAND_DISPLAY`/`DISPLAY` your session actually uses.
+* Do **not** enable the service *and* a DE/WM autostart for the same session. A second launch exits with "another pwr-tray is already running" instead of starting a duplicate. The units pass `RestartPreventExitStatus=2 3`, so that refusal (exit 3) and a failed startup (exit 2: unknown desktop, missing resource, or a required command absent from `PATH`) are reported as a unit failure rather than retried; only transient exits are restarted, and `StartLimitIntervalSec`/`StartLimitBurst` stop a crash loop after five attempts in a minute. Pick one supervisor per session -- `--svc-start` notices an applet that is already running outside systemd and refuses with that explanation instead of installing a unit that would exit 3.
 * `--replace` is for an intentional hand-over (`setsid pwr-tray --replace` from a terminal). Do **not** put it in a unit's `ExecStart`: two supervisors that both pass it would keep terminating each other's instance.
 * Keep the standard `PATH` entries -- `pwr-tray` calls `systemctl`, `loginctl`, `swayidle`, `swaymsg`, and friends from `/usr/bin`.
 

@@ -1,9 +1,13 @@
-"""Validate the systemd --user examples shipped in docs/examples/.
+"""Validate the systemd --user units shipped in pwr_tray/resources/systemd/.
 
-The README has always called these units "best-effort / untested".  These
-tests are the missing check: every example must parse as a unit file, contain
-the directives systemd needs to start it, point at a desktop key that exists in
-``commands.yaml``, and agree with itself about the session type it describes.
+These units are no longer documentation: they live inside the package, so the
+wheel contains them, `pwr-tray --svc-install` copies one to
+``~/.config/systemd/user/``, and systemd is what actually runs them on a
+user's machine.  The checks here and in test_service_commands.py are the
+reason that promise is safe: every unit must parse, carry the directives
+systemd needs, name a desktop key that exists in ``commands.yaml``, describe
+one consistent session, and still hold all of that after render() substitutes
+this machine's executable and display into it.
 """
 
 import re
@@ -11,8 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from pwr_tray import service
+
 ROOT = Path(__file__).resolve().parent.parent
-EXAMPLES = sorted((ROOT / 'docs' / 'examples').glob('*.service'))
+EXAMPLES = sorted((ROOT / 'pwr_tray' / 'resources' / 'systemd').glob('*.service'))
 COMMANDS_YAML = ROOT / 'pwr_tray' / 'resources' / 'commands.yaml'
 MAIN = ROOT / 'pwr_tray' / 'main.py'
 
@@ -22,15 +28,15 @@ MAIN = ROOT / 'pwr_tray' / 'main.py'
 PERMANENT_EXIT_STATUSES = {'2', '3'}
 
 
-def parse_unit(path):
-    """Return {section: [(key, value), ...]} for a systemd unit file.
+def parse_text(text):
+    """Return {section: [(key, value), ...]} for systemd unit text.
 
     ``configparser`` cannot be used directly: unit files repeat keys such as
     ``After=`` and comments are allowed at any indentation.
     """
     sections = {}
     current = None
-    for raw in path.read_text(encoding='utf-8').splitlines():
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line[0] in '#;':
             continue
@@ -42,6 +48,10 @@ def parse_unit(path):
             key, value = line.split('=', 1)
             sections[current].append((key.strip(), value.strip()))
     return sections
+
+
+def parse_unit(path):
+    return parse_text(path.read_text(encoding='utf-8'))
 
 
 def values(sections, section, key):
@@ -162,3 +172,46 @@ def test_environment_matches_condition_and_desktop(path):
     exec_start = values(sections, 'Service', 'ExecStart')[0]
     desktop = re.search(r'--de[ =]([A-Za-z0-9-]+)', exec_start).group(1)
     assert desktop.endswith(f"-{environment['XDG_SESSION_TYPE']}")
+
+
+def test_every_shipped_unit_maps_to_a_known_desktop():
+    """--svc-install finds a unit by desktop name, so the mapping must be total."""
+    found = service.templates(ROOT / 'pwr_tray' / 'resources' / 'systemd')
+    assert len(found) == len(EXAMPLES) == 10, sorted(found)
+    assert set(found) <= desktop_keys(), sorted(set(found) - desktop_keys())
+
+
+@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
+def test_render_replaces_only_the_executable(path):
+    """Install-time substitution is a two-line operation, not a rewrite."""
+    text = path.read_text(encoding='utf-8')
+    rendered = service.render(text, service.desktop_of(text), '/opt/bin/pwr-tray', {})
+    pairs = zip(text.splitlines(), rendered.splitlines(), strict=True)
+    changed = [(before, after) for before, after in pairs if before != after]
+    assert len(changed) == 1, changed
+    assert changed[0][1].startswith('ExecStart=/opt/bin/pwr-tray ')
+
+
+@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
+def test_render_appends_the_live_display_override(path):
+    """The pinned default stays readable; the live value is what systemd uses."""
+    text = path.read_text(encoding='utf-8')
+    desktop = service.desktop_of(text)
+    key = 'WAYLAND_DISPLAY' if desktop.endswith('-wayland') else 'DISPLAY'
+    rendered = service.render(text, desktop, '/opt/bin/pwr-tray', {key: 'live-9'})
+    environment = values(parse_text(rendered), 'Service', 'Environment')
+    pinned = [item for item in environment if item.startswith(f'{key}=')]
+    assert len(pinned) == 2, pinned          # shipped default + live override
+    assert pinned[-1] == f'{key}=live-9'     # last assignment wins in systemd
+
+
+@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
+def test_render_keeps_the_restart_policy(path):
+    """The *installed* copy must fail fast on exit 2/3, exactly like the source."""
+    text = path.read_text(encoding='utf-8')
+    rendered = service.render(text, service.desktop_of(text), '/opt/bin/pwr-tray', {})
+    sections = parse_text(rendered)
+    prevent = values(sections, 'Service', 'RestartPreventExitStatus')
+    assert len(prevent) == 1
+    assert set(prevent[0].split()) >= PERMANENT_EXIT_STATUSES, prevent[0]
+    assert values(sections, 'Unit', 'StartLimitBurst') == ['5']
