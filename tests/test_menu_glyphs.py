@@ -103,6 +103,10 @@ class _FakeAction:
     def __init__(self, text):
         self.text = text
         self.triggered = _FakeSignal()
+        self.enabled = True
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
 
 
 class _FakeMenu:
@@ -184,6 +188,22 @@ def test_build_menu_still_offers_the_expected_actions(monkeypatch):
     assert '█ HiBattery 88%' in labels
     assert '☓ Quit this Applet' in labels
     assert '↺ Restart this Applet' in labels
+
+
+def test_version_line_is_last_and_inert(monkeypatch):
+    """The identity line closes the menu and is a label, not an action.
+
+    It must carry the package version rather than a literal, so a bump shows
+    up in the menu without a second edit.
+    """
+    monkeypatch.setattr(main_module, 'QAction', _FakeAction)
+    tray = _fake_tray()
+    main_module.PwrTray.build_menu(tray)
+
+    last = tray.menu.actions[-1]
+    assert last.text == f'pwr-tray v{main_module.__version__}'
+    assert last.enabled is False
+    assert all(action.enabled for action in tray.menu.actions[:-1])
 
 
 def test_battery_plugged_in_uses_the_zigzag_arrow(monkeypatch):

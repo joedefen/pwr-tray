@@ -846,10 +846,11 @@ class PwrTray:
         def has_cmd(label):
             return bool(self.variables.get(label, None))
 
-        def add_item(text, callback):
+        def add_item(text, callback, enabled=True):
             nonlocal self
             item = QAction(text)
             item.triggered.connect(callback)
+            item.setEnabled(enabled)
             self.menu.addAction(item)
             self.menu_items.append(item)
 
@@ -938,6 +939,13 @@ class PwrTray:
         add_item('☓ Quit this Applet', self.quit_self)
 
         add_item('↺ Restart this Applet', self.restart_self)
+        # Identity line, deliberately last and deliberately dead.  The log says
+        # the same thing at START-UP, but "which build am I running?" is a
+        # question asked from the menu, usually about a DE that behaves
+        # differently from what the reader expects.  A disabled QAction cannot
+        # be clicked, so it reads as a label rather than as an action that
+        # silently does nothing.
+        add_item(f'pwr-tray v{__version__}', self.dummy, enabled=False)
 
         if first_menu:
             self.tray_icon.setContextMenu(self.menu)
@@ -1170,7 +1178,17 @@ class PwrTray:
 
     @staticmethod
     def goodbye(message=''):
-        prt(f'ENDED {message}')
+        """Close the run that main() opened with its START-UP line.
+
+        Registered with atexit, so it runs for sys.exit(), for a normal return
+        from the event loop, and for an exception that reaches the
+        interpreter.  It does *not* run after SIGKILL or after
+        restart_self()'s os._exit(), which is why the replacement process
+        prints its own START-UP: an ENDED line with no later START-UP is the
+        end of a run, and a START-UP with no ENDED is a run that was killed.
+        """
+        detail = f' {message}' if message else ''
+        prt(f'ENDED pwr-tray v{__version__} pid {os.getpid()}{detail}')
 
 def tray_watcher_present():
     """Ask the session bus whether a StatusNotifierWatcher is registered.
@@ -1431,7 +1449,11 @@ def main():
     # Must happen before the first prt(): prt() may redirect fd 2 into
     # debug.log, which would hide the startup errors reported below.
     Utils.capture_console()
-    prt('START-UP', to_stdout=opts.stdout)
+    # Paired with PwrTray.goodbye(): one line at each end of a run, both
+    # carrying the version and the pid, so a debug.log copied out of the wild
+    # answers "which build, which process?" without guesswork.
+    prt(f'START-UP pwr-tray v{__version__} pid {os.getpid()}',
+        to_stdout=opts.stdout)
 
     # The lock is the guarantee that two applets (and two swayidle managers)
     # never coexist.  It is taken before anything destructive happens: a plain

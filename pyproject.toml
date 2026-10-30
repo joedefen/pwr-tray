@@ -44,19 +44,22 @@
 #
 # Releasing
 # ---------
-#   1. bump `__version__` in pwr_tray/__init__.py (the only place)
-#   2. run the test gate; commit; tag `vX.Y.Z`; push with tags
-#   3. python -m build                  # dist/*.whl and dist/*.tar.gz
-#   4. python -m twine check dist/*
-#   5. python -m twine upload dist/*    # TWINE_USERNAME=__token__,
-#                                       # TWINE_PASSWORD=pypi-...
-#   6. install the artifact into a scratch environment (pipx install
-#      --force ./dist/pwr_tray-X.Y.Z-py3-none-any.whl) and check
-#      `pwr-tray --version` and `pwr-tray --list-des`, so the index cannot
-#      serve a wheel that the tree never ran (audit finding F1).
+# `./release` is the only path to an upload, and it is a dry run unless it is
+# given `publish`: it refuses a dirty tree, runs the gate, builds into a fresh
+# directory (never the accumulating `dist/`), checks the metadata, installs the
+# built wheel in a scratch environment and runs it, and refuses a version the
+# index already has.  `./release publish` then makes `main` and `dev` the same
+# commit, tags it, uploads the two named files and pushes.  This project
+# releases by hand from the development tree, so the safety lives in one
+# inspectable command instead of a CI job that cannot see the files it would
+# publish (audit finding F1).
 
 [build-system]
-requires = ["flit_core>=3.4"]
+# 3.12 is the oldest backend tested with the SPDX `license` form below.  The
+# upper bound matters: flit_core 4.x writes Metadata-Version 2.5 with an
+# Import-Name field, while 3.x writes 2.4.  That is why the dev extra pins
+# twine>=7 -- an older twine rejects 2.5 as a malformed field.
+requires = ["flit_core>=3.12,<5"]
 build-backend = "flit_core.buildapi"
 
 [project]
@@ -69,7 +72,12 @@ authors = [
     { name = "Joe Defen", email = "joedef@google.com" }
 ]
 readme = "README.md"
-license = { text = "MIT" }
+# PEP 639: an SPDX expression plus the file it refers to.  The old
+# `License :: OSI Approved :: MIT License` classifier is deliberately gone --
+# Metadata 2.4 and later carry License-Expression, and declaring both invites
+# them to disagree.
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["power", "energy", "PyQt5", "applet", "tray", "kde", "i3wm", "sway", "niri", "hyprland"]
 classifiers = [
@@ -79,7 +87,6 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux"
 ]
 dependencies = [
@@ -98,14 +105,20 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.6",
     "build>=1.2",
-    "twine>=5",
+    # The validator must be at least as new as the writer: flit_core 4.x emits
+    # Metadata 2.5, which packaging < 26 rejects.  Keep packaging explicit so
+    # the floor does not depend on which twine happens to be installed.
+    "twine>=7",
+    "packaging>=26",
 ]
 
 [project.scripts]
 pwr-tray = "pwr_tray.main:main"
 
 [tool.flit.sdist]
-include = ["pwr_tray/resources/"]
+# The resources are runtime data, but the tests are part of the contract: an
+# sdist that cannot run its own gate leaves a downstream packager guessing.
+include = ["pwr_tray/resources/", "tests/", "conftest.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

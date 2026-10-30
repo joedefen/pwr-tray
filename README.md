@@ -138,6 +138,7 @@ Or act on the applet itself:
 - **≡ Open Applet Log** - show `debug.log` (and the rotated `debug.log.old`, when present) in a terminal window, following the current log with `less +F`. It is offered only when a terminal emulator can be found; see `log_viewer` below. The viewer is started in its own session -- and, when the applet runs as a systemd service, in its own transient scope -- so it keeps following the log when the applet stops or restarts.
 - **☓ Quit this Applet** -  exit applet.
 - **↺ Restart this Applet** - restart applet.
+- **pwr-tray vX.Y.Z** - the running version, at the very bottom. It is a label, not an action: it is greyed out and clicking it does nothing.
 
 
 ---
@@ -188,6 +189,7 @@ Here are the current 'Settings' defaults with explanation.
 * You can set `gui_editor = konsole -e vim`, for example, to use vim in a terminal window.  If you don't have `geany` installed, then be sure to change `gui_editor`.
 * `log_viewer` is the command prefix `pwr-tray` uses to start the log viewer inside a terminal window, e.g. `log_viewer = xterm -e` or `log_viewer = gnome-terminal --`. When empty it picks the first installed terminal it knows (x-terminal-emulator, gnome-terminal, konsole, kitty, alacritty, foot, xterm, xfce4-terminal, mate-terminal, lxterminal).
 * `debug.log` is the file the menu and `-f` follow, and it is capped at 2 MiB. When it grows past that, it is rotated: the current file becomes `debug.log.old`, any previous `debug.log.old` is discarded, and a fresh `debug.log` is started -- so there are never more than two log files. The applet writes this file even when a systemd unit redirected its stdout elsewhere, so the visible log never goes stale.
+* Every run brackets itself in that log with `START-UP pwr-tray vX.Y.Z pid N` and `ENDED pwr-tray vX.Y.Z pid N`, so the version and the process id can be read off the log itself. A `START-UP` with no `ENDED` below it was killed (`SIGKILL`, a crash); an `ENDED` with no new `START-UP` is simply the end of a run.
 * Edits to `config.ini` are picked up while `pwr-tray` is running; there is no need to restart it.
 * Your picks of mode, timeouts, etc. are saved to disk when changed, and restored on the next start.
 * Items may be absent depending on the mode and battery state.
