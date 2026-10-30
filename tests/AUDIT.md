@@ -54,7 +54,7 @@ $ python3 -m compileall -q pwr_tray
 COMPILE_OK
 
 $ python3 -m pytest -q
-166 passed in 0.73s
+166 passed in 0.75s
 ```
 
 Behavioural probes, run with `HOME`/`XDG_CONFIG_HOME` pointed at a throwaway directory so the live `~/.config/pwr-tray` was never touched:
@@ -145,7 +145,7 @@ Current shape:
 | `pwr_tray/` Python lines | 1,007 (`main.py`) | 1,380 (`main.py`) + 849 across 6 modules |
 | Runtime dependencies | 3 (`psutil`, `pydbus`, `ruamel.yaml`) + PyQt5 | 3 (`psutil`, `PyQt5`, `ruamel.yaml`) |
 | `ruff` | not configured | clean, 11 rule families |
-| Tests | 0 | 166 in 15 files, 0.73 s |
+| Tests | 0 | 166 in 15 files, 0.75 s |
 | CI | none | lint + 3.11/3.12/3.13 test + wheel packaging assertion |
 | `requires-python` | unreleased / unstated | `>=3.11` |
 
