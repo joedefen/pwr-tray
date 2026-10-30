@@ -163,11 +163,11 @@ class PwrTray:
     def ensure_resources(folder, resources):
         """Return absolute paths for `resources`, installing them if needed.
 
-        Paths are always built from `folder`: the applet no longer chdir()s
-        into its config directory, so a bare resource name would resolve
-        against whatever directory it was started from.  A resource that is
-        still absent after the copy is a startup error -- a short icon list
-        used to surface much later as an IndexError from show_icon().
+        Paths are always built from `folder`; a bare resource name would
+        otherwise resolve against whatever directory the applet was started
+        from.  A resource that is still absent after the copy is a startup
+        error -- a short icon list used to surface much later as an
+        IndexError from show_icon().
         """
         paths = []
         missing = []
@@ -215,8 +215,8 @@ class PwrTray:
         self.here_dir = os.path.dirname(os.path.abspath(__file__))
         self.svgs = [f'{base}-v{self.svg_info.version}.svg'
                      for base in self.svg_info.bases]
-        # Resources live in the config folder; ensure_resources() needs it
-        # explicitly now that nothing chdir()s there.
+        # Resources live in the config folder; ensure_resources() needs that
+        # folder explicitly.
         # One icon per entry in svg_info.bases; show_icon() indexes this list
         # by state, so a partial list would be an IndexError later.
         self.icons = [QIcon(path) for path in
@@ -963,9 +963,8 @@ class PwrTray:
         must be able to take the lock as soon as it starts.
 
         The package root goes on PYTHONPATH rather than into ``cwd=``: the
-        applet no longer chdir()s, so the replacement inherits whatever
-        directory the user is in and must still be able to import the module
-        when running from a source checkout.
+        replacement inherits whatever directory the user is in and must still
+        be able to import the module when running from a source checkout.
         """
         prt('+', 'restarting applet...')
         this = PwrTray.singleton

@@ -102,12 +102,16 @@ The fixes for v1 #1/#2/#3 were verified by reading the code and by the author's 
 
 **Re-verified.** Four new tests in [`../tests/test_config_inherit.py`](../tests/test_config_inherit.py) pin the cases that decide the rule: absent from both (tier default wins), explicitly written in `[Settings]` (user wins), invalid in `[Settings]` (counts as absent), and an empty tier section (its table still applies). With `_tier_base()` mutated back to a plain copy of `[Settings]`, four of the new tests fail while the two older inheritance tests stay green — so the new rule is pinned without weakening v1 #4. Probe: `[Settings]` containing only `gui_editor = my-edit` now yields `LoBattery power_down=True lock=[1, 1] sleep=[1, 1]`, while `[Settings] power_down = False` yields `LoBattery power_down=False`. `ruff check .` and `pytest -q` (170 passed) are clean.
 
-### R4 — P2 — Two README statements are now false
+### R4 — P2 — Two README statements are now false — **Fixed**
 
 * [`../README.md:156`](../README.md:156): "`pwr-tray` changes directory to `~/.config/pwr-tray`" — the `chdir` was removed in `c269158`; paths are absolute now. Only stale comments ([`../pwr_tray/main.py:166`](../pwr_tray/main.py:166), [`../pwr_tray/main.py:963`](../pwr_tray/main.py:963)) reference the old behaviour.
 * [`../README.md:239`](../README.md:239): "or you will get two tray icons" — inaccurate after R1: the newer instance kills the older one instead of coexisting.
 
 Documentation that contradicts the implementation is worse than no documentation, because it is the only thing a new user reads before filing a bug.
+
+**Fix.** The false line is replaced by a statement the code does support: edits to `config.ini` are picked up while the applet runs (`QFileSystemWatcher` → `_config_dirty` → [`reconfig()`](../pwr_tray/main.py:419)), so no restart is needed. The systemd caveat now describes what a second launch actually does — exit with "another pwr-tray is already running", which under `Restart=always` becomes a restart loop rather than a second icon. The same pass removed implementation detail a user cannot act on: the `(status 3)` exit code, "holds the single-instance lock", "after confirming its command line is `pwr-tray`", the note that the example units are checked by the test suite, and `pgrep`/`pkill` from the `PATH` list. The three stale `chdir()` comments ([`../pwr_tray/main.py:166`](../pwr_tray/main.py:166), [`../pwr_tray/main.py:218`](../pwr_tray/main.py:218), [`../pwr_tray/main.py:963`](../pwr_tray/main.py:963)) were reworded to state the absolute-path rule without narrating the removed `chdir`.
+
+**Re-verified.** [`test_readme_matches_the_applet_on_chdir_and_single_instance()`](../tests/test_repo_hygiene.py:37) pins both halves: the two phrases must stay out of the README, and `pwr_tray/` must contain no `os.chdir`. The replacement claims were checked against [`update_config()`](../pwr_tray/IniTool.py:191), [`_watch_config()`](../pwr_tray/PowerEvents.py:244) and [`acquire_lock_or_take_over()`](../pwr_tray/main.py:1279).
 
 ### R5 — P3 — Resume detection is a third `dbus-monitor` child, still polled per tick
 

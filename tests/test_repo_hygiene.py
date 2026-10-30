@@ -32,3 +32,20 @@ def test_ci_runs_lint_tests_and_a_packaging_smoke_test():
     assert 'python -m pytest' in workflow
     assert 'python -m build' in workflow
     assert 'pwr-tray --version' in workflow
+
+
+def test_readme_matches_the_applet_on_chdir_and_single_instance():
+    """Audit R4: the README promised two things the applet no longer does.
+
+    It claimed the applet chdir()ed into the config folder, and that starting
+    a second copy left you with two tray icons.  Both are pinned from each
+    side here: the phrases must not come back, and the code must not start
+    chdir()ing again (which is what made the first claim true once).
+    """
+    readme = (ROOT / 'README.md').read_text(encoding='utf-8').lower()
+    assert 'changes directory to' not in readme
+    assert 'two tray icons' not in readme
+
+    sources = '\n'.join(path.read_text(encoding='utf-8')
+                        for path in sorted((ROOT / 'pwr_tray').glob('*.py')))
+    assert 'os.chdir' not in sources

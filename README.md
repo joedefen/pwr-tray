@@ -69,7 +69,7 @@ Per-DE requirements:
 
 * Then, follow the "Per-DE Specific Notes" below to ensure proper operation. To just kick the tires, you can defer this until ready to go forward.
 * Read the other sections for customization and everyday use.
-* From the CLI, you can start pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts. A start when an instance is already running **refuses and exits** (status 3) rather than disturbing it; use `setsid pwr-tray --replace` to deliberately restart that instance.
+* From the CLI, you can start pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts. Only one instance ever runs: if one is already running, a plain start **refuses and exits** rather than disturbing it; use `setsid pwr-tray --replace` to deliberately replace it.
 
 ### Command Line Options
 | Option | Description |
@@ -80,7 +80,7 @@ Per-DE requirements:
 | `-e`, `--edit-config` | Open `~/.config/pwr-tray/config.ini` in `$EDITOR` (default: `vim`). |
 | `-f`, `--follow-log` | Tail the log file (`~/.config/pwr-tray/debug.log`). |
 | `--de NAME` | Force desktop detection (e.g., `--de i3-x11`, `--de sway-wayland`, `--de kde-wayland`). Useful when env vars are unreliable. |
-| `--replace` | If another `pwr-tray` holds the single-instance lock, terminate it (after confirming its command line is `pwr-tray`) and take over. Without this flag a second start refuses and exits. |
+| `--replace` | Replace the `pwr-tray` that is already running: terminate it and start in its place. Without this flag a second start refuses and exits. |
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
 | `-V`, `--version` | Print the package version and exit. |
 
@@ -154,7 +154,7 @@ Here are the current 'Settings' defaults with explanation.
 **NOTES**:
 * If you have issues with monitors failing to sleep or the system cannot wake when the monitors are off, then disable the `turn_off_monitors` feature.
 * You can set `gui_editor = konsole -e vim`, for example, to use vim in a terminal window.  If you don't have `geany` installed, then be sure to change `gui_editor`.
-* `pwr-tray` changes directory to `~/.config/pwr-tray`.
+* Edits to `config.ini` are picked up while `pwr-tray` is running; there is no need to restart it.
 * Your picks of mode, timeouts, etc. are saved to disk when changed, and restored on the next start.
 * Items may be absent depending on the mode and battery state.
 - **NOTE**: when in LoBattery, SleepAfterLock becomes the effective mode. The icon will change per your selection and the battery state.
@@ -216,10 +216,8 @@ StandardError=append:%h/.local/log/pwr-tray.err.log
 WantedBy=graphical-session.target
 ```
 
-> All service file examples above and below are checked structurally by the
-> test suite (unit sections, required directives, and a `--de` name that exists
-> in `commands.yaml`). They have not been run on every desktop, so review them
-> before use.
+> The service examples above and below have not been run on every desktop, so
+> review them before use.
 
 ### Example systemd Service Config for other DEs/WMs
 
@@ -237,9 +235,9 @@ WantedBy=graphical-session.target
 
 * A `systemd --user` service is **not tied to a DE/WM**. With `WantedBy=graphical-session.target` it starts in *any* graphical session on your account, so on a machine where you switch between DEs it will also launch under the others (and, with `--de` forced, then act on the wrong session). To limit it, bind it to a WM-specific target or add a condition line such as `ConditionEnvironment=XDG_CURRENT_DESKTOP=sway`.
 * `systemd --user` does not inherit your session environment, so the variables above are set explicitly.
-* Do **not** enable the service *and* a DE/WM autostart for the same session. The single-instance lock makes the second launch exit with "another pwr-tray is already running" instead of starting a duplicate, but with `Restart=always` systemd will keep respawning it into that same refusal (a restart loop, not a second icon). Pick one supervisor per session.
-* `--replace` is for an intentional hand-over (`setsid pwr-tray --replace` from a terminal). Do **not** put it in a unit's `ExecStart`: two supervisors that both pass it would again terminate each other's instance.
-* Keep the standard `PATH` entries -- `pwr-tray` calls `systemctl`, `loginctl`, `pgrep`/`pkill`, `swayidle`, `swaymsg`, and friends from `/usr/bin`.
+* Do **not** enable the service *and* a DE/WM autostart for the same session. A second launch exits with "another pwr-tray is already running" instead of starting a duplicate, but with `Restart=always` systemd will keep respawning it into that same refusal (a restart loop, not a second icon). Pick one supervisor per session.
+* `--replace` is for an intentional hand-over (`setsid pwr-tray --replace` from a terminal). Do **not** put it in a unit's `ExecStart`: two supervisors that both pass it would keep terminating each other's instance.
+* Keep the standard `PATH` entries -- `pwr-tray` calls `systemctl`, `loginctl`, `swayidle`, `swaymsg`, and friends from `/usr/bin`.
 
 ---
 
