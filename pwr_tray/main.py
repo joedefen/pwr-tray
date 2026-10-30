@@ -136,6 +136,26 @@ class PwrTray:
                       if shutil.which(cmd) is None)
 
     @staticmethod
+    def build_variables(de_json, de_config):
+        """Merge the desktop's commands over the defaults, then expand {{...}}.
+
+        Split out of ``__init__`` so the action layer can be tested against the
+        commands a desktop really gets, read from ``commands.yaml``, instead of
+        against a fixture that can drift from it (audit finding F4).
+        """
+        variables = dict(de_json['defaults'])
+        for key in set(variables) - {'must_haves'}:
+            if key in de_config:
+                variables[key] = de_config[key]
+        for key, value in list(variables.items()):
+            if isinstance(value, str) and '{{' in value:
+                variables[key] = re.sub(
+                    r'\{\{(\w+)\}\}',
+                    lambda match: variables.get(match.group(1), match.group(0)),
+                    value)
+        return variables
+
+    @staticmethod
     def detect_de(de_json, force_de=None, log=prt):
         """Detect the current DE from environment using JSON config rules.
         Merges three layers: defaults -> session_type (x11/wayland) -> desktop.
@@ -308,11 +328,7 @@ class PwrTray:
         self.is_wayland = self.de_config['session_type'] == 'wayland'
 
         # Build variables: defaults merged with matched desktop commands
-        self.variables = dict(de_json['defaults'])
-        cmd_keys = set(self.variables.keys()) - {'must_haves'}
-        for key in cmd_keys:
-            if key in self.de_config:
-                self.variables[key] = self.de_config[key]
+        self.variables = self.build_variables(de_json, self.de_config)
 
         # Validate must_haves (accumulated from defaults + session_type + desktop)
         dont_haves = self.missing_commands(self.de_config)
@@ -320,14 +336,6 @@ class PwrTray:
             raise MissingCommandsError(
                 dont_haves, desktop=self.de_config['name'],
                 session_type=self.de_config['session_type'])
-
-        # Expand {{variable}} references in command values
-        for key, val in list(self.variables.items()):
-            if isinstance(val, str) and '{{' in val:
-                self.variables[key] = re.sub(
-                    r'\{\{(\w+)\}\}',
-                    lambda m: self.variables.get(m.group(1), m.group(0)),
-                    val)
 
         # qdbus/qdbus6 auto-detection: replace 'qdbus ' in any command value
         has_qdbus = any(isinstance(v, str) and 'qdbus ' in v
@@ -1084,15 +1092,24 @@ class PwrTray:
 
     @staticmethod
     def run_command(key):
+        """Run this desktop's command for `key` through the shell.
+
+        The value in commands.yaml is a command *line*, not an argv: it relies
+        on `~` expansion, on quotes and on `;` sequences --
+        `sleep 1.0; exec xset dpms force off`, `swaymsg "output * dpms off"`.
+        A shell is therefore the only correct reading.
+
+        The previous "a shell is not needed here" test could never match a real
+        command -- its pattern matched only the empty string -- so every
+        command already went through /bin/sh; the dead branch is gone rather
+        than left in place as decoration.
+        """
         this = PwrTray.singleton
         command = this.variables.get(key, None)
 
         if command:
             prt(f'+ {command}')
-            if  re.match(r'^(\s\w\-)*$', command):
-                result = subprocess.run(command.split(), check=False)
-            else:
-                result = subprocess.run(command, check=False, shell=True)
+            result = subprocess.run(command, check=False, shell=True)
             if result.returncode != 0:
                 prt(f'   NOTE: returncode={result.returncode}')
 

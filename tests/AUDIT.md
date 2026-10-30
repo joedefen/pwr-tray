@@ -16,22 +16,25 @@ Sound, deliberately engineered, and small enough to keep sound. The suite is rea
 detection from policy and both from presentation. Nothing found is a
 use-it-and-lose-data bug.
 
-What is genuinely unfinished falls into two groups:
+What was genuinely unfinished fell into two groups:
 
 1. **The published artifact is behind the repository and describes the wrong
    toolkit** ([F1](#f1--the-published-artifact-is-stale-and-misdescribes-the-package-p1)).
-2. **Inhibition is decided by parsing human-readable command output and
+2. **Inhibition was decided by parsing human-readable command output and
    ignoring exit status**
-   ([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1)).
+   ([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1--resolved)).
 
-One P1 has since been closed: the shipped units retried permanent failures
-forever ([F2](#f2--the-shipped-units-retried-permanent-failures-indefinitely-p1--resolved));
-they now refuse to restart those exits and carry an explicit start limit.
+Three findings have since been closed: the shipped units retried permanent
+failures forever
+([F2](#f2--the-shipped-units-retried-permanent-failures-indefinitely-p1--resolved)),
+inhibition now comes from logind's machine-readable property
+([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1--resolved)),
+and the action layer has tests that pin the exact command per desktop
+([F4](#f4--the-action-layer-is-not-exercised-p2--resolved)).
 
 The rest is structural: one very large class
-([F6](#f6--one-1115-line-class-holds-every-concern-p2)), an untested action layer
-([F4](#f4--the-action-layer-is-not-exercised-p2)), a log that was never rotated
-([F5](#f5--debuglog-is-never-rotated-p2), since capped), and no coverage
+([F6](#f6--one-1115-line-class-holds-every-concern-p2)), a log that was never
+rotated ([F5](#f5--debuglog-is-never-rotated-p2), since capped), and no coverage
 measurement ([F7](#f7--there-is-no-coverage-measurement-p3)).
 
 ---
@@ -289,24 +292,48 @@ covers the rows, and
 [`test_a_failed_query_warns_once_and_clears_the_inhibit`](../tests/test_media_inhibit.py:222)
 covers the failure path.
 
-### F4 — The action layer is not exercised (P2)
+### F4 — The action layer is not exercised (P2) — resolved
 
-Policy decisions are tested; the commands they trigger are not. In
+Policy decisions were tested; the commands they trigger were not. In
 [`tests/test_power_events.py:253`](../tests/test_power_events.py:253) `poweroff`,
-`lock_screen` and `blank_primitive` are replaced by recording lambdas; the same
-is true of `build_menu` ([`tests/test_power_events.py:180`](../tests/test_power_events.py:180)).
-Real command construction in [`suspend`](../pwr_tray/main.py:1012),
-[`poweroff`](../pwr_tray/main.py:1034),
-[`lock_screen`](../pwr_tray/main.py:1044),
-[`blank_primitive`](../pwr_tray/main.py:1050),
-[`run_command`](../pwr_tray/main.py:940) and
-[`edit_config`](../pwr_tray/main.py:999) has no test at all.
+`lock_screen` and `blank_primitive` are recording lambdas; the same is true of
+`build_menu`
+([`tests/test_power_events.py:180`](../tests/test_power_events.py:180)). Real
+command construction in [`suspend`](../pwr_tray/main.py:1207),
+[`poweroff`](../pwr_tray/main.py:1229),
+[`lock_screen`](../pwr_tray/main.py:1239),
+[`blank_primitive`](../pwr_tray/main.py:1245),
+[`run_command`](../pwr_tray/main.py:1094) and
+[`edit_config`](../pwr_tray/main.py:1162) had no test at all — and that is where
+the desktop knowledge lives: `swaylock` arguments, `swaymsg "output * dpms off"`
+vs `hyprctl dispatch dpms off` vs `niri msg action power-off-monitors`,
+`sleep 1.0; exec xset dpms force off`, `loginctl lock-session`, `systemctl
+suspend`, and the rule that KDE, XFCE and Cinnamon lock themselves on suspend.
 
-This is where the desktop-specific knowledge lives — `swaylock` arguments, `swaymsg
-dpms off` vs `hyprctl dispatch dpms off` vs `niri msg action power-off-monitors`,
-`xset dpms force off`, `loginctl lock-session`, `systemctl suspend` — and it is
-verified only by running the applet. `swaymsg`/`hyprctl` failures are logged but
-not distinguished from success at the policy level.
+[`tests/test_actions.py`](../tests/test_actions.py:1) now drives every one of
+those methods with a recording `subprocess`, against the commands the applet
+really ships: it reads `commands.yaml`, merges it with the same
+[`build_variables`](../pwr_tray/main.py:139) that `__init__` uses, and asserts
+the exact string handed to the shell for all ten desktops
+([`test_lock_screen_runs_this_desktops_locker`](../tests/test_actions.py:227),
+[`test_wm_actions_match_the_declared_command`](../tests/test_actions.py:315)).
+Sequencing is pinned too: `blank_quick` must lock *before* blanking, and suspend
+must not start a locker on a full DE
+([`test_blank_quick_locks_before_blanking`](../tests/test_actions.py:247),
+[`test_suspend_locks_first_on_a_tiling_desktop`](../tests/test_actions.py:278)).
+
+Writing the tests found a real defect, now removed. `run_command()` chose between
+`shell=True` and `command.split()` with `re.match(r'^(\s\w\-)*$', command)` — a
+pattern that can only ever match the empty string, so every command had always
+gone through `/bin/sh` and the argv branch was dead code. The branch is gone and
+a shell is documented as the contract, which it has to be: the values depend on
+`~` expansion, quotes and `;`
+([`test_run_command_hands_the_line_to_the_shell_untouched`](../tests/test_actions.py:325)).
+
+What is still not covered is whether the *programs* do what the arguments promise.
+`swaymsg`/`hyprctl` failures are logged (`NOTE: returncode=...`) but the policy
+layer does not act on them, and nothing runs a real locker. That needs a desktop,
+not a test.
 
 ### F5 — `debug.log` is never rotated (P2) — resolved
 
@@ -350,8 +377,9 @@ class, not between modules.
 
 `[project.optional-dependencies]` lists `pytest` and `ruff`; CI runs both and no
 coverage tool, so "285 tests" is a count, not a statement about which lines run.
-The monkeypatched action layer in [F4](#f4--the-action-layer-is-not-exercised-p2)
-is exactly the kind of gap a coverage report surfaces immediately.
+The action layer in [`tests/test_actions.py`](../tests/test_actions.py:1) is now
+pinned by hand-written expectations; a coverage report is what would say which
+action branches nobody has written one for.
 
 ### F8 — The units are syntax-checked, not field-tested (P3) — partly mitigated
 
@@ -440,7 +468,7 @@ Powerdevil configuration is the lower-risk choice; as a portable, inspectable
 policy layer with a tray, this is the more capable one.
 
 **Bottom line:** worth keeping and worth finishing — the remaining work is
-distribution hygiene (F1) and test/ops polish (F4–F7), not redesign.
+distribution hygiene (F1) and test/ops polish (F6–F7), not redesign.
 
 ---
 
@@ -461,8 +489,10 @@ distribution hygiene (F1) and test/ops polish (F4–F7), not redesign.
    display only. A failed or unreadable query is logged once and can never be
    mistaken for "inhibited"; both the decision and the failure path are tested
    in [`tests/test_media_inhibit.py`](../tests/test_media_inhibit.py:131).
-4. **F4** — one test per action that asserts the exact argv for platform (i3,
-   sway, Hyprland, niri, KDE, X11), which also documents the commands.
+4. **F4 — done.** [`tests/test_actions.py`](../tests/test_actions.py:1) asserts
+   the exact command for every desktop, read from the shipped `commands.yaml`,
+   and pins the lock-then-blank order and the suspend-locker rule. It also
+   exposed a dead "no shell needed" branch in `run_command()`, now removed.
 5. **F7** — add `pytest-cov` and publish the number in CI.
 6. **F6** — if the class is touched again, extract the idle state machine and the
    action layer; both are already well separated conceptually.
