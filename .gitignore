@@ -7,3 +7,7 @@ pi-venv/
 build/
 pwr-tray-exe
 .pytest_cache/
+.venv/
+venv/
+.ruff_cache/
+.mypy_cache/

@@ -1,6 +1,6 @@
 # pwr-tray as a systemd --user service -- Hyprland (Wayland) example
 #
-# Best-effort / untested: review before use.
+# Structurally validated in CI; still review before use.
 # Install (copy as ~/.config/systemd/user/pwr-tray.service):
 #   mkdir -p ~/.local/log ~/.config/systemd/user
 #   cp pwr-tray-hyprland.service ~/.config/systemd/user/pwr-tray.service

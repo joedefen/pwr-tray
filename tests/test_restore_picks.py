@@ -13,7 +13,7 @@ import pytest
 from pwr_tray.IniTool import IniTool
 from pwr_tray.main import PwrTray
 
-SELECTORS = 'LoBattery HiBattery Settings'.split()
+SELECTORS = ['LoBattery', 'HiBattery', 'Settings']
 
 # Defaults from IniTool, used to prove that config values survive a bad restore.
 DEFAULT_SETTINGS = ([15, 30], [5, 30])
@@ -164,7 +164,7 @@ def test_save_then_restore_round_trip(tray):
 
     tray.save_picks()
 
-    with open(tray.picks_file, 'r', encoding='utf-8') as handle:
+    with open(tray.picks_file, encoding='utf-8') as handle:
         saved = json.load(handle)
     assert saved['lock_mins']['Settings'] == 30
     assert saved['sleep_mins']['Settings'] == 30

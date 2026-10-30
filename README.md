@@ -215,7 +215,10 @@ StandardError=append:%h/.local/log/pwr-tray.err.log
 WantedBy=graphical-session.target
 ```
 
-> All service file examples above and below are best-effort and untested -- review them before use.
+> All service file examples above and below are checked structurally by the
+> test suite (unit sections, required directives, and a `--de` name that exists
+> in `commands.yaml`). They have not been run on every desktop, so review them
+> before use.
 
 ### Example systemd Service Config for other DEs/WMs
 

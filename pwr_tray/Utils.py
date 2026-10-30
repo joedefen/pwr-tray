@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Utility functions
 """
@@ -7,19 +6,20 @@ Utility functions
 # pylint: disable=consider-using-with,global-statement
 # pylint: disable=too-few-public-methods
 
+import contextlib
+import importlib.resources as pkg_resources
+import inspect
 import os
 import re
-import sys
-import stat
-import time
-import signal
 import shutil
+import signal
+import stat
 import subprocess
-import inspect
+import sys
+import time
 from datetime import datetime
 from io import StringIO
 
-import importlib.resources as pkg_resources
 # from pathlib import Path
 
 try:
@@ -40,9 +40,9 @@ def copy_to_folder(resource_name, dest):
 
 def resource_text(resource_name):
     """ Return the text of a packaged resource (e.g. 'commands.yaml'). """
-    with pkg_resources.path('pwr_tray.resources', resource_name) as file_path:
-        with open(file_path, 'r', encoding='utf-8') as handle:
-            return handle.read()
+    with pkg_resources.path('pwr_tray.resources', resource_name) as file_path, \
+            open(file_path, encoding='utf-8') as handle:
+        return handle.read()
 
 
 _console_fd = None
@@ -74,12 +74,11 @@ def error_print(message):
             return
         except OSError:
             pass
-    try:
+    # Last resort: never let reporting an error raise a second one.
+    with contextlib.suppress(OSError, ValueError, AttributeError):
         stream = sys.__stderr__ or sys.stderr
         stream.write(text)
         stream.flush()
-    except Exception:
-        pass
 
 
 def where(above=0):
@@ -107,28 +106,28 @@ def prt(*args, **kwargs):
      - if we create a log file, its size is limited to 512K and then it is truncated
      """
     def check_stdout(use_stdout=None):
-        global prt_to_init
         def is_tty():
             try:
                 os.ttyname(sys.stdout.fileno())
                 return True
-            except Exception:
+            except (OSError, ValueError, AttributeError):
                 return False
         def is_reg():
             try:
                 return stat.S_ISREG(os.fstat(sys.stdout.fileno()).st_mode)
-            except Exception:
+            except (OSError, ValueError, AttributeError):
                 return False
         def reopen():
             global prt_to_init
-            
+
             # Capture the old stdout/stderr to close them
             old_stdout = sys.stdout
             old_stderr = sys.stderr
 
-            # Open the new one
-            new_f = open(prt_path, "a+", encoding='utf-8')
-            
+            # Open the new one.  It must outlive this function: it becomes
+            # sys.stdout/stderr for the life of the process.
+            new_f = open(prt_path, "a+", encoding='utf-8')  # noqa: SIM115
+
             # Redirect
             sys.stdout = new_f
             sys.stderr = new_f
@@ -137,30 +136,20 @@ def prt(*args, **kwargs):
 
             # CLOSE the old ones if they weren't the original system TTYs
             # This prevents the leak
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 if old_stdout and not old_stdout.isatty():
                     old_stdout.close()
                 if old_stderr and old_stderr is not old_stdout and not old_stderr.isatty():
                     old_stderr.close()
-            except Exception:
-                pass
 
-            prt_to_init = False
-
-        def old_reopen():
-            global prt_to_init
-            sys.stdout = open(prt_path, "a+", encoding='utf-8')
-            sys.stderr = sys.stdout
-            os.dup2(sys.stdout.fileno(), 1)
-            os.dup2(sys.stderr.fileno(), 2)
             prt_to_init = False
 
         if prt_kb > 0 and prt_path: # non-positive disables stdout "tuning"
-            if use_stdout is False:
-                reopen()
-            elif prt_to_init and sys.stdout.closed: # Check if stdout is closed
-                reopen()
-            elif prt_to_init and not is_tty() and not is_reg():
+            should_reopen = (
+                use_stdout is False
+                or (prt_to_init and sys.stdout.closed)
+                or (prt_to_init and not is_tty() and not is_reg()))
+            if should_reopen:
                 reopen()
             if os.fstat(sys.stdout.fileno()).st_size > prt_kb*1024:
                 shutil.move(prt_path, f'{prt_path}1')
@@ -188,7 +177,7 @@ def x_restart_self():
     script_args = sys.argv[1:]
 
     # Use subprocess to run the script with the same arguments
-    subprocess.run([sys.executable, script_name] + script_args, check=True)
+    subprocess.run([sys.executable, script_name, *script_args], check=True)
 
 
 _PYTHON_RE = re.compile(r'^python[0-9.]*$')
@@ -317,7 +306,7 @@ class SingleInstance:
     def read_pid(path):
         """Return the pid recorded in `path`, or None if unreadable."""
         try:
-            with open(path, 'r', encoding='utf-8') as handle:
+            with open(path, encoding='utf-8') as handle:
                 return int(handle.read().strip()) or None
         except (OSError, ValueError):
             return None
@@ -356,14 +345,10 @@ class SingleInstance:
             SingleInstance.current = None
         if self.fd is None:
             return
-        try:
+        with contextlib.suppress(OSError):
             fcntl.flock(self.fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        try:
+        with contextlib.suppress(OSError):
             os.close(self.fd)
-        except OSError:
-            pass
         self.fd = None
 
     @classmethod

@@ -15,8 +15,7 @@ import types
 
 import pytest
 
-from pwr_tray.Errors import (DesktopDetectionError, MissingCommandsError,
-                             PwrTrayError)
+from pwr_tray.Errors import DesktopDetectionError, MissingCommandsError, PwrTrayError
 from pwr_tray.main import PwrTray, format_desktops
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

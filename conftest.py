@@ -47,7 +47,7 @@ def _available(name):
         return True
     try:
         __import__(name)
-    except Exception:
+    except ImportError:
         return False
     return True
 

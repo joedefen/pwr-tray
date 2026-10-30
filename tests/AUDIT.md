@@ -262,13 +262,13 @@ without sleeping at all.
   and the import was changed to `from pwr_tray import Utils` so
   `consider-using-from-import` is no longer needed.
 
-### 14. Repository hygiene
+### 14. Repository hygiene — resolved
 
-- No `.github/` — no CI, no lint gate, no packaging smoke test.
-- No `tests/` directory (this file is the first artefact in it).
-- No linter configuration in-repo; `ruff` under the user's global config reports 52 issues, including 12 blind `except Exception` and 2 `try/except/pass`.
-- `.venv/` is not listed in [`.gitignore`](../.gitignore:1) (currently untracked, so this is latent).
-- `docs/examples/*.service` are, by their own admission ([README line 208](../README.md:208)), untested.
+- [`.github/workflows/tests.yml`](../.github/workflows/tests.yml:1) now runs three gates: a ruff lint job using the in-repo configuration, pytest on Python 3.11–3.13, and a packaging smoke test that builds the sdist and wheel, inspects their contents, installs the wheel in a clean virtualenv and exercises `pwr-tray --version` / `--list-des`.
+- `tests/` holds the suite (139 tests), including repository-hygiene checks and structural validation of every `docs/examples/*.service` unit.
+- `ruff` is configured in [`pyproject.toml`](../pyproject.toml:52), so the gate no longer depends on a user's global settings. Every blind `except Exception` was narrowed to the exceptions actually expected (or marked `noqa: BLE001` where the catch is necessarily broad, such as `QDBusError`), and every `try/except/pass` became `contextlib.suppress` with an explicit exception type.
+- `.venv/`, `.ruff_cache/` and `.mypy_cache/` are listed in [`.gitignore`](../.gitignore:1).
+- The "best-effort / untested" wording in the service examples and README now reflects reality: they are checked structurally in CI, though not run on every desktop.
 
 ### 15. Config-path robustness — resolved
 

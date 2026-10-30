@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 This code is designed to control power matters from the tray.
 """
@@ -10,31 +9,36 @@ This code is designed to control power matters from the tray.
 # pylint: disable=too-many-lines,too-many-statements
 # pylint: disable=too-many-branches,too-many-public-methods,too-many-locals
 
-import os
-import sys
-import signal
-import re
-import subprocess
-import json
-import shutil
 import atexit
+import contextlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
 import time
 import traceback
 from types import SimpleNamespace
-import psutil
-from ruamel.yaml import YAML
-from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction #, QMessageBox
-from PyQt5.QtGui import QIcon, QCursor
-from PyQt5.QtCore import QTimer
 
-from pwr_tray import Utils
-from pwr_tray import __version__
-from pwr_tray.Utils import prt, PyKill
-from pwr_tray.Errors import PwrTrayError, DesktopDetectionError
-from pwr_tray.Errors import MissingCommandsError, MissingResourcesError
-from pwr_tray.SwayIdleMgr import SwayIdleManager
+import psutil
+from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QCursor, QIcon
+from PyQt5.QtWidgets import QAction, QApplication, QMenu, QSystemTrayIcon  #, QMessageBox
+from ruamel.yaml import YAML
+
+from pwr_tray import Utils, __version__
+from pwr_tray.Errors import (
+    DesktopDetectionError,
+    MissingCommandsError,
+    MissingResourcesError,
+    PwrTrayError,
+)
 from pwr_tray.IniTool import IniTool
 from pwr_tray.PowerEvents import PowerEvents
+from pwr_tray.SwayIdleMgr import SwayIdleManager
+from pwr_tray.Utils import PyKill, prt
 
 # Every tray host -- plasmashell, xfce4-panel, waybar, swaybar+snixembed, ... --
 # claims this name.  Its absence is not an error: a bare X11 bar has no
@@ -74,7 +78,7 @@ class PwrTray:
         if not os.path.exists(user_yaml):
             user_yaml = os.path.join(config_dir, 'commands.yaml')
         prt(f'loading DE config: {user_yaml}')
-        with open(user_yaml, 'r', encoding='utf-8') as f:
+        with open(user_yaml, encoding='utf-8') as f:
             return dict(yaml.load(f))
 
     @staticmethod
@@ -440,7 +444,7 @@ class PwrTray:
                 # menu, so make the next tick re-read the inhibit state.
                 this._inhibit_dirty = True
                 this.poll_100ms = True
-            except Exception as e:
+            except (OSError, TypeError) as e:
                 print(f"An error occurred while saving picks: {e}", file=sys.stderr)
 
 
@@ -453,7 +457,7 @@ class PwrTray:
         whole saved state was applied.
         """
         try:
-            with open(self.picks_file, 'r', encoding='utf-8') as handle:
+            with open(self.picks_file, encoding='utf-8') as handle:
                 picks = json.load(handle)
         except FileNotFoundError:
             prt('no picks file to restore; using configured values')
@@ -498,7 +502,7 @@ class PwrTray:
                 prt(f'WARN: picks has no usable {attr}; keeping configured values')
                 complete = False
                 continue
-            for selector in 'LoBattery HiBattery Settings'.split():
+            for selector in ['LoBattery', 'HiBattery', 'Settings']:
                 first = saved.get(selector)
                 if not isinstance(first, int) or isinstance(first, bool):
                     prt(f'WARN: picks.{attr}.{selector} is {first!r};'
@@ -531,7 +535,7 @@ class PwrTray:
                 xidle_ms = xidle * scale
                 xidle_ms *= 2 if self.quick else 1  # time warp
                 self.running_idle_s = round(xidle_ms/1000, 3)
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError, ValueError) as e:
                 prt(f'WARN: idle time command failed: {e}')
 
     def DB(self):  # pylint: disable=invalid-name  # historic name
@@ -909,11 +913,9 @@ class PwrTray:
             self.restart_self(None)
 
     def on_tray_icon_activated(self, reason):
-        if reason == QSystemTrayIcon.Context:  # Right click
-            self.tray_icon.contextMenu().exec_(QCursor.pos())  # Show the context menu
-        elif (reason == QSystemTrayIcon.Trigger  # Left click
-                 and not self.is_wayland):  # wayland behaves badly
-            self.tray_icon.contextMenu().exec_(QCursor.pos())  # Show the context menu
+        left_click = (reason == QSystemTrayIcon.Trigger and not self.is_wayland)
+        if reason == QSystemTrayIcon.Context or left_click:
+            self.tray_icon.contextMenu().exec_(QCursor.pos())
 
 
     def idle_manager_start(self):
@@ -977,7 +979,7 @@ class PwrTray:
         env = dict(os.environ)
         env['PYTHONPATH'] = os.pathsep.join(
             [package_root] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
-        args = [sys.executable, '-m', 'pwr_tray.main'] + sys.argv[1:]
+        args = [sys.executable, '-m', 'pwr_tray.main', *sys.argv[1:]]
         Utils.SingleInstance.release_current()
         subprocess.Popen(args, env=env)
         os._exit(0)
@@ -992,7 +994,7 @@ class PwrTray:
                 arguments.append(ini_path)
                 prt('+', 'running:', arguments)
                 subprocess.run(arguments, check=True)
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 prt(f"Edit Config ERR: {e}")
 
     @staticmethod
@@ -1102,8 +1104,8 @@ class PwrTray:
         try:
             proc = subprocess.Popen(
                 ['dbus-monitor', '--system',
-                 "type='signal',interface='org.freedesktop.login1.Manager',"
-                 "member='PrepareForSleep'"],
+                 ("type='signal',interface='org.freedesktop.login1.Manager',"
+                  "member='PrepareForSleep'")],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             os.set_blocking(proc.stdout.fileno(), False)
             prt('resume monitor: started')
@@ -1133,10 +1135,8 @@ class PwrTray:
         except (OSError, subprocess.TimeoutExpired):
             pass
         if proc.stdout is not None:
-            try:
+            with contextlib.suppress(OSError):
                 proc.stdout.close()
-            except OSError:
-                pass
         prt('resume monitor: stopped')
 
     def _check_resume(self):
@@ -1193,7 +1193,8 @@ def tray_watcher_present():
         interface.setTimeout(2000)
         reply = interface.isServiceRegistered(STATUS_NOTIFIER_WATCHER)
         return bool(reply.isValid() and reply.value())
-    except Exception as exc:                    # QDBusError reaches us this way
+    # QDBusError has no import-safe base class, so this one has to be broad.
+    except Exception as exc:                    # noqa: BLE001
         prt(f'WARN: tray detection failed: {exc}')
         return None
 
@@ -1235,7 +1236,7 @@ def load_known_de_json():
     ini_tool = IniTool(paths_only=True)
     user_yaml = os.path.join(ini_tool.folder, 'my-commands.yaml')
     if os.path.exists(user_yaml):
-        with open(user_yaml, 'r', encoding='utf-8') as handle:
+        with open(user_yaml, encoding='utf-8') as handle:
             return dict(YAML().load(handle)), user_yaml
     return (dict(YAML().load(Utils.resource_text('commands.yaml'))),
             'built-in commands.yaml')
@@ -1372,7 +1373,8 @@ if __name__ == "__main__":
         prt("Shutdown requested, so exiting ...")
         sys.exit(1)
 
-    except Exception as exc:
-        prt("Caught exception running main(), so exiting ...\n",
+    # Last-resort handler: report every unexpected error and exit cleanly.
+    except Exception:  # noqa: BLE001
+        prt("Caught exception running main()\n",
             traceback.format_exc(limit=24))
         sys.exit(9)

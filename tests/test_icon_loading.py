@@ -17,11 +17,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from pwr_tray import main as main_module  # noqa: E402  (after sys.path setup)
 from pwr_tray import Utils  # noqa: E402
+from pwr_tray import main as main_module  # noqa: E402  (after sys.path setup)
 from pwr_tray.Errors import MissingResourcesError  # noqa: E402
 from pwr_tray.IniTool import IniTool  # noqa: E402
-
 
 _SVG_INFO = main_module.PwrTray.svg_info
 SVGS = [f'{base}-v{_SVG_INFO.version}.svg' for base in _SVG_INFO.bases]
@@ -34,7 +33,7 @@ def test_ensure_resources_installs_into_the_given_folder(tmp_path):
     paths = main_module.PwrTray.ensure_resources(str(folder), SVGS)
 
     assert len(paths) == len(SVGS)
-    for path, resource in zip(paths, SVGS):
+    for path, resource in zip(paths, SVGS, strict=True):
         assert path == os.path.join(str(folder), resource)
         assert os.path.isabs(path)
         assert os.path.isfile(path)

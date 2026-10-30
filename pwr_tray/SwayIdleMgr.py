@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Wayland compositors do not provide a way to poll idle time, so the fundamental
 design of pwr-tray using idle time polling does not work.  Instead, for Wayland,
@@ -8,12 +7,14 @@ blank now, we kill the running swayidle and start one that does what we want.
 """
 # pylint: disable=invalid-name,consider-using-with
 # pylint: disable=broad-exception-caught,subprocess-run-check
-import subprocess
-import time
 import os
 import signal
+import subprocess
+import time
 from types import SimpleNamespace
+
 from pwr_tray.Utils import prt
+
 
 class SwayIdleManager:
     """ Class to manage 'swayidle' for Wayland compositors """
@@ -51,7 +52,7 @@ class SwayIdleManager:
                 for pid in pids:
                     os.kill(int(pid), signal.SIGKILL)
             return
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError):
             return # none left
 
     def build_cmd(self, mode=None):

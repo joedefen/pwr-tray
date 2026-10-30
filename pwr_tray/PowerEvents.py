@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # pylint: disable=broad-exception-caught
 """Event sources that replace the applet's per-tick polling.
 
@@ -24,6 +23,7 @@ the applet falls back to the old polling, so behaviour is never worse.
 """
 
 import atexit
+import contextlib
 import os
 import subprocess
 
@@ -105,10 +105,8 @@ class PowerEvents:
             for key in list(self._procs):
                 self._stop_monitor(key)
             if self.watcher is not None:
-                try:
+                with contextlib.suppress(AttributeError, RuntimeError):
                     self.watcher.deleteLater()
-                except Exception:
-                    pass
             self.watcher = None
         finally:
             self._stopping = False
@@ -131,12 +129,10 @@ class PowerEvents:
             notifier.activated.connect(
                 lambda _fd=None, k=key: self._drain(k))
             notifier.setEnabled(True)
-        except Exception:
+        except (OSError, AttributeError, TypeError, RuntimeError):
             if proc is not None:
-                try:
+                with contextlib.suppress(OSError):
                     proc.kill()
-                except Exception:
-                    pass
             return False
         self._procs[key] = proc
         self._notifiers[key] = notifier
@@ -147,26 +143,18 @@ class PowerEvents:
     def _stop_monitor(self, key):
         notifier = self._notifiers.pop(key, None)
         if notifier is not None:
-            try:
+            with contextlib.suppress(AttributeError, RuntimeError):
                 notifier.setEnabled(False)
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(AttributeError, RuntimeError):
                 notifier.deleteLater()
-            except Exception:
-                pass
         proc = self._procs.pop(key, None)
         if proc is not None:
-            try:
+            with contextlib.suppress(OSError):
                 if proc.poll() is None:
                     proc.terminate()
-            except OSError:
-                pass
             if proc.stdout is not None:
-                try:
+                with contextlib.suppress(OSError):
                     proc.stdout.close()
-                except OSError:
-                    pass
         self._pending.pop(key, None)
         self._context.pop(key, None)
         if proc is not None and not self._stopping:
@@ -267,15 +255,15 @@ class PowerEvents:
                 return
             watcher.fileChanged.connect(self._on_config_changed)
             watcher.directoryChanged.connect(self._on_config_changed)
-        except Exception:
+        except (OSError, AttributeError, TypeError, RuntimeError):
             return
         self.watcher = watcher
         self.config_ok = True
 
     def _on_config_changed(self, _path):
         """Re-arm the file watch after a rename, then report the change."""
-        if self.watcher is not None and self.config_path:
-            if (os.path.exists(self.config_path)
-                    and self.config_path not in self.watcher.files()):
-                self.watcher.addPath(self.config_path)
+        if (self.watcher is not None and self.config_path
+                and os.path.exists(self.config_path)
+                and self.config_path not in self.watcher.files()):
+            self.watcher.addPath(self.config_path)
         self.on_config()

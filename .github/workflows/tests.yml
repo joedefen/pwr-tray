@@ -1,9 +1,10 @@
-name: tests
+name: CI
 
-# The suite is deliberately dependency-light: the root conftest.py stubs the
-# GUI / YAML imports that pwr_tray.main performs at module scope, so CI needs
-# nothing beyond pytest.  Real dependencies are used automatically when they
-# happen to be installed (as on a developer desktop).
+# Three gates, each cheap enough to run on every push and pull request:
+#   lint    -- in-repo ruff configuration (pyproject.toml), no user config
+#   test    -- pytest on every supported Python, dependency-light via conftest
+#   package -- build sdist+wheel, inspect them, install the wheel and run the
+#              installed console script against its packaged resources
 
 on:
   push:
@@ -18,14 +19,38 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHONUNBUFFERED: "1"
+
 jobs:
-  pytest:
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff
+
+      - name: Run the lint gate
+        run: ruff check --output-format=github .
+
+  test:
     name: pytest (py${{ matrix.python-version }})
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Check out repository
@@ -35,6 +60,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install test dependencies
         run: |
@@ -59,3 +85,97 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -v
+
+  package:
+    name: packaging smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build tool
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Inspect the built distributions
+        run: |
+          python - <<'PY'
+          import glob
+          import tarfile
+          import zipfile
+          from email.parser import Parser
+
+          import pwr_tray
+
+          wheel, = glob.glob('dist/*.whl')
+          sdist, = glob.glob('dist/*.tar.gz')
+
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              metadata_name = next(n for n in names if n.endswith('.dist-info/METADATA'))
+              metadata = Parser().parsestr(
+                  archive.read(metadata_name).decode('utf-8'))
+
+          assert metadata['Name'] == 'pwr_tray'
+          assert metadata['Version'] == pwr_tray.__version__
+          assert metadata['Requires-Python'] == '>=3.11'
+          requires = metadata.get_all('Requires-Dist') or []
+          for dependency in ('psutil', 'PyQt5', 'ruamel.yaml'):
+              assert any(dep.startswith(dependency) for dep in requires), dependency
+
+          # The wheel must carry the runtime resources, and none of the
+          # development tree (tests, caches, virtualenvs).
+          for resource in ('pwr_tray/resources/commands.yaml',
+                           'pwr_tray/resources/lockpaper.png',
+                           'pwr_tray/resources/FullSun-v03.svg'):
+              assert resource in names, resource
+          assert not [n for n in names if n.startswith('tests/')]
+          assert not [n for n in names if '.venv' in n or '__pycache__' in n]
+
+          with tarfile.open(sdist) as archive:
+              sources = archive.getnames()
+          assert any(n.endswith('pwr_tray/resources/commands.yaml') for n in sources)
+          assert any(n.endswith('pyproject.toml') for n in sources)
+
+          print(f'distributions OK: {wheel} and {sdist}')
+          PY
+
+      - name: Install the wheel into a clean virtualenv
+        run: |
+          python -m venv /tmp/pwr-tray-wheel
+          /tmp/pwr-tray-wheel/bin/python -m pip install --upgrade pip
+          /tmp/pwr-tray-wheel/bin/python -m pip install dist/*.whl
+
+      - name: Import the installed package and check its resources
+        run: |
+          /tmp/pwr-tray-wheel/bin/python - <<'PY'
+          import importlib.resources
+
+          import pwr_tray
+          from pwr_tray import Utils
+
+          assert pwr_tray.__version__
+
+          resources = importlib.resources.files('pwr_tray.resources')
+          for name in ('commands.yaml', 'lockpaper.png'):
+              assert resources.joinpath(name).is_file(), name
+          assert Utils.resource_text('commands.yaml').strip()
+
+          print(f'installed package OK: pwr_tray {pwr_tray.__version__}')
+          PY
+
+      - name: Exercise the installed console script
+        run: |
+          version=$(/tmp/pwr-tray-wheel/bin/python -c 'import pwr_tray; print(pwr_tray.__version__)')
+          /tmp/pwr-tray-wheel/bin/pwr-tray --version | grep -F "$version"
+          /tmp/pwr-tray-wheel/bin/pwr-tray --list-des | grep -q 'sway-wayland'

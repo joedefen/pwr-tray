@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Errors that main() reports to the user instead of dumping a traceback.
 
 These replace the `assert` guards that used to protect startup detection.  An
@@ -90,10 +89,10 @@ class MissingCommandsError(PwrTrayError):
                 where += f' ({self.session_type})'
         lines = [
             f'pwr-tray: missing command(s){where}: {", ".join(self.missing)}',
-            '  install them with your package manager, then start pwr-tray'
-            ' again.',
-            '  systemctl is always required; playerctl is optional'
-            ' (media inhibit).',
+            ('  install them with your package manager, then start pwr-tray'
+             ' again.'),
+            ('  systemctl is always required; playerctl is optional'
+             ' (media inhibit).'),
             '  see what every desktop needs: pwr-tray --list-des',
         ]
         return '\n'.join(lines)

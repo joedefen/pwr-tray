@@ -34,7 +34,10 @@ dependencies = [
 "Bug Tracker" = "https://github.com/joedefen/pwr-tray/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = [
+    "pytest>=7",
+    "ruff>=0.6",
+]
 
 [project.scripts]
 pwr-tray = "pwr_tray.main:main"
@@ -45,3 +48,42 @@ include = ["pwr_tray/resources/"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+# Keep the lint gate identical on every machine: no global/user config can
+# change which rules CI enforces.
+target-version = "py311"
+line-length = 100
+extend-exclude = ["build", "dist", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "W",      # pycodestyle warnings
+    "I",      # import sorting
+    "UP",     # pyupgrade
+    "B",      # bugbear
+    "SIM",    # simplify
+    "RUF",    # ruff-specific
+    "S",      # bandit (security)
+    "BLE",    # blind except
+    "ISC",    # implicit string concatenation
+]
+ignore = [
+    "E501",   # a few long UI/log strings are clearer on one line
+    # UI strings deliberately use typographic spaces (menu alignment).
+    "RUF001", "RUF002", "RUF003",
+    # Subprocess calls and config-sourced command lines are the application's
+    # core mechanism; these bandit rules cannot distinguish them from injection.
+    "S105", "S106", "S602", "S603", "S604", "S605", "S606", "S607",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pwr_tray"]
+
+[tool.ruff.lint.per-file-ignores]
+# Assertions are the natural expression language of a test suite, and tests
+# may name throw-away paths under /tmp.
+"tests/*" = ["S101", "S108"]
+"conftest.py" = ["S101"]

@@ -12,7 +12,7 @@ import os
 import signal
 
 import pwr_tray.Utils as Utils
-from pwr_tray.Utils import (PyKill, SingleInstance, command_names, script_key)
+from pwr_tray.Utils import PyKill, SingleInstance, command_names, script_key
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

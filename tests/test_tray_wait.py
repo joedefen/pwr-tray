@@ -18,7 +18,6 @@ import pytest
 
 import pwr_tray.main as main_module
 
-
 # -- fakes for the QtDBus surface we use -------------------------------------
 
 class FakeReply:

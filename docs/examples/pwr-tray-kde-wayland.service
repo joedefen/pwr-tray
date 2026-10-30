@@ -1,6 +1,6 @@
 # pwr-tray as a systemd --user service -- KDE Plasma (Wayland) example
 #
-# Best-effort / untested: review before use. Requires Plasma 6 and swayidle 1.8+.
+# Structurally validated in CI; still review before use. Requires Plasma 6 and swayidle 1.8+.
 # Install (copy as ~/.config/systemd/user/pwr-tray.service):
 #   mkdir -p ~/.local/log ~/.config/systemd/user
 #   cp pwr-tray-kde-wayland.service ~/.config/systemd/user/pwr-tray.service

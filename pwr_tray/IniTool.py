@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 TBD
 """
@@ -8,11 +7,12 @@ TBD
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=consider-using-from-import
 
-import os
 import configparser
-from types import SimpleNamespace
 import copy
 import json
+import os
+from types import SimpleNamespace
+
 from pwr_tray.Utils import prt
 
 
@@ -29,7 +29,7 @@ def to_array(val_str):
     else:
         try:
             vals = json.loads(val_str)
-        except Exception:
+        except (TypeError, ValueError):
             return None
     if isinstance(vals, int) and not isinstance(vals, bool):
         vals = [vals]
@@ -85,7 +85,7 @@ class IniTool:
     @staticmethod
     def get_selectors():
         """ Returns the in right "order" """
-        return 'Settings HiBattery LoBattery'.split()
+        return ['Settings', 'HiBattery', 'LoBattery']
 
     def the_default(self, selector, key):
         """ return the default value given the selector and key """
@@ -166,7 +166,7 @@ class IniTool:
         """
         parser = configparser.ConfigParser()
         try:
-            with open(self.ini_path, 'r', encoding='utf-8') as handle:
+            with open(self.ini_path, encoding='utf-8') as handle:
                 parser.read_file(handle)
         except (OSError, configparser.Error, UnicodeDecodeError) as exc:
             self._report_config_problem(f'cannot read ({exc})')
@@ -277,7 +277,7 @@ class IniTool:
                     try:
                         params[key] = int(value)
                         continue
-                    except Exception:
+                    except (TypeError, ValueError):
                         prt(f'skip {selector}.{key}: {value!r} [expecting int repr]')
                         continue
 
@@ -288,7 +288,10 @@ class IniTool:
                         prt(f'skip {selector}.{key}: {value!r} [expecting string]')
                     continue
 
-                assert False, f'unhandled goldens[{key}]: {value!r}'
+                # Unreachable for the built-in defaults; never assert here:
+                # -O would remove the guard and the value would go unparsed.
+                prt(f'skip {selector}.{key}: {value!r} [unhandled default type]')
+                continue
             all_params[selector] = self.with_list_defaults(selector, params)
 
         self.params_by_selector = all_params

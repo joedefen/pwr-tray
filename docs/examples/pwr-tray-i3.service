@@ -1,6 +1,6 @@
 # pwr-tray as a systemd --user service -- i3 (X11) example
 #
-# Best-effort / untested: review before use.
+# Structurally validated in CI; still review before use.
 # Install (copy as ~/.config/systemd/user/pwr-tray.service):
 #   mkdir -p ~/.local/log ~/.config/systemd/user
 #   cp pwr-tray-i3.service ~/.config/systemd/user/pwr-tray.service
