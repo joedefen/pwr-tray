@@ -122,7 +122,12 @@ class PwrTray:
         # on their own.  The class keeps thin entry points for both.
         self.actions = Actions(self)
         self.idle_state = IdleStateMachine(self)
-        self.battery = SimpleNamespace(present=None,
+        # ``synthetic`` tracks whether the state on screen is a fabricated
+        # HiBattery/LoBattery leg of the no-battery test cycler rather than a
+        # reading.  It is what the menu's "(TESTING)" suffix keys off, so the
+        # plugged-in state of a machine without a battery -- including the leg
+        # that closes the cycle -- is not labelled as a test.
+        self.battery = SimpleNamespace(present=None, synthetic=False,
                        plugged=True, percent=100, selector='Settings')
         self.reconfig()
         self.quick = quick
@@ -630,6 +635,9 @@ class PwrTray:
         was_plugged = self.battery.plugged
         was_selector = self.battery.selector
 
+        # A real reading replaces anything the test cycler fabricated.
+        self.battery.present = True
+        self.battery.synthetic = False
         self.battery.plugged = battery.power_plugged
         self.battery.percent = round(battery.percent, 1)
         if self.battery.plugged:
@@ -721,6 +729,10 @@ class PwrTray:
             selector = ('LoBattery' if selector == 'HiBattery'
                         else 'Settings' if selector == 'LoBattery' else 'HiBattery')
             self.battery.selector = selector
+            # Only the battery legs of the cycle are manufactured; the
+            # Plugged In leg is the machine's real state, so it drops the
+            # menu's "(TESTING)" suffix again.
+            self.battery.synthetic = selector != 'Settings'
             # self.ini_tool.set_effective_params(selector)
             self.rebuild_menu = True
             self._inhibit_dirty = True   # the selector changes the icon
@@ -833,9 +845,11 @@ class PwrTray:
         add_item('    ▼ PowerOff', self.poweroff)
 
         selector, percent = self.battery.selector, self.battery.percent
-        # With no battery present the whole power state is synthetic (this item
-        # is then a test cycler), so say so rather than letting it look real.
-        testing = getattr(self.battery, 'present', None) is False
+        # Only a fabricated HiBattery/LoBattery leg is synthetic; the
+        # plugged-in state of a machine without a battery, whether reached at
+        # start-up or by closing the cycle, is its real state and must not be
+        # labelled as a test.
+        testing = bool(getattr(self.battery, 'synthetic', False))
         if selector == 'Settings':
             label = '↯ Plugged In'
         else:
@@ -868,14 +882,11 @@ class PwrTray:
 
         add_item('☓ Quit this Applet', self.quit_self)
 
-        add_item('↺ Restart this Applet', self.restart_self)
-        # Identity line, deliberately last and deliberately dead.  The log says
-        # the same thing at START-UP, but "which build am I running?" is a
-        # question asked from the menu, usually about a DE that behaves
-        # differently from what the reader expects.  A disabled QAction cannot
-        # be clicked, so it reads as a label rather than as an action that
-        # silently does nothing.
-        add_item(f'pwr-tray v{__version__}', self.dummy, enabled=False)
+        # The version rides on the restart entry instead of a separate dead
+        # label: the log says the same thing at START-UP, but "which build am I
+        # running?" is a question asked from the menu, usually about a DE that
+        # behaves differently from what the reader expects.
+        add_item(f'↺ Restart pwr-tray v{__version__}', self.restart_self)
 
         if first_menu:
             self.tray_icon.setContextMenu(self.menu)

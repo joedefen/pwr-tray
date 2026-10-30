@@ -137,8 +137,7 @@ Or act on the applet itself:
 - **✎  Edit Applet Config** - edit the applet's .ini file.
 - **≡ Open Applet Log** - show `debug.log` (and the rotated `debug.log.old`, when present) in a terminal window, following the current log with `less +F`. It is offered only when a terminal emulator can be found; see `log_viewer` below. The viewer is started in its own session -- and, when the applet runs as a systemd service, in its own transient scope -- so it keeps following the log when the applet stops or restarts.
 - **☓ Quit this Applet** -  exit applet.
-- **↺ Restart this Applet** - restart applet.
-- **pwr-tray vX.Y.Z** - the running version, at the very bottom. It is a label, not an action: it is greyed out and clicking it does nothing.
+- **↺ Restart pwr-tray vX.Y.Z** - restart applet. It is the last entry and it carries the running version, so "which build am I running?" is answered without reading the log (which says the same thing at `START-UP` and `ENDED`).
 
 
 ---
@@ -149,7 +148,7 @@ Or act on the applet itself:
 - Then, ensure closing the lid, hitting the power button, etc., have the desired effects.
 - To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`. Only an inhibitor that blocks `sleep` or `idle` shows the StopSign icon; one that only holds the power or lid key (`handle-power-key`, `handle-lid-switch`) does not, because a compositor owning an input event is not asking the session to stay awake.
 - To test media inhibit: with `playerctl` installed, play media in any MPRIS-capable player; the `PlayingNow` icon appears and the lock/sleep timeouts are suspended until playback stops.
-- To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states. While it is synthetic, the menu entry is suffixed with `(TESTING)` so it cannot be mistaken for a real power state.
+- To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states. The menu entry is suffixed with `(TESTING)` only while it shows one of those fabricated battery states, so it cannot be mistaken for a real power state; the plugged-in state -- at start-up, or when the cycle comes back around to it -- is the machine's real state and carries no suffix.
 
 #### Updating pwr-tray
 

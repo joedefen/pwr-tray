@@ -37,7 +37,7 @@ ALLOWED_GLYPHS = {
     0x2003,  # EM SPACE                    indentation of sub-items
     0x2190,  # ←  LEFTWARDS ARROW          "Presentation <- LockOnly Mode"
     0x21AF,  # ↯  DOWNWARDS ZIGZAG ARROW   Plugged In (charging)
-    0x21BA,  # ↺  ANTICLOCKWISE ARROW      Restart this Applet
+    0x21BA,  # ↺  ANTICLOCKWISE ARROW      Restart pwr-tray vX.Y.Z
     0x2261,  # ≡  IDENTICAL TO             Open Applet Log (lines of text)
     0x2583,  # ▃  LOWER THREE EIGHTHS      LoBattery
     0x2588,  # █  FULL BLOCK               HiBattery
@@ -187,23 +187,26 @@ def test_build_menu_still_offers_the_expected_actions(monkeypatch):
     assert '○ SleepAfterLock ← LockOnly Mode' in labels
     assert '█ HiBattery 88%' in labels
     assert '☓ Quit this Applet' in labels
-    assert '↺ Restart this Applet' in labels
+    assert f'↺ Restart pwr-tray v{main_module.__version__}' in labels
 
 
-def test_version_line_is_last_and_inert(monkeypatch):
-    """The identity line closes the menu and is a label, not an action.
+def test_restart_line_is_last_and_carries_the_version(monkeypatch):
+    """The restart entry closes the menu and doubles as the identity line.
 
-    It must carry the package version rather than a literal, so a bump shows
-    up in the menu without a second edit.
+    The version must come from the package rather than a literal, so a bump
+    shows up in the menu without a second edit -- and there is no separate,
+    dead ``pwr-tray vX.Y.Z`` label below it any more.
     """
     monkeypatch.setattr(main_module, 'QAction', _FakeAction)
     tray = _fake_tray()
     main_module.PwrTray.build_menu(tray)
 
     last = tray.menu.actions[-1]
-    assert last.text == f'pwr-tray v{main_module.__version__}'
-    assert last.enabled is False
-    assert all(action.enabled for action in tray.menu.actions[:-1])
+    assert last.text == f'↺ Restart pwr-tray v{main_module.__version__}'
+    assert last.enabled is True
+    assert all(action.enabled for action in tray.menu.actions)
+    assert not any(action.text.startswith('pwr-tray v')
+                   for action in tray.menu.actions)
 
 
 def test_battery_plugged_in_uses_the_zigzag_arrow(monkeypatch):
@@ -242,29 +245,77 @@ def test_rows_stay_untouched(monkeypatch):
 
 
 def test_synthetic_power_state_is_marked_as_testing(monkeypatch):
-    """Without a battery the power item is a cycler, so it says so."""
+    """A state produced by the no-battery cycler says so."""
     labels = _menu_labels(
         monkeypatch,
         battery=types.SimpleNamespace(selector='HiBattery', percent=88,
-                                      present=False))
+                                      present=False, synthetic=True))
 
     assert '█ HiBattery 88% (TESTING)' in labels
 
 
-def test_synthetic_plugged_in_state_is_marked_as_testing(monkeypatch):
+def test_untouched_no_battery_state_is_not_marked_as_testing(monkeypatch):
+    """The plugged-in state of a battery-less machine is real.
+
+    That covers both start-up and the leg that closes the cycle: it is what
+    the machine is doing (on AC), so it must not wear the "(TESTING)" suffix
+    -- only the fabricated HiBattery/LoBattery legs should.
+    """
     labels = _menu_labels(
         monkeypatch,
         battery=types.SimpleNamespace(selector='Settings', percent=100,
-                                      present=False))
+                                      present=False, synthetic=False))
 
-    assert '↯ Plugged In (TESTING)' in labels
+    assert '↯ Plugged In' in labels
+    assert not any('TESTING' in label for label in labels)
 
 
 def test_real_battery_state_is_not_marked_as_testing(monkeypatch):
     labels = _menu_labels(
         monkeypatch,
         battery=types.SimpleNamespace(selector='Settings', percent=100,
-                                      present=True))
+                                      present=True, synthetic=False))
+
+    assert '↯ Plugged In' in labels
+    assert not any('TESTING' in label for label in labels)
+
+
+def test_the_cycler_marks_only_the_battery_legs_as_synthetic():
+    """The flag the suffix keys off is maintained by the cycler itself.
+
+    Without this, the menu and the thing that manufactures the state could
+    drift apart: a future edit could cycle the selector and leave the label
+    claiming the result is real -- or, as reported, keep "(TESTING)" showing
+    after the cycle returned to Plugged In.
+    """
+    tray = object.__new__(main_module.PwrTray)
+    tray.battery = types.SimpleNamespace(present=False, synthetic=False,
+                                         selector='Settings')
+    tray.rebuild_menu = False
+    tray._inhibit_dirty = False
+
+    seen = []
+    for _ in range(3):
+        tray._toggle_battery()
+        seen.append((tray.battery.selector, tray.battery.synthetic))
+
+    assert seen == [('HiBattery', True), ('LoBattery', True),
+                    ('Settings', False)]
+    assert tray.rebuild_menu is True
+
+
+def test_cycling_back_to_plugged_in_drops_the_testing_suffix(monkeypatch):
+    """A full Settings -> HiBattery -> LoBattery -> Settings run ends clean."""
+    cycler = object.__new__(main_module.PwrTray)
+    cycler.battery = types.SimpleNamespace(present=False, synthetic=False,
+                                           selector='Settings', percent=100,
+                                           plugged=True)
+    cycler.rebuild_menu = False
+    cycler._inhibit_dirty = False
+    for _ in range(3):
+        cycler._toggle_battery()
+
+    labels = _menu_labels(monkeypatch, battery=cycler.battery)
 
     assert '↯ Plugged In' in labels
     assert not any('TESTING' in label for label in labels)
