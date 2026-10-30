@@ -215,11 +215,14 @@ class PwrTray:
         self.here_dir = os.path.dirname(os.path.abspath(__file__))
         self.svgs = [f'{base}-v{self.svg_info.version}.svg'
                      for base in self.svg_info.bases]
+        # Resources live in the config folder; ensure_resources() needs it
+        # explicitly now that nothing chdir()s there.
         # One icon per entry in svg_info.bases; show_icon() indexes this list
         # by state, so a partial list would be an IndexError later.
-        self.icons = [QIcon(path) for path in self.ensure_resources(self.svgs)]
+        self.icons = [QIcon(path) for path in
+                      self.ensure_resources(ini_tool.folder, self.svgs)]
         # Not a tray icon: the wallpaper the default locker command uses.
-        self.ensure_resources(['lockpaper.png'])
+        self.ensure_resources(ini_tool.folder, ['lockpaper.png'])
 
         # states are Awake, Locked, Blanked, Asleep
         # when is idle time

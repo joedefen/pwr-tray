@@ -8,6 +8,7 @@ resources are resolved against an explicit folder, and anything that cannot
 be installed is a startup error.
 """
 
+import ast
 import os
 import sys
 
@@ -83,6 +84,31 @@ def test_failed_copy_is_reported_as_a_missing_resource(tmp_path, monkeypatch):
         main_module.PwrTray.ensure_resources(str(folder), SVGS)
 
     assert 'Unlocked-v03.svg' in str(excinfo.value)
+
+
+def test_init_passes_the_config_folder_to_ensure_resources():
+    """Regression: ``__init__`` called ``ensure_resources(self.svgs)``.
+
+    The signature is ``(folder, resources)``, so that one-argument call raised
+    ``TypeError`` only after the single-instance lock had been taken -- the
+    applet (and therefore ``./runner``) died on start-up with no tray icon.
+    The call sites are outside the unit-testable part of the class, so the
+    arity is checked statically instead of being left to a manual launch.
+    """
+    with open(os.path.join(ROOT, 'pwr_tray', 'main.py'),
+              encoding='utf-8') as handle:
+        source = handle.read()
+    calls = [node for node in ast.walk(ast.parse(source))
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and node.func.attr == 'ensure_resources']
+
+    assert calls, 'no ensure_resources() call sites found in main.py'
+    for call in calls:
+        rendered = ast.unparse(call)
+        assert not call.keywords, rendered
+        assert len(call.args) == 2, rendered          # folder, resources
+        assert ast.unparse(call.args[0]) == 'ini_tool.folder', rendered
 
 
 def test_init_does_not_change_the_working_directory():

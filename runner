@@ -10,7 +10,12 @@ Usage:
 
 The app is executed as ``python -m pwr_tray.main`` rather than through runpy so
 that its command line looks exactly like a restarted instance; PyKill matches
-on that command line to terminate every instance of the app.
+on that command line when it takes over from one.
+
+``./runner`` is a developer's "run this source tree now", so it passes
+``--replace``: the applet takes the single-instance lock first and, if another
+instance still holds it, terminates that instance and takes over.  Pass
+``--replace`` yourself and it is not added twice.
 """
 
 import os
@@ -22,8 +27,12 @@ if __name__ == '__main__':
     # Keep the sources importable even when ./runner is called from elsewhere.
     env['PYTHONPATH'] = os.pathsep.join(
         [project_root] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
+    args = [sys.executable, '-m', 'pwr_tray.main']
+    if '--replace' not in sys.argv[1:]:
+        # Running ./runner means "start my source tree now", so hand over from
+        # a running instance instead of refusing to start (which is what a
+        # plain `pwr-tray` launch does when the lock is held).
+        args.append('--replace')
     # execv keeps this pid but replaces the command line, so 'ps' (and PyKill)
     # see 'python -m pwr_tray.main' instead of 'python runner'.
-    os.execve(sys.executable,
-              [sys.executable, '-m', 'pwr_tray.main'] + sys.argv[1:],
-              env)
+    os.execve(sys.executable, args + sys.argv[1:], env)

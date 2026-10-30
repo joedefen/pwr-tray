@@ -117,6 +117,12 @@ Documentation that contradicts the implementation is worse than no documentation
 
 Three `ruff`-invisible leftovers; each is a one-line deletion.
 
+### R8 — P2 — `PwrTray.__init__` crashed on start-up: `ensure_resources()` called with one argument — **Fixed**
+
+[`../pwr_tray/main.py:223`](../pwr_tray/main.py:223) called `self.ensure_resources(self.svgs)` (and `ensure_resources(['lockpaper.png'])`), but the method is `ensure_resources(folder, resources)`. Every start therefore died with `TypeError: ensure_resources() missing 1 required positional argument: 'resources'` — after the lock had been taken and the tray wait completed, so the applet (and `./runner`) simply exited and nothing appeared in the tray. The suite missed it because the icon helpers are tested directly while `__init__` itself is never constructed under pytest.
+
+**Fix.** Both call sites pass `ini_tool.folder`, and [`../tests/test_icon_loading.py`](../tests/test_icon_loading.py) now parses `main.py` and asserts that every `ensure_resources()` call site passes exactly `(ini_tool.folder, resources)`.
+
 ---
 
 ## 5. What is genuinely good (unchanged, now better supported)

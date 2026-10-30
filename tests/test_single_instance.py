@@ -149,6 +149,35 @@ def test_runner_execs_the_canonical_command_line():
     assert 'dwipe' not in text     # copy-paste leftover from another project
 
 
+def _run_runner(monkeypatch, argv):
+    """Execute ./runner with execve stubbed out; return the argv it built."""
+    import runpy
+    import sys
+
+    execs = []
+    monkeypatch.setattr(Utils.os, 'execve',
+                        lambda exe, args, env: execs.append(args))
+    monkeypatch.setattr(sys, 'argv', argv)
+    runpy.run_path(os.path.join(ROOT, 'runner'), run_name='__main__')
+    assert len(execs) == 1
+    return execs[0]
+
+
+def test_runner_takes_over_from_a_running_instance(monkeypatch):
+    """R1: ./runner is a deliberate start, so it asks for --replace once."""
+    argv = _run_runner(monkeypatch, ['./runner', '-o'])
+
+    assert argv[1:3] == ['-m', 'pwr_tray.main']
+    assert argv.count('--replace') == 1
+    assert '-o' in argv
+
+
+def test_runner_does_not_duplicate_replace(monkeypatch):
+    argv = _run_runner(monkeypatch, ['./runner', '--replace', '-o'])
+
+    assert argv.count('--replace') == 1
+
+
 # --------------------------------------------------------------------------
 # single-instance lock
 # --------------------------------------------------------------------------
