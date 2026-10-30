@@ -262,24 +262,24 @@ source of truth and the index is not.
 The packaging job still builds and inspects
 ([`.github/workflows/tests.yml:95`](../.github/workflows/tests.yml:95)) and never
 uploads or verifies against the index — but that is now a decision rather than
-an omission: the upload is a local, auditable `./bless publish`
+an omission: the upload is a local, auditable `./bless` answered `publish`
 (plan R2), not a job holding a credential.
 
 #### The local release gate: built
 
-[`bless`](../bless:1) is the entry point, and it is a verb because it is one: a
-dry run unless given `test` or `publish`.
+[`bless`](../bless:1) is the entry point, and it is a verb because it is one: it
+takes no arguments, runs every gate, and then asks `test`, `publish` or quit.
 
-* **The duplicate check is mandatory in every mode and runs first.** Before the
-  gate, before the build, `check_index()` reads the JSON index the mode writes
-  to and refuses when the version it would upload is already in the `releases`
+* **The duplicate check is mandatory in every run and runs first.** Before the
+  gate, before the build, `check_index()` reads the JSON index an upload would
+  write to and refuses when the version it would upload is already in the `releases`
   map, printing **every published version** in the refusal. Forgetting a
   version bump costs a network round trip, not a build and a rejected upload.
 * The rest of the gate: clean tree, absent tag, `twine>=7` and
   `packaging>=26`, ruff, `compileall`, pytest with coverage, a build into
   `build/bless-<version>/` (wiped first), inspection, `twine check --strict`,
   and a smoke install of the built wheel in a throwaway virtualenv.
-* `./bless test` rehearses the upload on TestPyPI. The working version is never
+* Answering `test` rehearses the upload on TestPyPI. The working version is never
   spent on it: a throwaway `X.Y.Z.99.N` is built from a *copy* of the tree, `N`
   being one past whatever TestPyPI already holds for that base (0 the first
   time), and uploaded with the TestPyPI credential — `TWINE_TESTPYPI_PASSWORD`,
@@ -290,9 +290,20 @@ dry run unless given `test` or `publish`.
   install line — `pip cache purge` first, because pip remembers an index it has
   already read, and `--extra-index-url https://pypi.org/simple/` because
   TestPyPI carries no dependencies.
-* `./bless publish` then aligns `main` and `dev`, tags `v<version>`, uploads the
-  two named files to PyPI, verifies the index's metadata and wheel digest, and
-  pushes. It refuses without `TWINE_PASSWORD` before `twine` starts.
+* Answering `publish` then aligns `main` and `dev`, tags `v<version>`, uploads
+  the two named files to PyPI, verifies the index's metadata and wheel digest,
+  and pushes. It refuses without `TWINE_PASSWORD` before `twine` starts, and the
+  question is asked only after the gate has passed, so no answer can skip it.
+* Verification distrusts twine's success line and reads the index back — and
+  that read is deliberately slow-tolerant. The JSON view is a CDN cache that has
+  been taking minutes, sometimes a quarter of an hour, to list a release that
+  was just accepted, so `verify_index()` cache-busts each read, polls for
+  `VERIFY_BUDGET` (~15 min) while printing the elapsed time and what is still
+  missing, and treats a release that appears before its `info` block has moved
+  on as lag rather than as wrong metadata. When the wait runs out it says the
+  upload was accepted and names the project page and the one step left in that
+  mode; it never reports an accepted upload as a failure, because that would
+  invite a second upload of a version that cannot be replaced.
 * The script carries no copy of this project's identity: `identity()` reads
   `[project] name` from `pyproject.toml`, derives the package holding
   `__version__` from it (`-`/`.` become `_`), takes the console script from
@@ -310,8 +321,8 @@ local and owner-run, and CI holds no credential). What was a plan is now a
 script that runs, and
 [`tests/test_bless.py`](../tests/test_bless.py:1) pins the parts that must not
 be wrong: the refusal lists every release, the check precedes every other
-stage, the dry run cannot reach tag/upload/push, `publish` reaches them in
-order, an upload without a token never starts `twine`, the rehearsal uploads a
+stage, an answer of nothing cannot reach tag/upload/push, `publish` reaches them
+in order, an upload without a token never starts `twine`, the rehearsal uploads a
 dotted version to TestPyPI and tags nothing, the branch table fast-forwards in
 both directions and refuses divergence, and the inspector rejects a GTK summary
 or a `pydbus` dependency.
@@ -323,9 +334,9 @@ directory.
 #### What is left
 
 The code is ready and the gate is built; **2.0.0 has never been published**.
-`./bless` is the dry run to read, `./bless test` installs the same artifact from
-TestPyPI to try it for real, and `./bless publish` is the one irreversible
-command. CI could cheaply add a read-only assertion that the index serves the
+`./bless` is the gate to run and read, answering `test` installs the same
+artifact from TestPyPI to try it for real, and answering `publish` is the one
+irreversible decision. CI could cheaply add a read-only assertion that the index serves the
 `__version__` this tree builds, which catches drift without giving a job the
 upload credential.
 
@@ -669,7 +680,8 @@ policy layer with a tray, this is the more capable one.
 **Bottom line:** worth keeping and worth finishing — the remaining work is one
 upload, not metadata, tooling or redesign: the tree describes itself correctly,
 the release gate is built and tested (F1's in-tree half is closed), so what is
-left is `./bless publish` for 2.0.0. The structural item (F6) is done.
+left is answering `publish` at `./bless`'s prompt for 2.0.0. The structural
+item (F6) is done.
 
 ---
 
@@ -681,9 +693,10 @@ left is `./bless publish` for 2.0.0. The structural item (F6) is done.
    ([`bless`](../bless:1), [`tests/inspect_dist.py`](../tests/inspect_dist.py:1),
    [`tests/test_bless.py`](../tests/test_bless.py:1)) is built and shares its
    inspector with CI. `1.0.13` never existed and `2.0.0` is unpublished. Run
-   `./bless` (dry run; its duplicate check lists every published release),
-   then `./bless publish`. Uploads stay local (plan R2); CI at most asserts
-   that the index serves the version this tree builds.
+   `./bless` (its duplicate check lists every published release), then answer
+   `test` to install the throwaway build and `publish` to ship. Uploads stay
+   local (plan R2); CI at most asserts that the index serves the version this
+   tree builds.
 2. **F2 — done.** `RestartPreventExitStatus=2 3` and
    `StartLimitIntervalSec=60`/`StartLimitBurst=5` are on all ten units, and
    [`tests/test_service_examples.py`](../tests/test_service_examples.py:1)

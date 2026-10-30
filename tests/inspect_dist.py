@@ -110,7 +110,7 @@ def check_wheel(wheel: Path, project_table: dict | None = None,
 
     Raises `DistributionError` naming every failure, rather than the first, so
     a bad build is fixed in one pass.  `version` overrides
-    `expected_version()`, which is what `./bless test` needs: it builds a
+    `expected_version()`, which is what the rehearsal needs: it builds a
     throwaway `X.Y.Z.99.N` on purpose, and that one field is the whole
     difference to assert against.
     """

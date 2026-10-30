@@ -133,21 +133,29 @@ Service integrations worth knowing, because they are policy rather than code:
 
 ## Releasing
 
-`./bless` is the whole procedure.  It is a dry run by default and prints the
-checklist it would execute; `./bless test` rehearses the upload on TestPyPI;
-`./bless publish` performs the irreversible part.
+`./bless` is the whole procedure, and it takes no arguments.  It runs every gate
+on the tree, prints the checklist of what it now has in hand, and then asks
+
+    ====> Enter test or publish or quit:
+
+`test` rehearses the upload on TestPyPI, `publish` performs the irreversible
+part, and Enter, `quit` or Ctrl-C stops with nothing tagged, uploaded or pushed.
+The word has to be typed in full and anything else is asked again, because this
+is the only question in the gate whose answer cannot be taken back.
 
 1. bump `__version__` in `pwr_tray/__init__.py` (the only place), then commit.
 2. `./bless` -- preflight (clean tree, tag absent, tool floors), the PyPI
    duplicate check, the same three gates CI runs, a build into
    `build/bless-<version>/`, inspection with `tests/inspect_dist.py`, `twine
    check --strict`, and a smoke install of the built wheel in a throwaway
-   virtualenv.
-3. `./bless test` -- the rehearsal.  It builds a throwaway `X.Y.Z.99.N` from a
-   *copy* of the tree, where `N` is one past the highest suffix TestPyPI
-   already holds for that base version (0 the first time), and uploads it only
-   to `test.pypi.org`.  The tree keeps its real version, no tag is created, no
-   branch moves, and the same gates and inspector run.  It then prints the
+   virtualenv.  Then the checklist, and the prompt.
+3. answer `test` -- the rehearsal.  The gate has already run, so this adds only
+   the upload path: it builds a throwaway `X.Y.Z.99.N` from a *copy* of the
+   tree, where `N` is one past the highest suffix TestPyPI already holds for
+   that base version (0 the first time), and uploads it only to
+   `test.pypi.org`.  The tree keeps its real version, no tag is created, no
+   branch moves, and the inspector and smoke install run on the copy too.  It
+   then prints the
    install line, which needs `python -m pip cache purge` first -- pip remembers
    an index it has already read -- and `--extra-index-url
    https://pypi.org/simple/`, because TestPyPI carries none of the
@@ -156,11 +164,23 @@ checklist it would execute; `./bless test` rehearses the upload on TestPyPI;
    `https://test.pypi.org/legacy/` -- because a TestPyPI token is not a PyPI
    token, and bless hands twine exactly the token for the index it is writing
    to.
-4. `./bless publish` -- fast-forward `main` and `dev` to one commit, tag
+4. answer `publish` -- fast-forward `main` and `dev` to one commit, tag
    `vX.Y.Z`, upload the two named files to PyPI, verify the index, and push.
 
-The duplicate check runs in **every** mode, against the index that mode
-targets, and before anything is built.  If the version in
+Verifying means reading the index back, and that read is patient on purpose.
+Both indexes serve their JSON through a CDN that has lately taken minutes --
+sometimes a quarter of an hour -- to list a newly accepted release. So the read
+is cache-busted (a unique query string, because re-reading the URL the
+pre-flight check just cached would spend the wait looking at the old answer) and
+it polls for up to fifteen minutes, printing how long it has waited and what is
+still missing. A release that is not listed yet, or is listed while its `info`
+block still describes the previous one, is reported as lag, with the project
+page to look at and the one step left for the answer given -- never as a failed
+upload, because an accepted upload cannot be withdrawn.
+
+The duplicate check runs on every pass of the gate, against PyPI and before
+anything is built -- and once more against TestPyPI for the throwaway version,
+before the rehearsal sends it.  If the version in
 `pwr_tray/__init__.py` is already published the command refuses and prints
 every release that index has, because an upload cannot be replaced.  A 404
 counts as "nothing published yet", which is what either index answers before a
@@ -190,14 +210,15 @@ it works there, provided the project:
   pytest-cov, build, twine>=7 and packaging>=26 -- `gates()` runs exactly
   ruff, compileall and `pytest --cov=<package>`.  twine is not a duplicate of
   flit: `flit publish` rebuilds and uploads what it just built, while `bless`
-  uploads the two files it inspected, to the index the mode targets, after
+  uploads the two files it inspected, to the index the answer targets, after
   `twine check --strict` has passed on them;
 * ships an inspector at `tests/inspect_dist.py` (or names one with
   `[tool.bless] inspect = "path"`), because bless refuses to upload what it has
   not inspected; `inspect = ""` opts out knowingly;
 * if it declares a console script, has it print the version for `--version`;
-* for `publish` only, keeps the `main`/`dev` pair and tags `vX.Y.Z`.  The dry
-  run and `test` need only that HEAD is not detached.
+* keeps the `main`/`dev` pair and tags `vX.Y.Z`.  The gate runs before the
+  prompt, so it refuses a detached HEAD and an already-existing tag; a
+  rehearsal is therefore always preceded by the checks the real release needs.
 
 The rules are stated at the top of the script itself, so they travel with it.
 

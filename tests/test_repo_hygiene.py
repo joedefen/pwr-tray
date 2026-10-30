@@ -119,13 +119,13 @@ def test_no_documented_command_uploads_the_whole_dist_directory():
 
 
 def test_the_documents_describe_the_testpypi_rehearsal():
-    """`./bless test` is a documented mode, not tribal knowledge.
+    """Answering `test` at the prompt is documented, not tribal knowledge.
 
     The install line is the point of the rehearsal, and it is only correct with
     a cache purge and a fallback index, so the document has to carry all three.
     """
     readme = (ROOT / 'README-DEV.md').read_text(encoding='utf-8')
-    assert './bless test' in readme
+    assert '====> Enter test or publish or quit:' in readme
     assert 'test.pypi.org' in readme
     assert 'TWINE_TESTPYPI_PASSWORD' in readme
     assert '--extra-index-url' in readme

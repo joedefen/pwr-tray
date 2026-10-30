@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """bless -- the only path to a PyPI upload for this project.
 
-    ./bless            dry run: run every stage, print what publish would do
-    ./bless test       build X.Y.Z.99.N and upload it to TestPyPI; no tags
-    ./bless publish    run the same stages, then tag, upload and push to PyPI
+    ./bless            run every gate, then ask: test, publish, or stop
 
-The default is the dry run, and there is no flag that turns one stage on and
-another off: publishing is a single intent or it does not happen.  `publish`
-does not prompt -- the confirmation is the dry run plus the typed word.
+There is no argument and no flag that skips a stage: the gate runs first and it
+always runs, because publishing is a single intent or it does not happen.  When
+it passes, bless prints everything that is in hand and then prompts
+
+    ====> Enter test or publish or quit:
+
+and waits.  Exactly `test` rehearses the upload on TestPyPI, exactly `publish`
+does the irreversible part, and nothing at all -- Enter, `quit`, or Ctrl-C --
+stops with no tag, no upload and no push.  Any other answer asks again instead
+of guessing, so a stray character can neither publish nor cancel by accident.
 
 `test` is the rehearsal, aimed at the upload path itself.  The working version
 is never spent on it: a throwaway `X.Y.Z.99.N` is built from a *copy* of the
@@ -18,9 +23,9 @@ that installs the result -- after a cache purge, because pip remembers an index
 it has already read, and with `--extra-index-url` for PyPI, because TestPyPI
 carries none of the dependencies.
 
-The duplicate check is mandatory in *every* mode, against the index that mode
-targets, and runs before anything is built or uploaded.  It refuses when the
-version is already there, printing every published version in the refusal,
+The duplicate check is mandatory on every run, against the index the answer
+would write to, and runs before anything is built or uploaded.  It refuses when
+the version is already there, printing every published version in the refusal,
 because an upload cannot be replaced.
 
 The credential is looked up per target: `TWINE_PASSWORD` for PyPI,
@@ -60,20 +65,30 @@ not worth guessing:
     pytest, pytest-cov, build, twine>=7 and packaging>=26, because `gates()`
     runs precisely ruff, compileall and pytest --cov=<package>.  twine is not
     made redundant by flit: `flit publish` rebuilds and sends whatever it just
-    built, while bless sends *these two files* to the URL the mode targets,
+    built, while bless sends *these two files* to the URL the answer targets,
     after `twine check --strict` has passed on them;
   * an inspector at that path: bless never uploads a distribution it has not
     inspected, so a missing one is a refusal, not a silent skip;
   * a console script, if declared, that prints the version for `--version`;
-  * for `publish`, the `main`/`dev` pair and `vX.Y.Z` tags.  The dry run and
-    `test` require only that HEAD is not detached.
+  * the `main`/`dev` pair and `vX.Y.Z` tags.  The gate runs before the prompt,
+    so it refuses a detached HEAD and a version that is already tagged: a
+    rehearsal is always preceded by the checks the real release needs, never by
+    looser ones.
 
 Stages, in order: preflight (clean tree, tag absent, tool floors), index check,
 gates (ruff, compileall, pytest with coverage), build into build/bless-<ver>/,
-inspect the two files, `twine check --strict`, install-and-run smoke.  The dry
-run then prints the branch plan and the checklist.  `test` uploads and verifies
-against TestPyPI and stops there.  `publish` aligns the two branches, tags,
-uploads to PyPI, verifies and pushes.
+inspect the two files, `twine check --strict`, install-and-run smoke, the branch
+plan.  Then the checklist and the prompt.  `test` builds the throwaway
+`X.Y.Z.99.N` from a copy, uploads it and verifies it on TestPyPI, and stops
+there.  `publish` aligns the two branches, tags, uploads to PyPI, verifies and
+pushes.
+
+Verifying means reading the index back, and that read is deliberately patient.
+Both indexes answer through a CDN that has been taking minutes -- sometimes more
+than ten -- to list a new release, so the read is cache-busted, it waits
+VERIFY_BUDGET while printing how long it has waited, and it never calls an
+accepted upload a failure: a release that is not listed yet is reported as lag,
+with the project page to look at and what is left to do for the answer given.
 """
 
 from __future__ import annotations
@@ -100,9 +115,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 TESTPYPI_UPLOAD = 'https://test.pypi.org/legacy/'
 INDEX_TIMEOUT = 15          # seconds for one index read
-VERIFY_ATTEMPTS = 10        # either index's JSON can lag an accepted upload
-VERIFY_DELAY = 3.0          # seconds between verify attempts
+# Both indexes serve their JSON through a CDN, and since about 2026-10 a new
+# release can take a quarter of an hour to appear in it.  So the post-upload
+# read waits ~15 minutes in lengthening steps, and prints how long it has been
+# waiting: a false "did not confirm" after a real upload is the worst answer
+# this gate can give, because the upload cannot be taken back.
+VERIFY_SCHEDULE = (3, 5, 5, 10, 10, 15, 15, 20, 20, 30, 30, 45, 45,
+                   60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60)
+VERIFY_BUDGET = sum(VERIFY_SCHEDULE)   # seconds, stated in every message
 TEST_TAG = 99               # X.Y.Z.99.N sorts clear of every real release
+# The one question the gate asks, spelled out in full because the answer that
+# leaves the machine cannot be taken back.  The blank lines push it clear of the
+# checklist, where the eye has just been reading columns.
+MODE_PROMPT = '\n\n\n====> Enter test or publish or quit: '
 TOOL_FLOORS = {'twine': (7, 0, 0), 'packaging': (26, 0, 0)}
 # Why each tool is needed, said in the refusal: flit builds, but it uploads the
 # files it just rebuilt, not two named files at a URL, and it has no standalone
@@ -191,6 +216,9 @@ except BlessError as complaint:
 
 NAME = PROJECT['name']
 MODULE = PROJECT['module']
+# PEP 503 normalization: the spelling the project pages use, whatever the
+# distribution name does with `-`, `_` and `.`.
+NORMALIZED = re.sub(r'[-_.]+', '-', NAME).lower()
 
 
 def read_version(root: Path = ROOT, module: str = MODULE) -> str:
@@ -211,16 +239,19 @@ def read_version(root: Path = ROOT, module: str = MODULE) -> str:
 # The two destinations.  `upload` is None for PyPI because that is twine's own
 # default end point; `pypirc` is the repository URL a ~/.pypirc section has to
 # name before its credential is used for this index; `token` is the environment
-# variable that wins over the file.  A TestPyPI token is not a PyPI token, so
+# variable that wins over the file; `page` is where a human can see the release
+# while the JSON is still catching up.  A TestPyPI token is not a PyPI token, so
 # the two are kept apart rather than merged.
 PYPI_URL = f'https://pypi.org/pypi/{NAME}/json'
 TESTPYPI_URL = f'https://test.pypi.org/pypi/{NAME}/json'
 PYPI = {'name': 'PyPI', 'index': PYPI_URL, 'upload': None,
         'pypirc': 'https://upload.pypi.org/legacy/',
-        'token': 'TWINE_PASSWORD'}
+        'token': 'TWINE_PASSWORD',
+        'page': f'https://pypi.org/project/{NORMALIZED}/'}
 TESTPYPI = {'name': 'TestPyPI', 'index': TESTPYPI_URL, 'upload': TESTPYPI_UPLOAD,
             'pypirc': TESTPYPI_UPLOAD,
-            'token': 'TWINE_TESTPYPI_PASSWORD'}
+            'token': 'TWINE_TESTPYPI_PASSWORD',
+            'page': f'https://test.pypi.org/project/{NORMALIZED}/'}
 
 
 def run(command: list[str], *, capture: bool = False,
@@ -268,12 +299,13 @@ def _tool_floor(name: str, minimum: tuple[int, int, int]) -> None:
             f'the validator must be at least as new as the metadata writer')
 
 
-def preflight(version: str, *, release: bool = True) -> dict:
+def preflight(version: str) -> dict:
     """Refuse to start unless the tree and the toolchain can be trusted.
 
-    `release=False` is the `test` mode: it skips the two checks that exist only
-    to protect a tag and a push.  The clean-tree check stays in every mode,
-    because what gets built has to describe something committed.
+    The check on the tree is the one that decides what gets built: it has to
+    describe a commit.  The branch and the tag are checked here as well because
+    the prompt may end in a tag and a push, and that question is asked only
+    after this has passed -- one gate, not a gentle one and a strict one.
     """
     status = git('status', '--porcelain')
     if status:
@@ -282,11 +314,11 @@ def preflight(version: str, *, release: bool = True) -> dict:
             f'describe a commit:\n{status}')
 
     branch = git('rev-parse', '--abbrev-ref', 'HEAD')
-    if release and branch == 'HEAD':
+    if branch == 'HEAD':
         raise BlessError('HEAD is detached; bless publishes only from main or dev')
     sha = git('rev-parse', '--short', 'HEAD')
-    if release and run(['git', 'rev-parse', '-q', '--verify', f'refs/tags/v{version}'],
-                       capture=True).returncode == 0:
+    if run(['git', 'rev-parse', '-q', '--verify', f'refs/tags/v{version}'],
+           capture=True).returncode == 0:
         raise BlessError(f'the tag v{version} already exists locally')
 
     for tool, minimum in TOOL_FLOORS.items():
@@ -297,33 +329,54 @@ def preflight(version: str, *, release: bool = True) -> dict:
     return {'branch': branch, 'sha': sha}
 
 
-def fetch_index(target: dict = PYPI) -> dict:
-    """The JSON document for this project on `target`, or a refusal.
+def _read_json(url: str, *, bust: bool = False) -> tuple[dict | None, str]:
+    """GET one JSON document: `(document, '')`, or `(None, complaint)`.
 
-    A 404 is not a failure: it is what either index answers before the project
-    has its first upload, and the duplicate check then has nothing to collide
-    with.
+    A 404 comes back as `(None, '')`, because it means two different things and
+    only the caller knows which: before a project's first upload it is an empty
+    index, and after one it is a cache that has not caught up.
+
+    `bust=True` adds a unique query string and refuses any cached copy.  Both
+    indexes are served through a CDN, where a fresh 404 -- or a `releases` map
+    without the release that was just accepted -- can sit for a quarter of an
+    hour; re-reading the URL the pre-flight check already cached would spend the
+    whole wait looking at the wrong answer.
     """
-    url = target['index']
-    request = urllib.request.Request(url, headers={'Accept': 'application/json'})
+    base = url
+    if bust:
+        url = f'{base}?bless={time.time_ns()}'
+    request = urllib.request.Request(
+        url, headers={'Accept': 'application/json',
+                      'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
     try:
         with urllib.request.urlopen(request, timeout=INDEX_TIMEOUT) as response:  # noqa: S310
             document = json.load(response)
     except urllib.error.HTTPError as exc:
-        if exc.code != 404:
-            raise BlessError(
-                f'cannot read {url}: {exc}\n'
-                'the duplicate check is mandatory in every mode, so bless stops '
-                'here') from None
-        say('index', f'{url} has no project yet (404); reading it as empty')
-        return {'releases': {}}
+        return None, '' if exc.code == 404 else f'{base}: {exc}'
     except (urllib.error.URLError, OSError, ValueError) as exc:
+        return None, f'{base}: {exc}'
+    if not isinstance(document, dict) or not isinstance(document.get('releases'), dict):
+        return None, f'{base} did not return a releases map'
+    return document, ''
+
+
+def fetch_index(target: dict = PYPI) -> dict:
+    """The JSON document for this project on `target`, or a refusal.
+
+    A 404 is not a failure here: it is what either index answers before the
+    project has its first upload, and the duplicate check then has nothing to
+    collide with.
+    """
+    document, complaint = _read_json(target['index'])
+    if complaint:
         raise BlessError(
-            f'cannot read {url}: {exc}\n'
-            'the duplicate check is mandatory in every mode, so bless stops '
-            'here') from None
-    if not isinstance(document.get('releases'), dict):
-        raise BlessError(f'{url} did not return a releases map; refusing to continue')
+            f'cannot read {complaint}\n'
+            'the duplicate check is mandatory on every run, so bless stops '
+            'here')
+    if document is None:
+        say('index', f'{target["index"]} has no project yet (404); '
+                     'reading it as empty')
+        return {'releases': {}}
     return document
 
 
@@ -355,9 +408,10 @@ def check_index(version: str, document: dict | None = None,
                 target: dict = PYPI) -> list[str]:
     """Refuse when `version` is already on `target`; return the published list.
 
-    Runs in the dry run and in the rehearsal as well as in `publish`: finding
-    out that the version exists must not require building the artifact first,
-    and the refusal names every version that index already has.
+    Runs on every pass of the gate, and again for the throwaway version before a
+    rehearsal sends it: finding out that the version exists must not require
+    building the artifact first, and the refusal names every version that index
+    already has.
     """
     document = fetch_index(target) if document is None else document
     releases = document['releases']
@@ -731,26 +785,70 @@ def _metadata_mismatches(version: str, wheel: Path, document: dict) -> list[str]
     return problems
 
 
-def verify_index(version: str, wheel: Path, target: dict = PYPI) -> None:
+def _index_lag(version: str, wheel: Path, document: dict) -> str:
+    """What the index still lacks; an empty string means it has caught up.
+
+    The `info` block describes the *latest* release, so it is only compared once
+    it has moved on to this version -- before that it is the previous release's
+    summary and keywords, and complaining about them would be a false negative
+    during exactly the window this loop exists to wait out.
+    """
+    if str(version) not in document['releases']:
+        listed = published_versions(document)
+        recent = ', '.join(listed[-3:]) if listed else 'no releases at all'
+        return f'the project is listed but this release is not (it has {recent})'
+    described = (document.get('info') or {}).get('version')
+    if described != str(version):
+        return ('the release is listed, but the info block still describes '
+                f'{described!r}')
+    return '; '.join(_metadata_mismatches(version, wheel, document))
+
+
+def verify_index(version: str, wheel: Path, target: dict = PYPI,
+                 *, advice: str = '') -> None:
+    """Read the index back until it serves this upload, or say why it will not.
+
+    The wait is long on purpose (VERIFY_BUDGET).  Calling an accepted upload a
+    failure because a CDN was slow is the one wrong answer available here: the
+    files are already there, so the message has to say so and name what is left
+    to do, which is `advice` from whoever asked for the read.
+    """
     where = target['name']
-    say('verify', f'waiting for {where} to report the upload')
-    last: list[str] = ['the version never appeared']
-    for attempt in range(1, VERIFY_ATTEMPTS + 1):
-        try:
-            document = fetch_index(target)
-        except BlessError as exc:
-            last = [str(exc)]
+    page = f'{target["page"]}{version}/'
+    say('verify', f'waiting up to {VERIFY_BUDGET // 60} minutes for {where} to '
+                  'list the upload (both indexes have been slow to do so; '
+                  'Ctrl-C is safe here, the files are already sent)')
+    lag = 'the index has not been read yet'
+    waited = 0
+    note = 30
+    for pause in (0, *VERIFY_SCHEDULE):
+        if pause:
+            time.sleep(pause)
+            waited += pause
+        document, complaint = _read_json(target['index'], bust=True)
+        if complaint:
+            lag = f'cannot read the index: {complaint.splitlines()[0]}'
+        elif document is None:
+            lag = 'the JSON API still answers 404 for the whole project'
         else:
-            if str(version) in document['releases']:
-                last = _metadata_mismatches(version, wheel, document)
-                if not last:
-                    say('verify', f'{where} serves {version} with matching metadata')
-                    return
-        if attempt < VERIFY_ATTEMPTS:
-            time.sleep(VERIFY_DELAY)
+            remaining = _index_lag(version, wheel, document)
+            if not remaining:
+                say('verify', f'{where} serves {version} with matching metadata '
+                              f'({waited}s after the upload)')
+                return
+            lag = remaining
+        if waited >= note:
+            say('verify', f'{waited}s: {lag}')
+            note *= 2
     raise BlessError(
-        f'{where} did not confirm {NAME} {version}: ' + '; '.join(last) +
-        '\nThe upload was accepted; do not bless the same version again.')
+        f'{where} did not list {NAME} {version} within {VERIFY_BUDGET // 60} '
+        f'minutes of reading the index back.\nLast read: {lag}.\n'
+        'twine reported the upload as accepted, and an accepted upload cannot '
+        'be withdrawn, so do not send this version again: what is missing is '
+        'the index catching up, not the release.\n'
+        f'  project page: {page}\n'
+        f'  JSON to agree with: {target["index"]}'
+        + (f'\n{advice}' if advice else ''))
 
 
 def install_hint(version: str) -> None:
@@ -789,12 +887,13 @@ def publish_git(version: str, branch: str, other: str) -> None:
 
 def checklist(version: str, facts: dict, public: list[str],
               wheel: Path, sdist: Path, plan: dict) -> None:
+    """What is in hand, printed before the prompt asks what to do with it."""
     other = 'dev' if facts['branch'] == 'main' else 'main'
     align = (f'fast-forward {plan["align"]} to {facts["sha"]}'
              if plan['align'] else 'nothing (main and dev already match)')
     latest = public[-1] if public else 'none'
     print()
-    print('DRY RUN -- nothing has been tagged, uploaded or pushed.')
+    print('Every gate passed, and nothing has been tagged, uploaded or pushed.')
     print(f'  tree       clean at {facts["sha"]} on {facts["branch"]}')
     print('  gates      ruff, compileall, pytest --cov all passed')
     print(f'  index      {version} is not published (latest is {latest})')
@@ -806,51 +905,73 @@ def checklist(version: str, facts: dict, public: list[str],
     print(f'  would send {wheel.name} and {sdist.name} to PyPI')
     print(f'  would push {facts["branch"]}, {other} and v{version} to origin')
     print()
-    print('Run ./bless test to rehearse the upload on TestPyPI first -- it')
-    print('builds a throwaway X.Y.Z.99.N from a copy and tags nothing.')
-    print('Run ./bless publish to do exactly that.')
+    print('  test      build a throwaway X.Y.Z.99.N from a copy and upload it')
+    print('            to TestPyPI; no tag, no branch, no push')
+    print('  publish   tag, upload to PyPI and push -- everything above, for')
+    print('            real, and it cannot be taken back')
+    print('  quit      stop here; pressing Enter does the same')
 
 
 def rehearse(version: str) -> None:
-    """`bless test`: upload `X.Y.Z.99.N` to TestPyPI and touch no git state.
+    """Answering `test`: upload `X.Y.Z.99.N` to TestPyPI, touch no git state.
 
-    Everything else is the real gate -- the same tree checks, the same three
-    gates, the same inspector, the same smoke install -- so what this proves is
-    that the *upload path* works, not that a second, looser path exists.
+    The gate has already run and passed -- same tree checks, same three gates,
+    same inspector, same smoke install -- so what this adds is the upload path
+    itself, aimed at test.pypi.org under its own token.  What it proves is that
+    the sending works, not that a second, looser path exists.
     """
-    facts = preflight(version, release=False)
-    say('preflight', f'clean tree at {facts["sha"]} '
-                     '(this mode tags nothing and pushes nothing)')
     document = fetch_index(TESTPYPI)
     candidate = next_test_version(version, document)
     check_index(candidate, document, TESTPYPI)
-    gates()
     wheel, sdist = build_for_test(candidate)
     inspect_dist(wheel, sdist, candidate)
     check(wheel, sdist)
     smoke(wheel, candidate)
     upload(wheel, sdist, candidate, TESTPYPI)
-    verify_index(candidate, wheel, TESTPYPI)
+    verify_index(candidate, wheel, TESTPYPI, advice=(
+        'Nothing is stuck: this build is spent, and the next ./bless run, '
+        'answered test, uploads the next .99.N.'))
     install_hint(candidate)
+
+
+def ask_mode() -> str:
+    """What to do with a tree that passed: 'test', 'publish', or '' to stop.
+
+    The word has to be typed out in full.  `test` and `publish` are one
+    keystroke away from nothing at all, and this is the only question in the
+    gate whose answer cannot be undone, so nothing is inferred from a prefix.
+    Nothing typed, `quit` and Ctrl-C all mean stop; anything else asks again,
+    which means a stray character can neither publish nor cancel.
+    """
+    while True:
+        try:
+            answer = input(MODE_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return ''
+        if answer in ('', 'quit'):
+            return ''
+        if answer in ('test', 'publish'):
+            return answer
+        print(f'  {answer!r} is not test, publish or quit: type one of them '
+              'exactly, or press Enter to stop.')
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='bless',
-        description='Run the release gate. The default is a dry run; "test" '
-                    'uploads a throwaway build to TestPyPI; "publish" tags, '
-                    'uploads to PyPI and pushes.')
-    parser.add_argument(
-        'mode', nargs='?', choices=['test', 'publish'], default=None,
-        help='test for a TestPyPI rehearsal, publish for the real thing '
-             '(default: dry run, nothing leaves the machine)')
-    arguments = parser.parse_args(argv)
+        description='Run every gate on this tree, then ask what to do with a '
+                    'tree that passed: "test" rehearses the upload on '
+                    'TestPyPI, "publish" tags, uploads to PyPI and pushes.')
     try:
+        leftover = parser.parse_known_args(argv)[1]
+        if leftover:
+            raise BlessError(
+                f'bless takes no arguments, so {leftover[0]!r} is not a mode.\n'
+                'The gate always runs first and then asks, so run ./bless and '
+                'type test or publish at the prompt.')
         version = read_version()
-        say('bless', f'{NAME} {version} ({arguments.mode or "dry run"})')
-        if arguments.mode == 'test':
-            rehearse(version)
-            return 0
+        say('bless', f'{NAME} {version}')
         facts = preflight(version)
         say('preflight', f'clean tree at {facts["sha"]} on {facts["branch"]}')
         public = check_index(version)
@@ -860,15 +981,24 @@ def main(argv: list[str] | None = None) -> int:
         check(wheel, sdist)
         smoke(wheel, version)
         plan = branch_stage(facts['branch'])
+        checklist(version, facts, public, wheel, sdist, plan)
 
-        if arguments.mode != 'publish':
-            checklist(version, facts, public, wheel, sdist, plan)
+        mode = ask_mode()
+        if not mode:
+            say('stop', 'nothing was tagged, uploaded or pushed')
+            return 0
+        if mode == 'test':
+            rehearse(version)
             return 0
 
         align_branches(plan, facts['branch'])
         tag(version)
         upload(wheel, sdist, version)
-        verify_index(version, wheel)
+        verify_index(version, wheel, advice=(
+            f'The tag v{version} exists locally and PyPI has both files, so '
+            'only the push is left:\n'
+            f'  git push origin {facts["branch"]} '
+            f'{"dev" if facts["branch"] == "main" else "main"} v{version}'))
         publish_git(version, facts['branch'],
                     'dev' if facts['branch'] == 'main' else 'main')
     except BlessError as exc:

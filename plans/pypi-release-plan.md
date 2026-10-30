@@ -1,11 +1,11 @@
 # F1 re-evaluation and the `./bless` release gate
 
-Status: **implemented.** The entry point is `./bless` (a verb, and the default
-is a dry run), backed by `tests/inspect_dist.py` and tested by
+Status: **implemented.** The entry point is `./bless` (a verb, and it takes no
+arguments), backed by `tests/inspect_dist.py` and tested by
 `tests/test_bless.py`. This document stays as the specification the script
 follows; `tests/AUDIT.md` describes the result. R1 was amended on 2026-10-30:
-`./bless test` rehearses the upload on TestPyPI, without touching the path to
-PyPI.
+answering `test` at the prompt rehearses the upload on TestPyPI, without
+touching the path to PyPI.
 
 ---
 
@@ -13,7 +13,7 @@ PyPI.
 
 | # | Requirement | Consequence for the design |
 |---|---|---|
-| R1 | **Amended 2026-10-30.** Originally "no TestPyPI, no staging index". A rehearsal is welcome, provided the real upload stays local and the rehearsal cannot consume a version, a tag or a token meant for PyPI | `./bless test` builds `X.Y.Z.99.N` from a copy of the tree and uploads it to `test.pypi.org` under its own token variable; the `publish` path never reads any of that |
+| R1 | **Amended 2026-10-30.** Originally "no TestPyPI, no staging index". A rehearsal is welcome, provided the real upload stays local and the rehearsal cannot consume a version, a tag or a token meant for PyPI | Answering `test` builds `X.Y.Z.99.N` from a copy of the tree and uploads it to `test.pypi.org` under its own token variable; the `publish` path never reads any of that |
 | R2 | Releases are run by hand from the development tree, low ceremony, owner-controlled | **No publish job in CI.** CI stays a gate. One local entry point does the whole release |
 | R3 | License is unconstrained; reuse is a non-goal | Stay on MIT, but express it the way current packaging expects (PEP 639 / SPDX) instead of the deprecated table form |
 | R4 | Work happens on `main`; `dev` exists only for an overhaul like this one | A release must leave `main` and `dev` identical at the tagged commit. `publish` aligns them itself rather than relying on the owner to remember |
@@ -90,47 +90,62 @@ flowchart TD
     M --> O["push current branch, the other branch, the tag"]
 ```
 
-`./bless` is a **full dry run**: the mandatory duplicate check first, then
-every remaining stage, then a printed checklist of exactly what `publish`
-would fast-forward, tag, upload and push. `./bless publish` runs the same
-stages and, only if all of them pass, does the irreversible part.
+`./bless` runs the **whole gate, always**: the mandatory duplicate check first,
+then every remaining stage, then a printed checklist of exactly what `publish`
+would fast-forward, tag, upload and push. Only then does it ask
 
-The duplicate check is deliberately early and unconditional. In every mode
-`bless` reads the JSON index it is about to write to -- PyPI for a release,
-TestPyPI for a rehearsal -- before it builds anything, refuses when the version
-it would upload is already present, and prints **every published version** in
-the refusal. An upload cannot be replaced, so learning that the version exists
-must not cost a build or a failed upload. A 404 from that endpoint is read as
-"nothing published yet", which is what either index answers before a project's
-first upload.
+```
+====> Enter test or publish or quit:
+```
 
-`./bless test` is the third mode and the newest. It exists because one thing can
+and `test` or `publish` decides what happens to the tree that just passed. The
+order is the point: the slow, careful part can never be skipped, and it is never
+paid twice.
+
+**Amended 2026-10-30: the mode is an answer, not an argument.** The script
+formerly took `test` or `publish` on the command line and, with neither, was a
+dry run. That made the dry run a third thing to remember, and it let the other
+two skip reading the verdict. Asking after the gate collapses all three into
+one. The answer has to be typed in full -- `test` and `publish` are one
+keystroke away from nothing at all -- and anything else asks again, so a stray
+character can neither publish nor cancel. Enter, `quit` and Ctrl-C all stop with
+nothing tagged, uploaded or pushed. A command-line argument is refused rather
+than reinterpreted, so `./bless publish` out of habit reports where the choice
+lives instead of deciding anything.
+
+The duplicate check is deliberately early and unconditional. On every run
+`bless` reads PyPI's JSON -- the index an upload would write to -- before it
+builds anything, refuses when the version it would upload is already present,
+and prints **every published version** in the refusal. A rehearsal does the same
+against TestPyPI for the throwaway version before sending it. An upload cannot
+be replaced, so learning that the version exists must not cost a build or a
+failed upload. A 404 from that endpoint is read as "nothing published yet",
+which is what either index answers before a project's first upload.
+
+`test` is the rehearsal and the newest part. It exists because one thing can
 never be checked locally: whether the index accepts the file. It uploads a
 throwaway `X.Y.Z.99.N` to TestPyPI and stops there -- 3.3 explains each choice.
 
 There is no other flag. `--upload --tag --push` were three spellings of one
 intent that always had to be typed together, so the script now takes the intent.
 
-`publish` does not prompt for confirmation. The confirmation is the dry run plus
-the typed word: a prompt is satisfied by reflex about as easily as a subcommand,
-and it is one more way to stop the run halfway through.
-
 ### 3.1 Stages and their refusals
 
-| Stage | Refuses when | Runs in |
+| Stage | Refuses when | Runs |
 |---|---|---|
-| preflight | working tree dirty (every mode); `HEAD` detached or already tagged `v<version>` (release modes); `twine < 7` or a `packaging` that cannot parse Metadata 2.5; `python -m build` unavailable | all three |
-| index-check | `pwr_tray.<version>` already appears in the target index's JSON `releases` map; the refusal lists every published version (read-only, before the gate and before anything is built or uploaded). A 404 reads as "nothing published yet" | all three |
-| gates | ruff, `compileall` or pytest fail (same three gates as CI, same interpreter) | all three |
-| build | builds into `build/bless-<version>/`, or `build/bless-test-<version>/` from a copy of the tree for a rehearsal; both wiped first, so nothing older can be uploaded | all three |
-| inspect | summary != `pyproject` description; version != the version being built; `Requires-Python` != `>=3.11`; `Requires-Dist` set differs from the three declared; `pydbus` present; resources or systemd units missing from the wheel; `tests/` missing from the sdist; `__pycache__`, `.venv` or `tests/` present in the wheel | all three |
-| check | `twine check --strict` fails | all three |
-| smoke | the freshly built wheel does not print the version it was built with from `--version`, or `--list-des` does not list `sway-wayland` | all three |
-| branch-check | 3.2 below: not on `main` or `dev`, detached `HEAD`, the two branches diverged, or a push target that is not an ancestor of `HEAD` | publish (dry run prints the verdict) |
-| tag | `git tag v<version>` fails because the tag exists locally after all | publish |
-| upload | `twine upload` returns non-zero; on PyPI the tag from the previous stage is deleted again | test, publish |
-| verify-index | after upload, the JSON does not report that version, or the summary / `requires_python` / `Requires-Dist` / keywords differ, or the index wheel's SHA256 differs from the uploaded file | test, publish |
-| publish-git | any push is rejected | publish |
+| preflight | working tree dirty; `HEAD` detached or already tagged `v<version>`; `twine < 7` or a `packaging` that cannot parse Metadata 2.5; `python -m build` unavailable | before the prompt, every run |
+| index-check | `pwr_tray.<version>` already appears in PyPI's JSON `releases` map; the refusal lists every published version (read-only, before the gate and before anything is built or uploaded). A 404 reads as "nothing published yet" | before the prompt, every run; and against TestPyPI for the throwaway version before a rehearsal sends it |
+| gates | ruff, `compileall` or pytest fail (same three gates as CI, same interpreter) | before the prompt, every run |
+| build | builds into `build/bless-<version>/`, or `build/bless-test-<version>/` from a copy of the tree for a rehearsal; both wiped first, so nothing older can be uploaded | before the prompt (the release build); after `test` (the throwaway one) |
+| inspect | summary != `pyproject` description; version != the version being built; `Requires-Python` != `>=3.11`; `Requires-Dist` set differs from the three declared; `pydbus` present; resources or systemd units missing from the wheel; `tests/` missing from the sdist; `__pycache__`, `.venv` or `tests/` present in the wheel | before the prompt, and again on the rehearsal's copy |
+| check | `twine check --strict` fails | before the prompt, and again on the rehearsal's copy |
+| smoke | the freshly built wheel does not print the version it was built with from `--version`, or `--list-des` does not list `sway-wayland` | before the prompt, and again on the rehearsal's copy |
+| branch-check | 3.2 below: not on `main` or `dev`, detached `HEAD`, the two branches diverged, or a push target that is not an ancestor of `HEAD` | before the prompt; the verdict is in the checklist |
+| prompt | the answer is not exactly `test`, `publish` or `quit`, and is not empty. An unrecognised answer asks again | after the checklist, every run |
+| tag | `git tag v<version>` fails because the tag exists locally after all | after `publish` |
+| upload | `twine upload` returns non-zero; on PyPI the tag from the previous stage is deleted again | after `test`, after `publish` |
+| verify-index | after upload, the JSON does not report that version, or the summary / `requires_python` / `Requires-Dist` / keywords differ, or the index wheel's SHA256 differs from the uploaded file | after `test`, after `publish` |
+| publish-git | any push is rejected | after `publish` |
 
 ### 3.2 The branch model, enforced before tagging (R4)
 
@@ -150,15 +165,16 @@ anything.
 
 Both branches are local refs, so aligning them is free, instant and reversible.
 Only the pushes at the end touch the network, and each is a fast-forward of a
-ref that already existed. The dry run prints the same verdict ("would
-fast-forward `main` to `99a9472`") without moving anything.
+ref that already existed. The checklist prints the same verdict ("would
+fast-forward `main` to `99a9472`") without moving anything, and the prompt is
+asked afterwards.
 
 State at the time of writing, for reference: `main` and `origin/main` are both
 `b1b9735`, `dev` is `99a9472` and 29 commits ahead, and `origin/dev` trails it by
 the same 29. So the first `publish` puts the overhaul on the default branch as a
 by-product of releasing it.
 
-### 3.3 The TestPyPI rehearsal (`./bless test`, R1 as amended)
+### 3.3 The TestPyPI rehearsal (`test` at the prompt, R1 as amended)
 
 A staging index would catch: (a) a malformed distribution, (b) a version that
 already exists, (c) a `pip install` that resolves to something broken, (d) the
@@ -181,14 +197,15 @@ It is deliberately not a release:
 | The build comes from a copy of the tree with `__version__` rewritten | the working tree stays clean and honest; nothing is committed that was only true for a rehearsal |
 | No tag, no branch, no push | a rehearsal must be free to fail, and must never look like a release in `git log` |
 
-What it proves is the upload path: the same gates, the same inspector, the same
-smoke install, then a real `twine upload` against a real index, then the JSON
-verification (digest and metadata), then a `pip install` line a user could paste
+What it proves is the upload path: the gate has already passed on the tree, the
+inspector and the smoke install run again on the copy that is actually sent,
+and then a real `twine upload` goes to a real index, followed by the JSON
+verification (digest and metadata) and a `pip install` line a user could paste
 -- starting with `pip cache purge`, because pip caches an index it has already
 read, and falling back to PyPI for dependencies, which TestPyPI does not carry.
 
 What it does not prove is that PyPI behaves like TestPyPI, and it is no
-substitute for reading the dry-run checklist. The residual risk the local script
+substitute for reading the checklist the gate prints. The residual risk the local script
 removes that neither index could: uploading a *stale* file, because it uploads
 two explicitly named paths, not `dist/*`. As a fallback, if PyPI ever rejects a
 Metadata 2.5 field, the pin to `flit_core<4` emits Metadata 2.4, and the script
@@ -237,9 +254,9 @@ added, so nothing extra ships in the wheel.
 ### 4.3 `./bless`
 
 Root-level executable `python3` script, in the style of `runner`: module
-docstring stating the contract, one positional argument with three choices
-(`test`, `publish`, or nothing for the dry run), no flags, no third-party
-imports beyond `twine` and `build` being *present as executables*. Stage
+docstring stating the contract, no positional argument and no flags, one
+question asked after the gate (`test`, `publish`, or nothing to stop), no
+third-party imports beyond `twine` and `build` being *present as executables*. Stage
 functions are pure enough to test: `preflight()`, `check_index()`, `gates()`,
 `build()`, `build_for_test()`, `inspect_dist()`, `check()`, `smoke()`,
 `branch_plan()`, `branch_stage()`, `align_branches()`, `tag()`, `upload()`,
@@ -271,6 +288,23 @@ token into a *copy* of the environment as `TWINE_PASSWORD`, which is what keeps
 a PyPI token out of a TestPyPI upload when both are configured on one machine
 -- the earlier draft relied on twine picking up whichever variable happened to
 be set, and `TWINE_PASSWORD` would have won in the rehearsal.
+
+`verify_index()` waits, and how long it waits is a design decision, not a
+detail. Observed on 2026-10-30: an accepted TestPyPI upload left the JSON API
+answering 404 for the project for longer than the original three-seconds-ten-
+times loop, so a real, uploaded release was reported as "did not confirm". Both
+indexes are fronted by a CDN, and the same lag applies to PyPI, where a false
+negative after an irreversible upload is worse than a slow gate. So the read is
+cache-busted (`?bless=<ns>` plus `Cache-Control: no-cache`, because the
+pre-flight duplicate check has just cached the 404), it polls on
+`VERIFY_SCHEDULE` for `VERIFY_BUDGET` (about fifteen minutes) printing the
+elapsed time and the current state, and `_index_lag()` distinguishes the three
+states that matter: the project is missing, the release is missing from
+`releases`, or the release is listed while the `info` block still describes the
+previous version -- only the last of which is compared field by field, since
+`info` always describes the *latest* release. Running out of patience is
+reported as lag, with the project page and the remaining step for that mode
+(`advice`), never as a failed upload.
 
 `check_index()` takes the parsed JSON as an optional argument so its refusal is
 testable without a network. It runs immediately after `preflight()` in every
@@ -334,8 +368,8 @@ remote, and it keeps the decision out of the shell-outs that act on it.
   superseded entry point;
 * no file in the repository, and no documented command, uploads the whole
   `dist/` directory;
-* `README-DEV.md` describes the rehearsal: `./bless test`, `test.pypi.org`, its
-  token variable and the `--extra-index-url` fallback.
+* `README-DEV.md` describes the rehearsal: answering `test` at the prompt,
+  `test.pypi.org`, its token variable and the `--extra-index-url` fallback.
 
 ### 4.5 CI: gate only, never publish
 
@@ -368,8 +402,9 @@ What remains manual, once:
 * `git tag -d latest` and `git push origin :refs/tags/latest` -- the tag points
   at a 2024 commit and is not a version.
 
-Then the first real release: `./bless` (read the checklist), `./bless test`
-(install the rehearsal build and use it), `./bless publish`.
+Then the first real release: `./bless`, read the checklist, answer `test` and
+install the rehearsal build to use it; then run `./bless` again and answer
+`publish`.
 
 ---
 
@@ -378,7 +413,7 @@ Then the first real release: `./bless` (read the checklist), `./bless test`
 * No CI publish job, no Trusted Publishing, no OIDC, no protected environment:
   a single maintainer auditing two named files locally is stronger than a
   workflow that can only see what it just built.
-* No TestPyPI *dependency*: `./bless test` is optional, throwaway and never
+* No TestPyPI *dependency*: answering `test` is optional, throwaway and never
   read by the `publish` path, which still works with no network access to
   `test.pypi.org` at all.
 * No automatic version bumping: the rehearsal's `N` comes from the index, and
@@ -392,8 +427,8 @@ Then the first real release: `./bless` (read the checklist), `./bless test`
 
 | Risk | Mitigation |
 |---|---|
-| 2.0.0 upload is irreversible | dry run is the default and prints every stage's verdict; `./bless test` rehearses the same upload on TestPyPI first; the duplicate check runs before any byte is sent; the script uploads two named files, never `dist/*`; PyPI yank is the only real undo |
-| PyPI rejects a Metadata 2.5 field | precedent shows 2.5 is accepted; `./bless test` finds out on TestPyPI first; error message in `./bless` names the `flit_core<4` fallback |
+| 2.0.0 upload is irreversible | the gate runs before any answer can be given and prints every stage's verdict; answering `test` rehearses the same upload on TestPyPI first; the duplicate check runs before any byte is sent; the script uploads two named files, never `dist/*`; PyPI yank is the only real undo |
+| PyPI rejects a Metadata 2.5 field | precedent shows 2.5 is accepted; answering `test` finds out on TestPyPI first; error message in `./bless` names the `flit_core<4` fallback |
 | A user installs an `X.Y.Z.99.N` rehearsal and reports a bug in it | it is only reachable through TestPyPI, it is never tagged, and the `99` in the version says what it is |
 | A release from an uncommitted tree makes the tag a lie | preflight requires a clean tree |
 | Local validator older than local builder | `twine>=7` / `packaging>=26` floors, asserted by the script and by a test |

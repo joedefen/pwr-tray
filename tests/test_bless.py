@@ -1,10 +1,11 @@
 """Tests for the release gate: `./bless` and the shared distribution inspector.
 
 No network, no builds, no uploads.  What is exercised here is the part that
-must not be wrong when the command is run for real: the duplicate check (in
-both modes, before anything is built), the pure branch decision, the dry run's
-refusal to reach an irreversible command, and the inspector's ability to
-reject a wheel that lies about itself.
+must not be wrong when the command is run for real: the duplicate check (on
+every run, before anything is built), the prompt that decides what happens to a
+tree that passed (exact answers only, and nothing typed can publish), the pure
+branch decision, and the inspector's ability to reject a wheel that lies about
+itself.
 """
 
 import importlib.machinery
@@ -94,50 +95,131 @@ def test_a_missing_index_is_a_refusal_and_not_a_blind_upload(monkeypatch):
         bless.check_index('2.0.0')
 
 
-# --- dry run vs publish -----------------------------------------------------
+# --- the gate, and the question it ends with --------------------------------
 
 def stub_stages(monkeypatch, calls, plan=None):
+    """Replace every stage `main()` drives, recording the ones that ran."""
     monkeypatch.setattr(bless, 'preflight',
                         lambda version: {'branch': 'dev', 'sha': 'deadbee'})
-    monkeypatch.setattr(bless, 'check_index', lambda version: ['1.0.12'])
+    monkeypatch.setattr(bless, 'check_index', lambda *a, **k: ['1.0.12'])
     monkeypatch.setattr(bless, 'gates', lambda: calls.append('gates'))
     monkeypatch.setattr(bless, 'build', lambda version: (
         ROOT / 'build' / 'pwr_tray-2.0.0-py3-none-any.whl',
         ROOT / 'build' / 'pwr_tray-2.0.0.tar.gz'))
-    monkeypatch.setattr(bless, 'inspect_dist', lambda w, s: calls.append('inspect'))
+    monkeypatch.setattr(bless, 'build_for_test', lambda v: (
+        ROOT / 'build' / f'pwr_tray-{v}-py3-none-any.whl',
+        ROOT / 'build' / f'pwr_tray-{v}.tar.gz'))
+    monkeypatch.setattr(
+        bless, 'fetch_index',
+        lambda target=bless.PYPI: pypi_document(f'{VERSION}.99.3'))
+    monkeypatch.setattr(bless, 'inspect_dist',
+                        lambda w, s, v=None: calls.append(('inspect', v)))
     monkeypatch.setattr(bless, 'check', lambda w, s: calls.append('check'))
-    monkeypatch.setattr(bless, 'smoke', lambda w, v: calls.append('smoke'))
+    monkeypatch.setattr(bless, 'smoke', lambda w, v: calls.append(('smoke', v)))
     monkeypatch.setattr(bless, 'branch_stage',
                         lambda branch: plan or {'align': 'main'})
     monkeypatch.setattr(bless, 'align_branches', lambda p, b: calls.append('align'))
     monkeypatch.setattr(bless, 'tag', lambda v: calls.append('tag'))
-    monkeypatch.setattr(bless, 'upload', lambda w, s, v: calls.append('upload'))
-    monkeypatch.setattr(bless, 'verify_index', lambda v, w: calls.append('verify'))
+    monkeypatch.setattr(bless, 'upload',
+                        lambda w, s, v, target=bless.PYPI:
+                        calls.append(('upload', v, target)))
+    monkeypatch.setattr(bless, 'verify_index',
+                        lambda v, w, target=bless.PYPI, **kw:
+                        calls.append(('verify', v, target)))
     monkeypatch.setattr(bless, 'publish_git',
                         lambda v, b, o: calls.append('push'))
 
 
-def test_the_default_mode_is_a_dry_run_that_touches_nothing(monkeypatch, capsys):
+def answer(monkeypatch, *replies):
+    """Feed the prompt one answer per question, recording each prompt shown."""
+    pending = iter(replies)
+    prompts = []
+
+    def fake_input(prompt=''):
+        prompts.append(prompt)
+        try:
+            return next(pending)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr('builtins.input', fake_input)
+    return prompts
+
+
+def sent_anything(calls):
+    """The stages that leave the machine, whatever they were called with."""
+    return {name for name in ('upload', 'verify')
+            if name in calls or name in {c[0] for c in calls if isinstance(c, tuple)}}
+
+
+def moved_git(calls):
+    return {name for name in ('align', 'tag', 'push') if name in calls}
+
+
+def test_the_gate_runs_in_full_before_the_question_is_asked(monkeypatch, capsys):
     calls = []
     stub_stages(monkeypatch, calls)
+    prompts = answer(monkeypatch)          # nothing typed, so end of input
 
     assert bless.main([]) == 0
-    assert 'gates' in calls and 'inspect' in calls and 'smoke' in calls
-    assert not {'align', 'tag', 'upload', 'verify', 'push'} & set(calls)
+    assert 'gates' in calls and ('smoke', VERSION) in calls
+    assert not sent_anything(calls) and not moved_git(calls)
 
     output = capsys.readouterr().out
-    assert 'DRY RUN' in output
-    assert './bless publish' in output
-    assert 'not published' in output
+    assert 'Every gate passed' in output
+    assert 'nothing was tagged, uploaded or pushed' in output
+    # The question came after the gate, and it is the only one asked.
+    assert prompts == [bless.MODE_PROMPT]
 
 
-def test_publish_reaches_the_irreversible_stages_in_order(monkeypatch):
+def test_the_prompt_is_the_three_words_the_owner_asked_for():
+    assert bless.MODE_PROMPT == '\n\n\n====> Enter test or publish or quit: '
+
+
+def test_publish_at_the_prompt_reaches_the_irreversible_stages_in_order(monkeypatch):
     calls = []
     stub_stages(monkeypatch, calls)
+    answer(monkeypatch, 'publish')
 
-    assert bless.main(['publish']) == 0
-    assert calls.index('align') < calls.index('tag') < calls.index('upload')
-    assert calls.index('upload') < calls.index('verify') < calls.index('push')
+    assert bless.main([]) == 0
+    order = ['align', 'tag', ('upload', VERSION, bless.PYPI),
+             ('verify', VERSION, bless.PYPI), 'push']
+    positions = [calls.index(step) for step in order]
+    assert positions == sorted(positions)
+
+
+def test_a_stray_answer_is_asked_again_instead_of_deciding(monkeypatch, capsys):
+    calls = []
+    stub_stages(monkeypatch, calls)
+    prompts = answer(monkeypatch, 'pUblish', 'pub', 'quit')
+
+    assert bless.main([]) == 0
+    assert len(prompts) == 3
+    assert not sent_anything(calls)
+
+    output = capsys.readouterr().out
+    assert "'pUblish' is not test, publish or quit" in output
+    assert "'pub' is not test, publish or quit" in output
+
+
+@pytest.mark.parametrize('ending', [KeyboardInterrupt, EOFError])
+def test_ctrl_c_and_the_end_of_input_stop_with_nothing_sent(
+        monkeypatch, capsys, ending):
+    calls = []
+    stub_stages(monkeypatch, calls)
+    monkeypatch.setattr('builtins.input',
+                        lambda prompt='': (_ for _ in ()).throw(ending()))
+
+    assert bless.main([]) == 0
+    assert not sent_anything(calls) and not moved_git(calls)
+    assert 'nothing was tagged, uploaded or pushed' in capsys.readouterr().out
+
+
+def test_bless_takes_no_arguments_and_says_where_the_choice_is(monkeypatch, capsys):
+    monkeypatch.setattr(bless, 'preflight', lambda *a, **k: pytest.fail('reached'))
+
+    assert bless.main(['publish']) == 1
+    assert 'takes no arguments' in capsys.readouterr().err
 
 
 def test_upload_refuses_without_a_token_before_starting_twine(monkeypatch):
@@ -332,57 +414,31 @@ def test_a_copy_without_a_version_line_is_refused(tmp_path):
         bless._set_version(tmp_path, f'{VERSION}.99.0')
 
 
-def stub_rehearsal(monkeypatch, calls):
-    """Record the stages `bless test` reaches, and the version it passes on."""
-    candidate = f'{VERSION}.99.4'
-    artifacts = (ROOT / 'build' / f'pwr_tray-{candidate}-py3-none-any.whl',
-                 ROOT / 'build' / f'pwr_tray-{candidate}.tar.gz')
-    monkeypatch.setattr(bless, 'preflight',
-                        lambda version, **kw: {'branch': 'dev', 'sha': 'deadbee'})
-    monkeypatch.setattr(
-        bless, 'fetch_index',
-        lambda target=bless.PYPI: pypi_document(f'{VERSION}.99.3'))
-    monkeypatch.setattr(bless, 'gates', lambda: calls.append('gates'))
-    monkeypatch.setattr(bless, 'build_for_test',
-                        lambda v: calls.append(('build', v)) or artifacts)
-    monkeypatch.setattr(bless, 'inspect_dist',
-                        lambda w, s, v=None: calls.append(('inspect', v)))
-    monkeypatch.setattr(bless, 'check', lambda w, s: calls.append('check'))
-    monkeypatch.setattr(bless, 'smoke', lambda w, v: calls.append(('smoke', v)))
-    monkeypatch.setattr(bless, 'upload',
-                        lambda w, s, v, target=bless.PYPI:
-                        calls.append(('upload', v, target)))
-    monkeypatch.setattr(bless, 'verify_index',
-                        lambda v, w, target=bless.PYPI:
-                        calls.append(('verify', v, target)))
-    for name in ('tag', 'untag'):
-        monkeypatch.setattr(bless, name, lambda v, _n=name: calls.append(_n))
-    monkeypatch.setattr(bless, 'align_branches', lambda p, b: calls.append('align'))
-    monkeypatch.setattr(bless, 'publish_git', lambda *a: calls.append('push'))
-
-
 def test_test_mode_uploads_a_dotted_version_to_testpypi_only(monkeypatch, capsys):
     calls = []
-    stub_rehearsal(monkeypatch, calls)
+    stub_stages(monkeypatch, calls)
+    answer(monkeypatch, 'test')
 
-    assert bless.main(['test']) == 0
+    assert bless.main([]) == 0
 
     candidate = f'{VERSION}.99.4'
-    assert ('build', candidate) in calls
     assert ('inspect', candidate) in calls
     assert ('smoke', candidate) in calls
     assert ('upload', candidate, bless.TESTPYPI) in calls
     assert ('verify', candidate, bless.TESTPYPI) in calls
     # The rehearsal leaves git alone: no tag, no branch, no push.
-    reached = {call for call in calls if isinstance(call, str)}
-    assert not {'tag', 'untag', 'align', 'push'} & reached
+    assert not moved_git(calls)
     assert 'pip cache purge' in capsys.readouterr().out
 
 
-def test_test_and_publish_are_exclusive(monkeypatch):
-    monkeypatch.setattr(bless, 'preflight', lambda *a, **k: pytest.fail('reached'))
-    with pytest.raises(SystemExit):
-        bless.main(['test', 'publish'])
+def test_the_rehearsal_does_not_repeat_the_gate_it_just_passed(monkeypatch):
+    """The gate ran before the prompt, so `test` adds only the throwaway build."""
+    calls = []
+    stub_stages(monkeypatch, calls)
+    answer(monkeypatch, 'test')
+
+    assert bless.main([]) == 0
+    assert calls.count('gates') == 1
 
 
 def test_the_install_hint_purges_the_cache_and_falls_back_to_pypi(capsys):
@@ -658,6 +714,104 @@ def test_the_post_upload_verification_compares_what_the_index_reports(monkeypatc
     joined = '; '.join(bless._metadata_mismatches(VERSION, wheel, bad))
     for field in ('SHA256', 'summary', 'requires_python', 'Requires-Dist', 'keywords'):
         assert field in joined, field
+
+
+# --- a slow index is lag, never a failed upload ------------------------------
+
+def matching_document(version, wheel):
+    """What the index serves once it has caught up with `wheel`."""
+    import hashlib
+
+    digest = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
+    return {
+        'info': {
+            'version': version,
+            'summary': PROJECT['description'],
+            'requires_python': PROJECT['requires-python'],
+            'requires_dist': [*PROJECT['dependencies'],
+                              'pytest>=7; extra == "dev"'],
+            'keywords': ', '.join(PROJECT['keywords']),
+        },
+        'releases': {version: [
+            {'packagetype': 'bdist_wheel', 'digests': {'sha256': digest}}]},
+    }
+
+
+def test_verification_waits_out_a_slow_index_instead_of_blaming_the_upload(
+        monkeypatch, tmp_path, capsys):
+    """A 404 right after an accepted upload is the CDN, not the release."""
+    wheel = tmp_path / 'w.whl'
+    wheel.write_bytes(b'wheel-bytes')
+    answers = [(None, ''), (None, ''), (matching_document(VERSION, wheel), '')]
+    monkeypatch.setattr(bless, '_read_json', lambda *a, **k: answers.pop(0))
+    monkeypatch.setattr(bless.time, 'sleep', lambda seconds: None)
+
+    bless.verify_index(VERSION, wheel, bless.TESTPYPI, advice='do not resend')
+
+    output = capsys.readouterr().out
+    assert 'matching metadata' in output
+    # "reading it as empty" is the pre-flight's phrase, not the verifier's.
+    assert 'reading it as empty' not in output
+    assert answers == []
+
+
+def test_verification_keeps_waiting_while_the_info_block_still_lags(
+        monkeypatch, tmp_path):
+    """The info block describes the latest release, not necessarily this one."""
+    wheel = tmp_path / 'w.whl'
+    wheel.write_bytes(b'wheel-bytes')
+    stale = matching_document(VERSION, wheel)
+    stale['info']['version'] = '1.0.12'
+    answers = [(stale, ''), (matching_document(VERSION, wheel), '')]
+    monkeypatch.setattr(bless, '_read_json', lambda *a, **k: answers.pop(0))
+    monkeypatch.setattr(bless.time, 'sleep', lambda seconds: None)
+
+    bless.verify_index(VERSION, wheel, bless.TESTPYPI)
+
+    assert answers == []
+
+
+def test_a_lagging_index_never_calls_an_accepted_upload_a_failure(
+        monkeypatch, tmp_path):
+    wheel = tmp_path / 'w.whl'
+    wheel.write_bytes(b'wheel-bytes')
+    monkeypatch.setattr(bless, '_read_json', lambda *a, **k: (None, ''))
+    monkeypatch.setattr(bless.time, 'sleep', lambda seconds: None)
+
+    with pytest.raises(bless.BlessError) as caught:
+        bless.verify_index(VERSION, wheel, bless.TESTPYPI,
+                           advice='run ./bless test for the next .99.N')
+
+    message = str(caught.value)
+    assert '404' in message
+    assert f'{bless.TESTPYPI["page"]}{VERSION}/' in message
+    assert 'cannot be withdrawn' in message
+    assert 'do not send this version again' in message
+    assert 'run ./bless test for the next .99.N' in message
+
+
+def test_the_post_upload_read_never_reuses_the_cached_answer(monkeypatch, tmp_path):
+    wheel = tmp_path / 'w.whl'
+    wheel.write_bytes(b'wheel-bytes')
+    seen = []
+
+    def fake_read(url, **options):
+        seen.append(options)
+        return None, ''
+
+    monkeypatch.setattr(bless, '_read_json', fake_read)
+    monkeypatch.setattr(bless.time, 'sleep', lambda seconds: None)
+
+    with pytest.raises(bless.BlessError):
+        bless.verify_index(VERSION, wheel, bless.TESTPYPI)
+
+    assert seen and all(options.get('bust') for options in seen)
+
+
+def test_the_verification_budget_covers_a_quarter_hour_of_lag():
+    """Both indexes have been taking minutes to list a new release."""
+    assert bless.VERIFY_BUDGET >= 15 * 60
+    assert len(bless.VERIFY_SCHEDULE) >= 10
 
 
 # --- the shared inspector ---------------------------------------------------
