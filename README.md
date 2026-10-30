@@ -22,7 +22,7 @@ With just a right-click and a left-click, you can do most operations such as cha
 
 ### Requirements
 * **Python** 3.11+ with **PyQt5** (5.15+) and **ruamel.yaml** (0.17+)
-* **systemd** (for `systemctl`, `loginctl`, `systemd-inhibit`)
+* **systemd** (for `systemctl`, `loginctl`, `systemd-inhibit`; the `--svc-*` verbs also need a reachable `systemd --user` manager)
 * **pipx** (recommended for installation)
 
 Per-DE requirements:
@@ -90,9 +90,9 @@ Per-DE requirements:
 | `--replace` | Replace the `pwr-tray` that is already running: terminate it and start in its place. Without this flag a second start refuses and exits. |
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
 | `--svc` / `--svc-status` | Report the `systemd --user` unit: installed, enabled, running. Exits `0` running, `1` installed-but-stopped, `2` not installed. |
-| `--svc-install` | Write the unit matching this desktop to `~/.config/systemd/user/`, reload, and enable it (does not start it now). |
-| `--svc-start` | `--svc-install` if needed, then enable and start it now. An already-running unit is left alone; use `--svc-restart` to load new code. |
-| `--svc-restart` | `--svc-install` if needed, then `systemctl --user restart` it, so the running applet is the one the unit's `ExecStart=` names. This is what applies an editable install or a `git pull`. |
+| `--svc-install` | Write the unit matching this desktop to `~/.config/systemd/user/`, reload, and enable it (does not start it now). This is the only verb that writes or enables the unit. |
+| `--svc-start` | Start the installed unit now. Enables it if it was disabled, so it returns at your next login; never writes the unit. An already-running unit is left alone; use `--svc-restart` to load new code. |
+| `--svc-restart` | `systemctl --user restart` the installed unit so the running applet is the one the unit's `ExecStart=` names. Never installs, enables, or rewrites the unit; if it names a different `pwr-tray`, run `--svc-install` first. This is what applies an editable install or a `git pull`. |
 | `--svc-stop` | Stop the unit. It stays enabled, so it returns at your next login. |
 | `--svc-uninstall` | Stop, disable and delete the unit. `config.ini`, picks and logs are kept. |
 | `-y`, `--yes` | Never prompt for the `--svc-*` verbs (needed when stdin is not a terminal). |
@@ -168,19 +168,21 @@ pwr-tray --svc-status                     # `runs:` names the unit's executable
 when that is not the `pwr-tray` on `$PATH`. When they disagree, the unit is
 stale -- typically it was installed from an activated virtualenv that holds a
 copied (non-editable) package, so the service keeps running a snapshot of the
-code no matter what the checkout says:
+code no matter what the checkout says. Rewrite it explicitly, then restart:
 
 ```
 pipx install --editable --force .         # make $PATH point at this checkout
-pwr-tray --svc-restart                    # rewrite the unit if stale, then restart
-pwr-tray --svc-status                     # active, and `runs:` is that executable
+pwr-tray --svc-install                   # rewrite the unit to that executable
+pwr-tray --svc-restart                   # restart on the rewritten unit
+pwr-tray --svc-status                    # active, and `runs:` is that executable
 ```
 
-`--svc-start` deliberately leaves an already-running, up-to-date unit alone.
-An editable install changes the code without changing the unit file, and a
-running Python process keeps the modules it imported at startup, so neither
-`--svc-install` nor `--svc-start` can apply it: **`--svc-restart` is the verb
-that applies a `pipx install --editable .` or a `git pull`.**
+`--svc-start` deliberately leaves an already-running, up-to-date unit alone,
+and neither `--svc-start` nor `--svc-restart` rewrites the unit. An editable
+install changes the code without changing the unit file, and a running Python
+process keeps the modules it imported at startup, so neither `--svc-install`
+nor `--svc-start` can apply it: **`--svc-restart` is the verb that applies a
+`pipx install --editable .` or a `git pull`.**
 
 ---
 
@@ -233,33 +235,41 @@ The config uses a three-layer merge: **defaults** → **session_type** (x11 or w
 
 ## Running pwr-tray as a systemd Service
 
-Instead of your DE/WM's own autostart, you can run `pwr-tray` as a `systemd --user` service. That restarts the applet if it exits and keeps its logging consistent regardless of how the session was started. The units ship inside the package, so installing one is a single command:
+Instead of your DE/WM's own autostart, you can run `pwr-tray` as a `systemd --user` service. That restarts the applet if it exits and keeps its logging consistent regardless of how the session was started. The `--svc-*` verbs require a reachable `systemd --user` manager: without one they refuse, and starting pwr-tray is your DE/WM's job (see the per-DE notes). The units ship inside the package, so installing one is a single command:
 
 ```
 pwr-tray --svc-status      # installed? enabled? running?
 pwr-tray --svc-install     # write the unit for this desktop and enable it
-pwr-tray --svc-start       # ...or do both and start it now
-pwr-tray --svc-restart     # install if needed, then restart (loads new code)
+pwr-tray --svc-start       # start it now (enables it if disabled)
+pwr-tray --svc-restart     # restart it (loads new code)
 pwr-tray --svc-stop        # stop it; it comes back at your next login
 pwr-tray --svc-uninstall   # stop, disable and delete the unit
 ```
 
-`--svc-restart` is how an update reaches the running applet. `--svc-install`
-only writes the unit when its text differs from the shipped one, and
-`--svc-start` leaves an active unit alone, so a `pipx install --editable .` or
-a `git pull` (which change the code, not the unit file) would otherwise keep
-running whatever the process imported at startup. `--svc-status` reports the
-executable the unit names, so all three layers can be checked at once.
+`--svc-install` is the only verb that commits the machine to a systemd unit:
+it writes the file when its text differs from the shipped one and enables it.
+`--svc-start` and `--svc-restart` operate only on an installed unit and never
+write it. `--svc-start` enables a disabled unit, so it is the one-command
+"run now and come back at login"; an already-active unit is left alone.
+`--svc-restart` is how an update reaches the running applet. A `pipx install
+--editable .` or a `git pull` changes the code, not the unit file, so neither
+install nor start can notice it: only a restart makes systemd load the modules
+the current checkout provides. If the installed unit names a different
+`pwr-tray` executable, start and restart refuse and tell you to run
+`--svc-install` first, because replacing the unit is that verb's decision.
+`--svc-status` reports the executable the unit names, so all three layers can
+be checked at once.
 
-`--svc-install` picks the unit for the detected desktop (`--de NAME` overrides the detection), substitutes the real path of the `pwr-tray` executable plus your live `WAYLAND_DISPLAY`/`DISPLAY`, writes `~/.config/systemd/user/pwr-tray.service`, reloads the manager and enables it. It does not start the applet, and it will not overwrite a unit you have edited without showing the difference first. `--yes` answers the question in advance; `--force` replaces or deletes a unit pwr-tray did not write.
+`--svc-install` picks the unit for the detected desktop (`--de NAME` overrides the detection), substitutes the real path of the `pwr-tray` executable plus your live `WAYLAND_DISPLAY`/`DISPLAY`, writes `~/.config/systemd/user/pwr-tray.service`, reloads the manager and enables it. It does not start the applet, and it will not overwrite a unit you have edited without showing the difference first. `--yes` answers the question in advance; `--force` replaces or deletes a unit pwr-tray did not write. `--svc-start` and `--svc-restart` never write the unit; `--svc-start` may enable a disabled one so it returns at login.
 
 The units append stdout/stderr to the applet's own log, `~/.config/pwr-tray/debug.log`, so the tray menu and `-f/--follow-log` always show what the applet is actually writing. `--svc-install` also creates that directory, and says so before it does. systemd does not create it: it fails every process of the unit with `EXIT_STDOUT` (`status=209/STDOUT`, "Failed to set up standard output") *before* `ExecStartPre=` is reached, so a unit installed without it never starts.
 
 `--svc-status` is meant for scripts: it exits `0` when the service is running, `1` when it is installed but stopped or failed, and `2` when no unit is installed. It names a failed unit as `failed` and points at `journalctl --user -xeu pwr-tray.service`.
 
 ```
-pwr-tray --svc-status || pwr-tray --svc-start --yes
+pwr-tray --svc-status || { pwr-tray --svc-install --yes && pwr-tray --svc-start --yes; }
 ```
+Because `--svc-start` requires an installed unit, the fallback installs (or confirms the install is current) first.
 
 The same units are readable in the source tree and in the wheel under [`pwr_tray/resources/systemd/`](pwr_tray/resources/systemd/). To install one by hand, copy it as `~/.config/systemd/user/pwr-tray.service`, then:
 
@@ -322,7 +332,7 @@ WantedBy=graphical-session.target
 
 * A `systemd --user` service is **not tied to a DE/WM**. With `WantedBy=graphical-session.target` it starts in *any* graphical session on your account, so on a machine where you switch between DEs it will also launch under the others (and, with `--de` forced, then act on the wrong session). To limit it, bind it to a WM-specific target or add a condition line such as `ConditionEnvironment=XDG_CURRENT_DESKTOP=sway`.
 * `systemd --user` does not inherit your session environment, so the variables above are set explicitly. `--svc-install` fills in the two that cannot be guessed: the absolute path of the `pwr-tray` executable and the `WAYLAND_DISPLAY`/`DISPLAY` your session actually uses.
-* Do **not** enable the service *and* a DE/WM autostart for the same session. A second launch exits with "another pwr-tray is already running" instead of starting a duplicate. The units pass `RestartPreventExitStatus=2 3`, so that refusal (exit 3) and a failed startup (exit 2: unknown desktop, missing resource, or a required command absent from `PATH`) are reported as a unit failure rather than retried; only transient exits are restarted, and `StartLimitIntervalSec`/`StartLimitBurst` stop a crash loop after five attempts in a minute. Pick one supervisor per session -- `--svc-start` notices an applet that is already running outside systemd and refuses with that explanation instead of installing a unit that would exit 3.
+* Do **not** enable the service *and* a DE/WM autostart for the same session. A second launch exits with "another pwr-tray is already running" instead of starting a duplicate. The units pass `RestartPreventExitStatus=2 3`, so that refusal (exit 3) and a failed startup (exit 2: unknown desktop, missing resource, or a required command absent from `PATH`) are reported as a unit failure rather than retried; only transient exits are restarted, and `StartLimitIntervalSec`/`StartLimitBurst` stop a crash loop after five attempts in a minute. Pick one supervisor per session -- `--svc-start` notices an applet that is already running outside systemd and refuses with that explanation instead of starting a unit that would exit 3.
 * Once the start rate limiter has tripped, the unit stays `failed` and a bare `systemctl --user start` is refused as "start request repeated too quickly" until the interval passes. `--svc-start` clears that first (`systemctl --user reset-failed`), so it is the reliable way to retry after fixing whatever failed -- including a log directory that a hand install forgot to create.
 * `--replace` is for an intentional hand-over (`setsid pwr-tray --replace` from a terminal). Do **not** put it in a unit's `ExecStart`: two supervisors that both pass it would keep terminating each other's instance.
 * Keep the standard `PATH` entries -- `pwr-tray` calls `systemctl`, `loginctl`, `swayidle`, `swaymsg`, and friends from `/usr/bin`.

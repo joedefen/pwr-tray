@@ -5,7 +5,9 @@ The unit files in ``pwr_tray/resources/systemd/`` are the single source of
 truth.  They ship inside the wheel (flit includes everything under the module
 directory), they are validated by ``tests/test_service_examples.py``, and
 ``--svc-install`` copies the one matching the current desktop to
-``~/.config/systemd/user/pwr-tray.service``.
+``~/.config/systemd/user/pwr-tray.service`` and is the only verb that writes
+or enables it.  ``--svc-start`` and ``--svc-restart`` operate on a unit that
+is already installed.
 
 Two facts are only knowable on the machine that performs the install -- where
 the ``pwr-tray`` executable actually lives, and which display the session is
@@ -380,23 +382,76 @@ def _running_outside_systemd(holder):
         ' autostart that started it (or quit that instance) and run this again')
 
 
+def _require_installed(status):
+    """Refuse a start/restart that has no unit to operate on."""
+    if not status.installed:
+        raise ServiceError(
+            f'{UNIT_NAME} is not installed; run pwr-tray --svc-install first')
+
+
+def _refuse_moved_unit(status, rendered):
+    """Refuse to start a unit that names a different pwr-tray executable.
+
+    Hand edits are legitimate and only produce a note, but an ``ExecStart=``
+    that points at another installation is how an editable checkout silently
+    keeps running a snapshot from an old virtualenv.  Installing is a
+    separate, explicit decision, so it is not made here.
+    """
+    if rendered is None:
+        return
+    try:
+        installed = installed_executable(read_unit(status.path))
+    except OSError:
+        return
+    wanted = installed_executable(rendered)
+    if installed and wanted and installed != wanted:
+        raise ServiceError(
+            f'{UNIT_NAME} runs {installed}, but pwr-tray is {wanted};'
+            ' run pwr-tray --svc-install to update the unit, then try again')
+
+
+def _note_stale_unit(plan, status, rendered):
+    """Point at --svc-install when the file differs, without changing it."""
+    if rendered is not None and status.installed and not status.up_to_date:
+        plan.notes.append(
+            f'{status.path} differs from the shipped unit;'
+            ' run pwr-tray --svc-install to update it')
+
+
 def plan_start(rendered, status, force=False, holder=None, env=None):
-    """Install if needed, enable, and start now."""
-    plan = plan_install(rendered, status, force=force, holder=holder, env=env)
+    """Enable if needed and start an installed unit; never writes the unit.
+
+    Installing is a separate, explicit act (``--svc-install``).  ``start``
+    only operates on the unit that is already installed, so it cannot
+    silently commit the machine to systemd.  It does enable a disabled unit:
+    "start" means "run now and come back at your next login".
+    """
+    _require_installed(status)
+    _refuse_moved_unit(status, rendered)
+    plan = Plan()
+    if status.failed:
+        plan.steps.append(Step(f'clear the failed state of {UNIT_NAME}',
+                               argv=systemctl('reset-failed', UNIT_NAME)))
+    if not status.enabled:
+        plan.steps.append(Step(f'enable {UNIT_NAME}',
+                               argv=systemctl('enable', UNIT_NAME)))
+        plan.notes.append(
+            f'{UNIT_NAME} was disabled; it is enabled so it returns at your'
+            ' next login')
     if status.active:
-        if status.up_to_date:
+        if status.up_to_date or rendered is None:
             plan.notes.append(f'{UNIT_NAME} is already running')
         else:
-            # The unit was rewritten above, but `start` on an active unit is a
-            # no-op: without a restart the old definition (and the old
-            # executable it names) keeps running.
-            plan.steps.append(Step(
-                f'restart {UNIT_NAME} to apply the new unit',
-                argv=systemctl('restart', UNIT_NAME),
-                hint=_systemd_hint()))
+            # `start` on an active unit is a no-op; restarting is a separate
+            # verb so that `start` never changes what is running.
+            plan.notes.append(
+                f'{UNIT_NAME} is already running; the installed unit differs'
+                ' from the shipped one, so run pwr-tray --svc-install to update'
+                ' it or pwr-tray --svc-restart to apply code changes')
         return plan
     if holder:
         raise _running_outside_systemd(holder)
+    _note_stale_unit(plan, status, rendered)
     plan.steps.append(Step(
         f'start {UNIT_NAME}',
         argv=systemctl('start', UNIT_NAME),
@@ -405,15 +460,28 @@ def plan_start(rendered, status, force=False, holder=None, env=None):
 
 
 def plan_restart(rendered, status, force=False, holder=None, env=None):
-    """Install if needed, enable, and restart so the unit runs this tree now.
+    """Restart an installed unit so it runs the code its ``ExecStart=`` names.
 
     An editable install changes the *code* without changing the unit file, so
     neither ``--svc-install`` nor ``--svc-start`` can notice it: only a
     restart makes systemd load the modules the current checkout provides.
+    A restart does not install, enable, or rewrite the unit; a unit that names
+    a different executable is refused, because replacing it is what
+    ``--svc-install`` is for.
     """
-    plan = plan_install(rendered, status, force=force, holder=holder, env=env)
+    _require_installed(status)
+    _refuse_moved_unit(status, rendered)
+    plan = Plan()
+    if status.failed:
+        plan.steps.append(Step(f'clear the failed state of {UNIT_NAME}',
+                               argv=systemctl('reset-failed', UNIT_NAME)))
     if holder and not status.active:
         raise _running_outside_systemd(holder)
+    _note_stale_unit(plan, status, rendered)
+    if not status.enabled:
+        plan.notes.append(
+            f'{UNIT_NAME} is not enabled; it runs now but will not return at'
+            ' your next login (run pwr-tray --svc-install to enable it)')
     plan.steps.append(Step(
         f'restart {UNIT_NAME}',
         argv=systemctl('restart', UNIT_NAME),
@@ -518,10 +586,11 @@ def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
             'no systemd user manager is reachable (is this a systemd system?);'
             ' use your desktop autostart instead')
 
-    rendered = None
-    if verb != 'uninstall':
+    if verb == 'install':
         rendered = rendered_unit(desktop, env, script=script)
     else:
+        # start/restart/stop/uninstall must work on an installed unit even
+        # when the current pwr-tray is not on $PATH, so rendering is advisory.
         rendered = _rendered_if_possible(desktop, env, script)
 
     status = probe(rendered=rendered, env=env, run=run)

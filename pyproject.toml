@@ -25,14 +25,17 @@
 #   pipx install --editable --force .   # $PATH -> this checkout
 #   pwr-tray --version                  # must print pwr_tray.__version__
 #   pwr-tray --svc-status               # `runs:` must be that executable
-#   pwr-tray --svc-restart              # rewrite a stale unit, then restart
+#   pwr-tray --svc-install              # rewrite a stale unit (explicit)
+#   pwr-tray --svc-restart              # restart on the rewritten unit
 #   pwr-tray --svc-status               # active, and running the right file
 #   pwr-tray --follow-log               # watch what it actually says
 #
 # An editable install changes the code, not the unit file, and a running
 # Python process keeps the modules it imported at startup: `--svc-install`
 # and `--svc-start` cannot notice either change.  `--svc-restart` is the verb
-# that applies a `pipx install --editable .` or a `git pull`.
+# that applies a `pipx install --editable .` or a `git pull`.  A unit that
+# names a different executable is refused by start/restart; run
+# `--svc-install` first.
 #
 # Do not run `--svc-install` from an activated project virtualenv: the unit
 # records the absolute path of the `pwr-tray` that `which` finds there, and

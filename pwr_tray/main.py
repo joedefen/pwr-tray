@@ -1383,14 +1383,16 @@ def main():
             help='report the systemd --user unit state, then exit')
     svc.add_argument('--svc-install', dest='svc', action='store_const',
             const='install',
-            help='write the unit for this desktop and enable it (not started)')
+            help='write the unit for this desktop and enable it (not started);'
+                 ' only this verb writes the unit')
     svc.add_argument('--svc-start', dest='svc', action='store_const',
             const='start',
-            help='install if needed, enable, and start it now')
+            help='start the installed unit now; enables it if disabled, but'
+                 ' never writes the unit')
     svc.add_argument('--svc-restart', dest='svc', action='store_const',
             const='restart',
-            help='install if needed, then restart it so it runs the current'
-                 ' code (use after an editable install or a pull)')
+            help='restart the installed unit so it runs the current code'
+                 ' (use after an editable install or a pull); never writes it')
     svc.add_argument('--svc-stop', dest='svc', action='store_const',
             const='stop',
             help='stop it now; it stays enabled for your next login')

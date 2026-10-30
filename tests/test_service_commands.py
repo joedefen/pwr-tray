@@ -170,14 +170,32 @@ def test_install_prints_the_difference_before_asking(env, unit_path):
     assert 'lines differ' not in joined
 
 
-def test_start_enables_and_starts(env, unit_path):
-    run = FakeSystemctl()
+def test_start_starts_an_installed_enabled_unit(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+
+    run = FakeSystemctl(enabled=True)
+    assert run_verb('start', env, run) == service.OK
+    assert run.mutating() == [('systemctl', '--user', 'start', service.UNIT_NAME)]
+
+
+def test_start_enables_a_disabled_installed_unit_and_starts(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+
+    run = FakeSystemctl(enabled=False)
     assert run_verb('start', env, run) == service.OK
     assert run.mutating() == [
-        ('systemctl', '--user', 'daemon-reload'),
         ('systemctl', '--user', 'enable', service.UNIT_NAME),
         ('systemctl', '--user', 'start', service.UNIT_NAME),
     ]
+
+
+def test_start_does_not_install(env, unit_path):
+    """Installing is an explicit --svc-install, never a side effect of start."""
+    run = FakeSystemctl()
+    with pytest.raises(service.ServiceError, match='--svc-install'):
+        run_verb('start', env, run)
+    assert not unit_path.exists()
+    assert run.mutating() == []
 
 
 def test_start_when_already_active_starts_nothing(env, unit_path):
@@ -190,71 +208,98 @@ def test_start_when_already_active_starts_nothing(env, unit_path):
     assert any('already running' in line for line in output), output
 
 
-def test_start_restarts_an_active_unit_that_changed(env, unit_path):
-    """`start` on an active unit does nothing, so a rewrite needs a restart.
+def test_start_leaves_an_active_unit_alone(env, unit_path):
+    """`start` never restarts; `--svc-restart` is the verb for new code."""
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    edited = unit_path.read_text(encoding='utf-8').replace(
+        'RestartSec=5', 'RestartSec=9')
+    unit_path.write_text(edited, encoding='utf-8')
 
-    This is the case that left a service running an executable from an old
-    project virtualenv after the unit had been re-rendered: the file changed,
-    the running process did not.
-    """
+    output = []
+    run = FakeSystemctl(enabled=True, active=True)
+    assert run_verb('start', env, run, echo=output.append) == service.OK
+    assert run.mutating() == []
+    assert any('already running' in line for line in output), output
+    assert 'RestartSec=9' in unit_path.read_text(encoding='utf-8')
+
+
+def test_start_refuses_a_unit_that_runs_another_pwr_tray(env, unit_path):
     run_verb('install', env, FakeSystemctl(enabled=True))
     edited = unit_path.read_text(encoding='utf-8').replace(
         f'ExecStart={SCRIPT}', 'ExecStart=/snap/bin/pwr-tray')
     unit_path.write_text(edited, encoding='utf-8')
 
     run = FakeSystemctl(enabled=True, active=True)
-    assert run_verb('start', env, run, yes=True) == service.OK
-    assert run.mutating() == [
-        ('systemctl', '--user', 'daemon-reload'),
-        ('systemctl', '--user', 'restart', service.UNIT_NAME),
-    ]
-    assert f'ExecStart={SCRIPT}' in unit_path.read_text(encoding='utf-8')
+    with pytest.raises(service.ServiceError, match='--svc-install') as excinfo:
+        run_verb('start', env, run)
+    assert '/snap/bin/pwr-tray' in str(excinfo.value)
+    assert run.mutating() == []
+    assert 'ExecStart=/snap/bin/pwr-tray' in unit_path.read_text(encoding='utf-8')
 
 
-def test_restart_installs_enables_and_restarts(env, unit_path):
-    run = FakeSystemctl()
+def test_restart_restarts_an_installed_unit(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+
+    run = FakeSystemctl(enabled=True, active=True)
     assert run_verb('restart', env, run) == service.OK
     assert run.mutating() == [
-        ('systemctl', '--user', 'daemon-reload'),
-        ('systemctl', '--user', 'enable', service.UNIT_NAME),
-        ('systemctl', '--user', 'restart', service.UNIT_NAME),
-    ]
+        ('systemctl', '--user', 'restart', service.UNIT_NAME)]
 
 
-def test_restart_applies_a_rewritten_unit(env, unit_path):
+def test_restart_does_not_install(env, unit_path):
+    """Installing is an explicit --svc-install, never a side effect of restart."""
+    run = FakeSystemctl()
+    with pytest.raises(service.ServiceError, match='--svc-install'):
+        run_verb('restart', env, run)
+    assert not unit_path.exists()
+    assert run.mutating() == []
+
+
+def test_restart_does_not_rewrite_a_changed_unit(env, unit_path):
     run_verb('install', env, FakeSystemctl(enabled=True))
     unit_path.write_text('stale\n', encoding='utf-8')
 
     output = []
     run = FakeSystemctl(enabled=True, active=True)
-    assert run_verb('restart', env, run, echo=output.append, yes=True) == service.OK
+    assert run_verb('restart', env, run, echo=output.append) == service.OK
     assert run.mutating() == [
-        ('systemctl', '--user', 'daemon-reload'),
-        ('systemctl', '--user', 'restart', service.UNIT_NAME),
-    ]
-    assert any('restarts now' in line for line in output), output
-    assert f'ExecStart={SCRIPT}' in unit_path.read_text(encoding='utf-8')
+        ('systemctl', '--user', 'restart', service.UNIT_NAME)]
+    assert any('differs from the shipped unit' in line for line in output), output
+    assert unit_path.read_text(encoding='utf-8') == 'stale\n'
+
+
+def test_restart_refuses_a_unit_that_runs_another_pwr_tray(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    edited = unit_path.read_text(encoding='utf-8').replace(
+        f'ExecStart={SCRIPT}', 'ExecStart=/snap/bin/pwr-tray')
+    unit_path.write_text(edited, encoding='utf-8')
+
+    run = FakeSystemctl(enabled=True, active=True)
+    with pytest.raises(service.ServiceError, match='--svc-install') as excinfo:
+        run_verb('restart', env, run)
+    assert '/snap/bin/pwr-tray' in str(excinfo.value)
+    assert run.mutating() == []
 
 
 def test_restart_refuses_while_the_applet_runs_outside_systemd(env, unit_path):
     """A restart would start a unit that exits 3 against the lock."""
-    run = FakeSystemctl()
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    run = FakeSystemctl(enabled=True)
     with pytest.raises(service.ServiceError, match='outside systemd') as excinfo:
         run_verb('restart', env, run, holder=4242)
     assert '4242' in str(excinfo.value)
     assert run.mutating() == []
-    assert not unit_path.exists()
 
 
 def test_start_refuses_while_the_applet_runs_outside_systemd(env, unit_path):
     """The unit would exit 3 against the lock, so say so instead of failing."""
-    run = FakeSystemctl()
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    run = FakeSystemctl(enabled=True)
     with pytest.raises(service.ServiceError) as excinfo:
         run_verb('start', env, run, holder=4242)
     assert 'outside systemd' in str(excinfo.value)
     assert '4242' in str(excinfo.value)
     assert run.mutating() == []
-    assert not unit_path.exists()
 
 
 def test_install_only_warns_about_a_running_applet(env, unit_path):
@@ -330,8 +375,9 @@ def test_start_clears_a_failed_unit_before_starting(env, unit_path):
 
 def test_a_failed_start_says_where_to_look(env, unit_path):
     """The one thing a failed start must not do is leave the user guessing."""
+    run_verb('install', env, FakeSystemctl(enabled=True))
     with pytest.raises(service.ServiceError) as excinfo:
-        run_verb('start', env, FakeSystemctl(fail=('start',)))
+        run_verb('start', env, FakeSystemctl(enabled=True, fail=('start',)))
     message = str(excinfo.value)
     assert 'start pwr-tray.service failed' in message
     assert 'systemctl --user status pwr-tray.service' in message
