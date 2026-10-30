@@ -19,7 +19,8 @@ from pwr_tray import service
 from pwr_tray.Utils import SingleInstance
 
 DESKTOP = 'niri-wayland'
-SCRIPT = '/usr/local/bin/pwr-tray'
+#: What every shipped unit runs, verbatim: the launcher, never an install.
+LAUNCHER = '%h/.local/bin/pwr-tray'
 
 
 class FakeSystemctl:
@@ -59,6 +60,11 @@ class FakeSystemctl:
 
 @pytest.fixture
 def env(tmp_path):
+    """A throw-away profile that already has the launcher the units run."""
+    launcher = tmp_path / '.local' / 'bin' / 'pwr-tray'
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+    launcher.chmod(0o755)
     return {
         'HOME': str(tmp_path),
         'XDG_CONFIG_HOME': str(tmp_path),
@@ -67,6 +73,15 @@ def env(tmp_path):
         'DISPLAY': ':0',
         'PATH': '/usr/local/bin:/usr/bin:/bin',
     }
+
+
+def launcher_of(env):
+    return Path(env['HOME']) / '.local' / 'bin' / 'pwr-tray'
+
+
+def remove_launcher(env):
+    """Delete the launcher, leaving an otherwise usable profile behind."""
+    launcher_of(env).unlink()
 
 
 @pytest.fixture
@@ -86,7 +101,6 @@ def run_verb(verb, env, run, **kwargs):
     kwargs.setdefault('echo', lambda line: None)
     kwargs.setdefault('ask', lambda question: False)
     kwargs.setdefault('holder', None)
-    kwargs.setdefault('script', SCRIPT)
     kwargs.setdefault('systemd', True)
     return service.dispatch(verb, DESKTOP, env=env, run=run, **kwargs)
 
@@ -96,7 +110,7 @@ def test_install_writes_the_unit_reloads_and_enables(env, unit_path):
     assert run_verb('install', env, run) == service.OK
 
     text = unit_path.read_text(encoding='utf-8')
-    assert f'ExecStart={SCRIPT} --de {DESKTOP}' in text
+    assert f'ExecStart={LAUNCHER} --de {DESKTOP}' in text
     assert 'Environment=WAYLAND_DISPLAY=wayland-0' in text
     # DISPLAY is not pinned by a Wayland unit, so it must not be injected
     assert 'Environment=DISPLAY=' not in text
@@ -224,9 +238,10 @@ def test_start_leaves_an_active_unit_alone(env, unit_path):
 
 
 def test_start_refuses_a_unit_that_runs_another_pwr_tray(env, unit_path):
+    """An older unit that baked in an absolute path is not started silently."""
     run_verb('install', env, FakeSystemctl(enabled=True))
     edited = unit_path.read_text(encoding='utf-8').replace(
-        f'ExecStart={SCRIPT}', 'ExecStart=/snap/bin/pwr-tray')
+        f'ExecStart={LAUNCHER}', 'ExecStart=/snap/bin/pwr-tray')
     unit_path.write_text(edited, encoding='utf-8')
 
     run = FakeSystemctl(enabled=True, active=True)
@@ -271,7 +286,7 @@ def test_restart_does_not_rewrite_a_changed_unit(env, unit_path):
 def test_restart_refuses_a_unit_that_runs_another_pwr_tray(env, unit_path):
     run_verb('install', env, FakeSystemctl(enabled=True))
     edited = unit_path.read_text(encoding='utf-8').replace(
-        f'ExecStart={SCRIPT}', 'ExecStart=/snap/bin/pwr-tray')
+        f'ExecStart={LAUNCHER}', 'ExecStart=/snap/bin/pwr-tray')
     unit_path.write_text(edited, encoding='utf-8')
 
     run = FakeSystemctl(enabled=True, active=True)
@@ -486,30 +501,27 @@ def test_status_reports_an_out_of_date_unit(env, unit_path):
     assert any('differs from the shipped unit' in line for line in output), output
 
 
-def test_status_names_the_executable_the_unit_runs(env, unit_path):
-    """Which executable the unit names decides which code a restart loads."""
+def test_status_names_the_launcher_the_unit_runs(env, unit_path):
+    """The unit always names the launcher; `%h` is expanded for the reader."""
     run_verb('install', env, FakeSystemctl(enabled=True))
 
     output = []
     run_verb('status', env, FakeSystemctl(enabled=True), echo=output.append)
-    assert f'runs: {SCRIPT}' in '\n'.join(output), output
+    assert f'runs: {launcher_of(env)}' in '\n'.join(output), output
 
 
-def test_status_points_out_a_unit_that_runs_another_pwr_tray(env, unit_path, tmp_path):
-    """A unit installed from an old virtualenv must not look current."""
+def test_status_points_out_a_unit_that_runs_another_pwr_tray(env, unit_path):
+    """A unit installed by an older pwr-tray must not look current."""
     run_verb('install', env, FakeSystemctl(enabled=True))
-    bindir = tmp_path / 'bin'
-    bindir.mkdir()
-    other = bindir / 'pwr-tray'
-    other.write_text('#!/bin/sh\n', encoding='utf-8')
-    other.chmod(0o755)
+    edited = unit_path.read_text(encoding='utf-8').replace(
+        f'ExecStart={LAUNCHER}', 'ExecStart=/opt/old-venv/bin/pwr-tray')
+    unit_path.write_text(edited, encoding='utf-8')
 
     output = []
-    run_verb('status', dict(env, PATH=f'{bindir}:/usr/bin:/bin'),
-             FakeSystemctl(enabled=True), echo=output.append)
+    run_verb('status', env, FakeSystemctl(enabled=True), echo=output.append)
     joined = '\n'.join(output)
-    assert str(other) in joined
-    assert 'install and restart' in joined
+    assert 'runs: /opt/old-venv/bin/pwr-tray' in joined
+    assert f'the shipped unit runs {launcher_of(env)}' in joined
 
 
 def test_verbs_refuse_to_run_without_systemd(env, unit_path):
@@ -534,21 +546,83 @@ def test_unknown_desktop_lists_what_is_shipped():
     assert DESKTOP in message                # the alternatives are named
 
 
-def test_executable_with_spaces_is_quoted(env):
+
+
+def test_installed_executable_expands_the_home_specifier(env):
+    """What the unit says and what the launcher is must compare equal."""
     text = service.read_unit(service.template_for(DESKTOP))
-    rendered = service.render(text, DESKTOP, '/opt/my tools/pwr-tray', env)
-    assert 'ExecStart="/opt/my tools/pwr-tray" --de niri-wayland' in rendered
-    assert service.installed_executable(rendered) == '/opt/my tools/pwr-tray'
+    assert service.installed_executable(text, env) == str(launcher_of(env))
 
 
 def test_installed_executable_of_a_unit_without_exec_start_is_none():
     assert service.installed_executable('[Service]\nType=simple\n') is None
 
 
-def test_missing_executable_is_explained(env):
-    env = dict(env, PATH='/nonexistent')
-    with pytest.raises(service.ServiceError, match='not on \\$PATH'):
-        service.executable_path(env)
+def test_install_refuses_without_the_launcher(env, unit_path):
+    """A unit that names a launcher nobody created cannot start."""
+    remove_launcher(env)
+    run = FakeSystemctl()
+
+    with pytest.raises(service.ServiceError, match='does not exist') as excinfo:
+        run_verb('install', env, run)
+    assert 'pipx install --editable .' in str(excinfo.value)
+    assert not unit_path.exists()
+    assert run.mutating() == []
+
+
+def test_start_and_restart_refuse_without_the_launcher(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    remove_launcher(env)
+
+    for verb in ('start', 'restart'):
+        run = FakeSystemctl(enabled=True)
+        with pytest.raises(service.ServiceError, match='does not exist'):
+            run_verb(verb, env, run)
+        assert run.mutating() == []
+
+
+def test_a_non_executable_launcher_is_refused(env, unit_path):
+    launcher_of(env).chmod(0o644)
+    with pytest.raises(service.ServiceError, match='not executable'):
+        run_verb('install', env, FakeSystemctl())
+    assert not unit_path.exists()
+
+
+def test_a_dangling_launcher_symlink_is_refused(env, unit_path):
+    link = launcher_of(env)
+    link.unlink()
+    link.symlink_to(Path(env['HOME']) / 'gone')
+    with pytest.raises(service.ServiceError, match='dangling symlink'):
+        run_verb('install', env, FakeSystemctl())
+
+
+def test_stop_and_uninstall_still_work_without_the_launcher(env, unit_path):
+    """Those verbs are needed exactly when the install is broken."""
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    remove_launcher(env)
+
+    run = FakeSystemctl(enabled=True, active=True)
+    assert run_verb('stop', env, run) == service.OK
+    assert run_verb('uninstall', env, run) == service.OK
+    assert not unit_path.exists()
+
+
+def test_status_reports_a_missing_launcher(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    remove_launcher(env)
+
+    output = []
+    assert run_verb('status', env, FakeSystemctl(enabled=True),
+                    echo=output.append) == service.STATUS_INACTIVE
+    joined = '\n'.join(output)
+    assert f'runs: {launcher_of(env)}' in joined
+    assert 'cannot start' in joined
+
+
+def test_install_names_the_launcher_it_will_run(env, unit_path):
+    output = []
+    run_verb('install', env, FakeSystemctl(), echo=output.append)
+    assert f'the unit will run {launcher_of(env)}' in '\n'.join(output)
 
 
 def test_dispatch_rejects_an_unknown_verb(env):

@@ -182,14 +182,13 @@ def test_every_shipped_unit_maps_to_a_known_desktop():
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
-def test_render_replaces_only_the_executable(path):
-    """Install-time substitution is a two-line operation, not a rewrite."""
+def test_render_never_records_an_installation(path):
+    """The unit is a constant: it runs the launcher, whoever installed it."""
     text = path.read_text(encoding='utf-8')
-    rendered = service.render(text, service.desktop_of(text), '/opt/bin/pwr-tray', {})
-    pairs = zip(text.splitlines(), rendered.splitlines(), strict=True)
-    changed = [(before, after) for before, after in pairs if before != after]
-    assert len(changed) == 1, changed
-    assert changed[0][1].startswith('ExecStart=/opt/bin/pwr-tray ')
+    rendered = service.render(text, {})
+    assert rendered == text
+    assert values(parse_text(rendered), 'Service', 'ExecStart') == [
+        f'%h/.local/bin/pwr-tray --de {service.desktop_of(text)}']
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
@@ -198,7 +197,7 @@ def test_render_appends_the_live_display_override(path):
     text = path.read_text(encoding='utf-8')
     desktop = service.desktop_of(text)
     key = 'WAYLAND_DISPLAY' if desktop.endswith('-wayland') else 'DISPLAY'
-    rendered = service.render(text, desktop, '/opt/bin/pwr-tray', {key: 'live-9'})
+    rendered = service.render(text, {key: 'live-9'})
     environment = values(parse_text(rendered), 'Service', 'Environment')
     pinned = [item for item in environment if item.startswith(f'{key}=')]
     assert len(pinned) == 2, pinned          # shipped default + live override
@@ -209,7 +208,7 @@ def test_render_appends_the_live_display_override(path):
 def test_render_keeps_the_restart_policy(path):
     """The *installed* copy must fail fast on exit 2/3, exactly like the source."""
     text = path.read_text(encoding='utf-8')
-    rendered = service.render(text, service.desktop_of(text), '/opt/bin/pwr-tray', {})
+    rendered = service.render(text, {})
     sections = parse_text(rendered)
     prevent = values(sections, 'Service', 'RestartPreventExitStatus')
     assert len(prevent) == 1

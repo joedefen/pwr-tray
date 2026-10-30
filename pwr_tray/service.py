@@ -9,10 +9,21 @@ directory), they are validated by ``tests/test_service_examples.py``, and
 or enables it.  ``--svc-start`` and ``--svc-restart`` operate on a unit that
 is already installed.
 
-Two facts are only knowable on the machine that performs the install -- where
-the ``pwr-tray`` executable actually lives, and which display the session is
-on -- so :func:`render` rewrites just those.  Everything else is copied byte
-for byte, which is what lets the tests keep asserting the shipped text.
+The units never name an installation: they run ``%h/.local/bin/pwr-tray``, the
+one path every install method on the machine agrees on, so installing from an
+activated virtualenv -- or from any other shell -- produces the same file.  A
+missing launcher is refused rather than installed or started, because such a
+unit cannot start; ``stop``, ``uninstall`` and ``status`` keep working without
+it, since that is when they are needed.  The only fact :func:`render` still
+substitutes is the session's display variable, which systemd cannot inherit.
+
+Naming the launcher is not the same question as which code the launcher
+imports: a project virtualenv can hold a *frozen* copy of the package
+(``pip install .``) that shadows the checkout it was built from, and
+restarting then reloads the snapshot forever.  :func:`installation` reads the
+``direct_url.json`` pip writes next to the installed metadata to tell an
+editable install from a frozen one, so ``--svc-status`` and ``--svc-restart``
+can say why a restart changes nothing.
 
 The units append stdout/stderr to the applet's own log,
 ``~/.config/pwr-tray/debug.log`` (``StandardError=inherit`` shares the file),
@@ -29,6 +40,7 @@ Nothing here shells out to systemctl on its own: the verbs are built as
 policy testable on a machine without a systemd session.
 """
 
+import json
 import os
 import re
 import shutil
@@ -42,6 +54,11 @@ from pwr_tray.Utils import SingleInstance
 UNIT_NAME = 'pwr-tray.service'
 COMMAND = 'systemctl'
 EXECUTABLE = 'pwr-tray'
+
+#: The one path the shipped units run.  ``pipx install`` and ``pipx install
+#: --editable .`` both write it, so the unit file never has to know which of
+#: them -- or which shell -- installed pwr-tray.
+LAUNCHER = Path('.local') / 'bin' / EXECUTABLE
 
 #: Directory holding the units shipped in the wheel.  Tests repoint this.
 SOURCE_DIR = Path(__file__).resolve().parent / 'resources' / 'systemd'
@@ -155,13 +172,14 @@ def desktop_of(text):
     return match.group(1) if match else None
 
 
-def installed_executable(text):
-    """Return the executable named by the first ``ExecStart=`` line, or ``None``.
+def installed_executable(text, env=None):
+    """Return the executable named by the first ``ExecStart=``, expanded.
 
-    This is the one fact that tells a stale unit from a current one.  A unit
-    installed from an activated project virtualenv names that virtualenv's
-    ``pwr-tray``; an installed package and an editable install name different
-    paths again, and only the executable decides which code actually runs.
+    systemd expands ``%h`` when it starts the unit, so the comparison that
+    matters -- does this unit run ``~/.local/bin/pwr-tray``? -- has to expand it
+    the same way.  A unit installed by an older pwr-tray names an absolute path
+    instead, usually a project virtualenv's, which is how a service keeps
+    running a snapshot of a checkout.
     """
     match = _EXEC_START_RE.search(text)
     if not match:
@@ -171,8 +189,131 @@ def installed_executable(text):
         return None
     if command.startswith('"'):
         end = command.find('"', 1)
-        return command[1:end] if end > 0 else None
-    return command.split()[0]
+        return _expand(command[1:end], _env(env)) if end > 0 else None
+    return _expand(command.split()[0], _env(env))
+
+
+@dataclass(frozen=True)
+class Installation:
+    """Which code the ``pwr-tray`` executable at a path will really import.
+
+    ``editable`` means the distribution is a ``.pth`` back to a source tree, so
+    editing that tree is enough.  ``snapshot`` is the trap: a non-editable copy
+    of a checkout that still exists on disk -- ``pip install .`` inside a
+    project virtualenv -- which imports the copy, not the tree, no matter how
+    often the unit is restarted.
+    """
+
+    executable: Path
+    environment: Path
+    editable: bool = False
+    source: Path = None
+    snapshot: bool = False
+
+
+#: Where an interpreter inside a virtualenv or system prefix keeps its packages.
+_SITE_GLOBS = ('lib/python*/site-packages', 'lib64/python*/site-packages',
+               'Lib/site-packages')
+_DIST_GLOB = 'pwr_tray-*.dist-info'
+
+
+def _environment_of(executable):
+    """Return the virtualenv or system prefix a console script belongs to."""
+    path = Path(executable)
+    if path.parent.name in ('bin', 'Scripts'):
+        return path.parent.parent
+    return path.parent
+
+
+def _dist_info(executable):
+    """Return the installed ``pwr_tray`` metadata directory for `executable`."""
+    prefix = _environment_of(executable)
+    for pattern in _SITE_GLOBS:
+        for site in sorted(prefix.glob(pattern)):
+            for dist in sorted(site.glob(_DIST_GLOB)):
+                return dist
+    return None
+
+
+def installation(executable):
+    """Describe how the ``pwr_tray`` behind `executable` was installed.
+
+    pip records the answer in ``direct_url.json`` next to the installed
+    metadata: an editable install has ``dir_info.editable`` and a URL back to
+    the tree, a wheel or ``pip install .`` has a plain ``file://`` URL, and an
+    index install has only a registry URL.  A path without metadata at all --
+    ``/usr/local/bin/pwr-tray`` that does not exist, a test double -- is
+    reported as neither editable nor a snapshot rather than guessed at.
+    """
+    path = Path(executable)
+    try:
+        path = path.resolve()
+    except (OSError, RuntimeError):
+        path = path.absolute()    # a broken symlink still names its own prefix
+    dist = _dist_info(path)
+    editable, source = False, None
+    if dist is not None:
+        try:
+            info = json.loads((dist / 'direct_url.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            info = {}
+        editable = bool(info.get('dir_info', {}).get('editable'))
+        url = str(info.get('url') or '')
+        if url.startswith('file://'):
+            source = Path(url[len('file://'):])
+    snapshot = (not editable and source is not None
+                and (source / 'pwr_tray' / 'main.py').is_file()
+                and (source / 'pyproject.toml').is_file())
+    return Installation(executable=path, environment=_environment_of(path),
+                        editable=editable, source=source, snapshot=snapshot)
+
+
+def _snapshot_note(info):
+    """Explain why restarting a frozen install cannot pick up edits."""
+    return (f'{info.executable} is a frozen copy of {info.source} (a non-editable'
+            ' install), so restarting it reloads that snapshot, not the tree;'
+            ' reinstall it editable (pipx install --editable . or python -m pip'
+            ' install -e .) to make edits reach the service')
+
+
+def launcher_path(env=None):
+    """Return ``~/.local/bin/pwr-tray``: the path the shipped units run."""
+    home = _env(env).get('HOME') or str(Path.home())
+    return Path(home) / LAUNCHER
+
+
+def launcher_problem(path):
+    """Return why `path` cannot launch the applet, or ``None`` when it can."""
+    path = Path(path)
+    if path.is_symlink() and not path.exists():
+        return f'{path} is a dangling symlink'
+    if not path.exists():
+        return f'{path} does not exist'
+    if not path.is_file():
+        return f'{path} is not a regular file'
+    if not os.access(path, os.X_OK):
+        return f'{path} is not executable'
+    return None
+
+
+def _launcher_hint():
+    return ('install it with: pipx install --editable . (a checkout) or'
+            ' pipx install pwr-tray / python -m pip install --user pwr-tray')
+
+
+def require_launcher(env=None):
+    """Return the launcher path, or refuse because no unit could start."""
+    path = launcher_path(env)
+    problem = launcher_problem(path)
+    if problem:
+        raise ServiceError(
+            f'{problem}, so the unit could not start; {_launcher_hint()}')
+    return path
+
+
+def launcher_installation(env=None):
+    """Return the :class:`Installation` behind ``~/.local/bin/pwr-tray``."""
+    return installation(launcher_path(env))
 
 
 def templates(source=None):
@@ -198,29 +339,18 @@ def template_for(desktop, source=None):
             f' shipped units cover: {shipped}') from None
 
 
-def executable_path(env=None):
-    """Return the absolute path of the pwr-tray executable to put in a unit."""
-    found = shutil.which(EXECUTABLE, path=_env(env).get('PATH'))
-    if not found:
-        raise ServiceError(
-            f'{EXECUTABLE} is not on $PATH, so a unit cannot name it;'
-            ' install pwr-tray first (or fix $PATH)')
-    return str(Path(found).resolve())
+def render(text, env=None):
+    """Return `text` with this session's display variables substituted in.
 
-
-def render(text, desktop, executable, env=None):
-    """Return `text` with the facts of this machine substituted in.
-
-    Two edits only:
-
-    * the executable named by ``ExecStart=`` becomes its real absolute path;
-    * a session variable the unit pins (``Environment=WAYLAND_DISPLAY=wayland-1``)
-      is overridden from the live environment by appending an ``Environment=``
-      line.  The last assignment wins in systemd, so the shipped line stays
-      readable and still documents the default.
-
-    Every other byte is preserved, so the tests can keep asserting the shipped
-    file and the installed file with the same parser.
+    The executable is not touched: every shipped unit names
+    ``%h/.local/bin/pwr-tray``, which is the same file for every installation
+    on a machine, so installing from any shell produces identical text.  The
+    single edit is a session variable the unit pins
+    (``Environment=WAYLAND_DISPLAY=wayland-1``), overridden from the live
+    environment by appending an ``Environment=`` line after ``ExecStart=``.
+    The last assignment wins in systemd, so the shipped line stays readable and
+    still documents the default.  Every other byte is preserved, which is what
+    lets the tests keep asserting the shipped text.
     """
     env = _env(env)
     overrides = []
@@ -233,36 +363,21 @@ def render(text, desktop, executable, env=None):
             continue    # the shipped default is already right
         overrides.append(f'Environment={key}={value}')
 
-    lines = text.splitlines()
     result = []
-    replaced = False
-    for line in lines:
-        if line.startswith('ExecStart=') and not replaced:
-            result.extend(overrides)
-            result.append(f'ExecStart={_quote(executable)}{_arguments(line)}')
-            replaced = True
-            continue
+    placed = False
+    for line in text.splitlines():
         result.append(line)
-    if not replaced:
-        raise ServiceError(f'the {desktop!r} unit has no ExecStart= line')
+        if line.startswith('ExecStart=') and not placed:
+            result.extend(overrides)
+            placed = True
+    if not placed:
+        raise ServiceError('the unit has no ExecStart= line')
     return '\n'.join(result) + ('\n' if text.endswith('\n') else '')
 
 
-def _quote(path):
-    return f'"{path}"' if ' ' in path else path
-
-
-def _arguments(line):
-    """Return the arguments of an ``ExecStart=`` line, with a leading space."""
-    rest = line[len('ExecStart='):].split()
-    return f" {' '.join(rest[1:])}" if len(rest) > 1 else ''
-
-
-def rendered_unit(desktop, env=None, script=None, source=None):
+def rendered_unit(desktop, env=None, source=None):
     """Return the unit text that would be installed for `desktop`."""
-    template = template_for(desktop, source)
-    executable = script or executable_path(env)
-    return render(read_unit(template), desktop, executable, env)
+    return render(read_unit(template_for(desktop, source)), env)
 
 
 def probe(rendered=None, env=None, run=run_command):
@@ -330,7 +445,12 @@ def missing_dirs(text, env=None):
 
 
 def plan_install(rendered, status, force=False, holder=None, env=None):
-    """Write the unit if needed, reload, and enable it (without starting)."""
+    """Write the unit if needed, reload, and enable it (without starting).
+
+    An executable that is a frozen copy of a checkout pip can still see is
+    refused unless ``--force``: it is the one way to install a unit that looks
+    current and can never run the working tree.
+    """
     plan = Plan()
     target = status.path
     wrote = False
@@ -347,11 +467,16 @@ def plan_install(rendered, status, force=False, holder=None, env=None):
     else:
         plan.steps.append(Step(f'write {target}', write=(target, rendered)))
         wrote = True
-    executable = installed_executable(rendered)
+    executable = installed_executable(rendered, env)
     if wrote and executable:
-        # Which executable a unit names is the difference between running this
-        # tree and running a snapshot of it, so never leave it implicit.
+        # The unit always names the same launcher; say which file that is once
+        # %h is expanded, and what it imports, because that decides what runs.
         plan.notes.append(f'the unit will run {executable}')
+    info = installation(executable) if executable else None
+    if info is not None and info.snapshot:
+        plan.notes.append(_snapshot_note(info))
+    elif info is not None and info.editable and info.source:
+        plan.notes.append(f'{executable} is an editable install of {info.source}')
     # systemd does not create the directories it is told to log into, it fails
     # the unit with EXIT_STDOUT (209), so install time is when they must exist.
     for folder in missing_dirs(rendered, env):
@@ -389,24 +514,24 @@ def _require_installed(status):
             f'{UNIT_NAME} is not installed; run pwr-tray --svc-install first')
 
 
-def _refuse_moved_unit(status, rendered):
-    """Refuse to start a unit that names a different pwr-tray executable.
+def _refuse_moved_unit(status, env):
+    """Refuse to start a unit that does not run the launcher.
 
-    Hand edits are legitimate and only produce a note, but an ``ExecStart=``
-    that points at another installation is how an editable checkout silently
-    keeps running a snapshot from an old virtualenv.  Installing is a
-    separate, explicit decision, so it is not made here.
+    The shipped units are constants: they name ``~/.local/bin/pwr-tray`` and
+    never an installation.  A unit naming anything else was either hand edited
+    or installed by an older pwr-tray that baked in an absolute path -- usually
+    a project virtualenv's, which is how a service silently keeps running a
+    snapshot.  Rewriting the unit is that verb's decision, so it is refused
+    here rather than fixed here.
     """
-    if rendered is None:
-        return
     try:
-        installed = installed_executable(read_unit(status.path))
+        installed = installed_executable(read_unit(status.path), env)
     except OSError:
         return
-    wanted = installed_executable(rendered)
-    if installed and wanted and installed != wanted:
+    wanted = str(launcher_path(env))
+    if installed and installed != wanted:
         raise ServiceError(
-            f'{UNIT_NAME} runs {installed}, but pwr-tray is {wanted};'
+            f'{UNIT_NAME} runs {installed}, but the shipped unit runs {wanted};'
             ' run pwr-tray --svc-install to update the unit, then try again')
 
 
@@ -427,7 +552,7 @@ def plan_start(rendered, status, force=False, holder=None, env=None):
     "start" means "run now and come back at your next login".
     """
     _require_installed(status)
-    _refuse_moved_unit(status, rendered)
+    _refuse_moved_unit(status, env)
     plan = Plan()
     if status.failed:
         plan.steps.append(Step(f'clear the failed state of {UNIT_NAME}',
@@ -460,17 +585,20 @@ def plan_start(rendered, status, force=False, holder=None, env=None):
 
 
 def plan_restart(rendered, status, force=False, holder=None, env=None):
-    """Restart an installed unit so it runs the code its ``ExecStart=`` names.
+    """Restart an installed unit so it runs the code its launcher names.
 
     An editable install changes the *code* without changing the unit file, so
     neither ``--svc-install`` nor ``--svc-start`` can notice it: only a
-    restart makes systemd load the modules the current checkout provides.
-    A restart does not install, enable, or rewrite the unit; a unit that names
-    a different executable is refused, because replacing it is what
-    ``--svc-install`` is for.
+    restart makes systemd load the modules the launcher resolves to.
+    A restart does not install, enable, or rewrite the unit; a unit that runs
+    something other than ``~/.local/bin/pwr-tray`` is refused, because
+    rewriting it is what ``--svc-install`` is for.  A launcher that is a
+    *frozen* copy of a checkout -- ``pip install .`` inside a project
+    virtualenv -- is restarted as asked, but with a note that no restart can
+    make it run that checkout.
     """
     _require_installed(status)
-    _refuse_moved_unit(status, rendered)
+    _refuse_moved_unit(status, env)
     plan = Plan()
     if status.failed:
         plan.steps.append(Step(f'clear the failed state of {UNIT_NAME}',
@@ -486,8 +614,13 @@ def plan_restart(rendered, status, force=False, holder=None, env=None):
         f'restart {UNIT_NAME}',
         argv=systemctl('restart', UNIT_NAME),
         hint=_systemd_hint()))
-    plan.notes.append(
-        f'{UNIT_NAME} restarts now, so it runs the code the executable names')
+    info = launcher_installation(env)
+    if info.snapshot:
+        plan.notes.append(_snapshot_note(info))
+    else:
+        plan.notes.append(
+            f'{UNIT_NAME} restarts now, so it runs the code'
+            f' {launcher_path(env)} resolves to')
     return plan
 
 
@@ -570,8 +703,7 @@ def _auto_yes(_question):
 
 
 def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
-             ask=None, run=run_command, holder=None, script=None,
-             systemd=None):
+             ask=None, run=run_command, holder=None, systemd=None):
     """Carry out one ``--svc-*`` verb and return a process exit status."""
     env = _env(env)
     ask = (ask or _no_prompt)
@@ -579,19 +711,24 @@ def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
         ask = _auto_yes
 
     if verb == 'status':
-        return _report(desktop, env, echo, run, script)
+        return _report(desktop, env, echo, run)
 
     if not (systemd_available(env) if systemd is None else systemd):
         raise ServiceError(
             'no systemd user manager is reachable (is this a systemd system?);'
             ' use your desktop autostart instead')
 
-    if verb == 'install':
-        rendered = rendered_unit(desktop, env, script=script)
+    if verb in ('install', 'start', 'restart'):
+        # The unit runs ~/.local/bin/pwr-tray and nothing else, so a missing
+        # launcher is a unit that fails every restart.  Refuse before writing
+        # or starting anything; `stop`, `uninstall` and `status` must still
+        # work exactly when things are broken.
+        require_launcher(env)
+        rendered = rendered_unit(desktop, env)
     else:
-        # start/restart/stop/uninstall must work on an installed unit even
-        # when the current pwr-tray is not on $PATH, so rendering is advisory.
-        rendered = _rendered_if_possible(desktop, env, script)
+        # stop/uninstall must work on an installed unit even when this
+        # desktop's unit is unknown, so rendering is advisory.
+        rendered = _rendered_if_possible(desktop, env)
 
     status = probe(rendered=rendered, env=env, run=run)
     if verb == 'install':
@@ -620,10 +757,10 @@ def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
     return OK
 
 
-def _rendered_if_possible(desktop, env, script):
-    """Best-effort render, for verbs that must work without a reachable install."""
+def _rendered_if_possible(desktop, env):
+    """Best-effort render, for verbs that must work on a broken install."""
     try:
-        return rendered_unit(desktop, env, script=script)
+        return rendered_unit(desktop, env)
     except ServiceError:
         return None
 
@@ -639,7 +776,7 @@ def _show(plan, echo):
             echo(f'  {step.describe}')
 
 
-def _report(desktop, env, echo, run, script):
+def _report(desktop, env, echo, run):
     """Print the state of the unit and return the documented status code."""
     path = installed_unit(env)
     if not path.is_file():
@@ -648,7 +785,7 @@ def _report(desktop, env, echo, run, script):
         echo('  install it with: pwr-tray --svc-install')
         return STATUS_ABSENT
 
-    rendered = _rendered_if_possible(desktop, env, script)
+    rendered = _rendered_if_possible(desktop, env)
     status = probe(rendered=rendered, env=env, run=run)
     if status.active:
         state = 'active'
@@ -659,16 +796,29 @@ def _report(desktop, env, echo, run, script):
     flags = 'enabled' if status.enabled else 'disabled'
     echo(f'{UNIT_NAME}: {state} ({flags})')
     echo(f'  unit: {path}')
-    installed_exe = installed_executable(read_unit(path))
+    launcher = launcher_path(env)
+    installed_exe = installed_executable(read_unit(path), env)
     if installed_exe:
         echo(f'  runs: {installed_exe}')
-        try:
-            current = executable_path(env)
-        except ServiceError:
-            current = None
-        if current and Path(current) != Path(installed_exe):
-            echo(f'  note: pwr-tray on $PATH is {current}; install and restart'
-                 ' the unit to run that one instead')
+        if Path(installed_exe) != launcher:
+            echo(f'  note: the shipped unit runs {launcher};'
+                 ' pwr-tray --svc-install would replace this unit')
+    problem = launcher_problem(launcher)
+    if problem:
+        echo(f'  note: {problem}, so the unit cannot start ({_launcher_hint()})')
+    else:
+        target = Path(launcher).resolve()
+        if target != launcher:
+            echo(f'        -> {target}')
+        info = installation(launcher)
+        if info.snapshot:
+            echo(f'  note: {_snapshot_note(info)}')
+        elif info.editable and info.source:
+            echo(f'        (editable install of {info.source})')
+        found = shutil.which(EXECUTABLE, path=env.get('PATH'))
+        if found and Path(found) != launcher:
+            echo(f'  note: the pwr-tray on $PATH is {found}; a shell runs that,'
+                 ' the unit runs the launcher above')
     if not status.installed:
         return STATUS_ABSENT
     if status.failed:

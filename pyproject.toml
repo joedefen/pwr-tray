@@ -1,54 +1,42 @@
-# pwr-tray -- basics, testing, and releasing
-# ==========================================
+# pwr-tray -- packaging, the test gate, and the service contract
+# ==============================================================
 #
-# Basics
-# ------
+# Sources of truth
+# ----------------
 # * Build backend: flit_core.  The version lives in `pwr_tray/__init__.py`
 #   only; never add `version =` to [project].  tests/test_metadata.py enforces
-#   this because a second copy of the version is how the published metadata
+#   this, because a second copy of the version is how the published metadata
 #   drifted from the code before.
 # * Layout: the package is `pwr_tray/`; runtime resources (commands.yaml,
 #   icons, systemd units) live under `pwr_tray/resources/` and ride in the
 #   wheel.  `pwr-tray` is the console script (pwr_tray.main:main).
-# * `./runner` executes this source tree immediately (`python -m
-#   pwr_tray.main`, with `--replace`), so it is always the newest code -- but
-#   it is not what a systemd unit or a pipx shim runs.
 #
-# Full test of the working version
-# --------------------------------
-# Three layers can each name different code: the `pwr-tray` on $PATH, the
-# ExecStart= of ~/.config/systemd/user/pwr-tray.service, and the process
-# systemd is running right now.  `--svc-status` prints the middle one
-# (`runs: ...`) and warns when it is not the executable on $PATH.  To make all
-# three agree with this checkout:
+# The systemd units are constants
+# -------------------------------
+# Every shipped unit runs `%h/.local/bin/pwr-tray --de <desktop>` and never an
+# installation path, so `--svc-install` produces the same file for everyone and
+# no shell, venv or `which` result can change what the service runs.  The verbs
+# that would start a unit refuse when that launcher is missing, dangling or not
+# executable; `--svc-status`, `--svc-stop` and `--svc-uninstall` do not.
+# `service.installation()` reads pip's `direct_url.json` next to the installed
+# metadata to tell an editable install of a checkout from a *frozen* copy of it
+# (`pip install .` into a project virtualenv), and says so rather than letting
+# a restart silently reload the frozen copy.  Pinned by
+# tests/test_service_commands.py, tests/test_service_examples.py and
+# tests/test_service_provenance.py.
 #
-#   pipx install --editable --force .   # $PATH -> this checkout
-#   pwr-tray --version                  # must print pwr_tray.__version__
-#   pwr-tray --svc-status               # `runs:` must be that executable
-#   pwr-tray --svc-install              # rewrite a stale unit (explicit)
-#   pwr-tray --svc-restart              # restart on the rewritten unit
-#   pwr-tray --svc-status               # active, and running the right file
-#   pwr-tray --follow-log               # watch what it actually says
+# Development
+# -----------
+# `./runner` runs this tree immediately (`python -m pwr_tray.main --replace`).
+# For the install layout, the dev loop, how to tell which code a running applet
+# actually loaded, the test inventory and the release checklist in detail, see
+# README-DEV.md.  The essentials:
 #
-# An editable install changes the code, not the unit file, and a running
-# Python process keeps the modules it imported at startup: `--svc-install`
-# and `--svc-start` cannot notice either change.  `--svc-restart` is the verb
-# that applies a `pipx install --editable .` or a `git pull`.  A unit that
-# names a different executable is refused by start/restart; run
-# `--svc-install` first.
-#
-# Do not run `--svc-install` from an activated project virtualenv: the unit
-# records the absolute path of the `pwr-tray` that `which` finds there, and
-# that virtualenv may hold a copied (non-editable) package frozen at install
-# time.
-#
-# The test gate, from a checkout with the `dev` extra installed:
-#
-#   python -m pip install -e '.[dev]'
-#   python -m ruff check .
-#   python -m compileall -q pwr_tray
-#   python -m pytest -q                 # 300+ tests, about a second
-#   python -m pytest -q --cov=pwr_tray  # optional coverage report
+#   python3 -m venv .venv
+#   .venv/bin/python -m pip install -e '.[dev]'
+#   .venv/bin/python -m ruff check .
+#   .venv/bin/python -m compileall -q pwr_tray
+#   .venv/bin/python -m pytest -q          # a few hundred tests, about a second
 #
 # Tests never touch ~/.config: conftest.py redirects HOME to a temporary
 # directory and stubs PyQt5/ruamel.yaml/psutil when they are absent, so the
@@ -57,7 +45,7 @@
 # Releasing
 # ---------
 #   1. bump `__version__` in pwr_tray/__init__.py (the only place)
-#   2. run the test gate above; commit; tag `vX.Y.Z`; push with tags
+#   2. run the test gate; commit; tag `vX.Y.Z`; push with tags
 #   3. python -m build                  # dist/*.whl and dist/*.tar.gz
 #   4. python -m twine check dist/*
 #   5. python -m twine upload dist/*    # TWINE_USERNAME=__token__,
