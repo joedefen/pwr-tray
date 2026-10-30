@@ -4,8 +4,10 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "pwr_tray"
-version = "2.0.0"
 description = "A PyQt5 tray applet for power management on i3, sway, niri, Hyprland, and KDE"
+# `pwr_tray/__init__.py:__version__` is the single source of truth.  Flit reads
+# it from the module at build time, so the version is never duplicated here.
+dynamic = ["version"]
 authors = [
     { name = "Joe Defen", email = "joedef@google.com" }
 ]

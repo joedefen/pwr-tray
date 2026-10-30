@@ -21,10 +21,19 @@ def load_pyproject():
         return tomllib.load(handle)
 
 
-def test_version_matches_pyproject():
-    """`pwr_tray.__version__` is the single value users and `--version` see."""
+def test_version_comes_from_the_package_only():
+    """`pwr_tray.__version__` is the single authority on the project version."""
     project = load_pyproject()['project']
-    assert pwr_tray.__version__ == project['version']
+    assert 'version' not in project, "pyproject must not duplicate the version"
+    assert 'version' in project['dynamic'], "flit must read __version__ from the package"
+    assert pwr_tray.__version__
+
+
+def test_package_version_is_valid_pep440():
+    """The single source must still be a version a build backend can publish."""
+    from packaging.version import Version
+
+    assert str(Version(pwr_tray.__version__)) == pwr_tray.__version__
 
 
 def test_summary_names_the_real_toolkit():
