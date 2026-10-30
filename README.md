@@ -69,7 +69,7 @@ Per-DE requirements:
 
 * Then, follow the "Per-DE Specific Notes" below to ensure proper operation. To just kick the tires, you can defer this until ready to go forward.
 * Read the other sections for customization and everyday use.
-* From the CLI, you can start/restart pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts.
+* From the CLI, you can start pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts. A start when an instance is already running **refuses and exits** (status 3) rather than disturbing it; use `setsid pwr-tray --replace` to deliberately restart that instance.
 
 ### Command Line Options
 | Option | Description |
@@ -80,6 +80,7 @@ Per-DE requirements:
 | `-e`, `--edit-config` | Open `~/.config/pwr-tray/config.ini` in `$EDITOR` (default: `vim`). |
 | `-f`, `--follow-log` | Tail the log file (`~/.config/pwr-tray/debug.log`). |
 | `--de NAME` | Force desktop detection (e.g., `--de i3-x11`, `--de sway-wayland`, `--de kde-wayland`). Useful when env vars are unreliable. |
+| `--replace` | If another `pwr-tray` holds the single-instance lock, terminate it (after confirming its command line is `pwr-tray`) and take over. Without this flag a second start refuses and exits. |
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
 | `-V`, `--version` | Print the package version and exit. |
 
@@ -236,7 +237,8 @@ WantedBy=graphical-session.target
 
 * A `systemd --user` service is **not tied to a DE/WM**. With `WantedBy=graphical-session.target` it starts in *any* graphical session on your account, so on a machine where you switch between DEs it will also launch under the others (and, with `--de` forced, then act on the wrong session). To limit it, bind it to a WM-specific target or add a condition line such as `ConditionEnvironment=XDG_CURRENT_DESKTOP=sway`.
 * `systemd --user` does not inherit your session environment, so the variables above are set explicitly.
-* Do **not** enable the service *and* a DE/WM autostart for the same session, or you will get two tray icons.
+* Do **not** enable the service *and* a DE/WM autostart for the same session. The single-instance lock makes the second launch exit with "another pwr-tray is already running" instead of starting a duplicate, but with `Restart=always` systemd will keep respawning it into that same refusal (a restart loop, not a second icon). Pick one supervisor per session.
+* `--replace` is for an intentional hand-over (`setsid pwr-tray --replace` from a terminal). Do **not** put it in a unit's `ExecStart`: two supervisors that both pass it would again terminate each other's instance.
 * Keep the standard `PATH` entries -- `pwr-tray` calls `systemctl`, `loginctl`, `pgrep`/`pkill`, `swayidle`, `swaymsg`, and friends from `/usr/bin`.
 
 ---

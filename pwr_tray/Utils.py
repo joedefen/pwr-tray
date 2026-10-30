@@ -232,23 +232,24 @@ def command_names(argv):
 
 
 class PyKill:
-    """Class to kill python scripts and explain how; avoids suicide. """
-    def __init__(self):
-        self.last_sig = {} # keyed by target
-        self.alive = {} # ps line of found targets
+    """Find other instances of a script, and terminate one on request.
 
-    def _kill_script(self, targets, sig):
-        """ one iteration through every instance of the remaining processes """
-        def kill_pid(pid, sig):
-            # terminate the process
-            alive = True
-            try:
-                os.kill(pid, sig)
-            except OSError:
-                alive = False
-            return alive
-        self.alive = {} # reset each time thru
-        keys = {target: script_key(target) for target in targets}
+    There is deliberately no "kill every instance" entry point any more: a
+    plain start must never shoot the incumbent (that is what let a systemd unit
+    and a DE autostart restart-war forever).  Killing is the explicit
+    ``--replace`` takeover path in ``main()``, and even then only a pid whose
+    command line still names the target is signalled -- avoids suicide, and
+    avoids hitting an unrelated process that recycled a stale pid.
+    """
+
+    @staticmethod
+    def _iter_matches(targets):
+        """Yield ``(pid, ps line, matched keys)`` for every live target.
+
+        One ``ps`` call, shared by ``matching_pids()`` and ``kill_pid()`` so a
+        pid can never be signalled on evidence the lookup would not accept.
+        """
+        wanted = {script_key(target) for target in targets}
         for line in os.popen("ps -eo pid,args"):
             words = line.split()
             if len(words) < 2:
@@ -260,40 +261,61 @@ class PyKill:
             if pid == os.getpid():
                 continue  # no suicides
             names = {script_key(name) for name in command_names(words[1:])}
-            for target, key in keys.items():
-                if key not in names:
-                    continue
-                self.last_sig[target] = sig
-                if kill_pid(pid, sig): # returns True if alive
-                    self.alive[target] = line.strip()
-        return self.alive
+            matched = wanted & names
+            if matched:
+                yield pid, line.strip(), matched
 
-    def kill_loop(self, targets):
-        """Loops thru the remaining process until all or gone or we
-        become exhausted (e.g., unkillable processes)."""
+    @staticmethod
+    def matching_pids(targets):
+        """Return ``{pid: ps line}`` for live processes that look like targets."""
         targets = targets if isinstance(targets, (list, tuple)) else [targets]
-        for sig in [signal.SIGTERM, signal.SIGTERM, signal.SIGTERM,
-                    signal.SIGKILL, signal.SIGKILL,]:
-            if not self._kill_script(targets, sig):
-                break
-            time.sleep(1)
-        for target, line in self.alive.items():
-            prt(f'ALERT: running: {line} [sig={self.last_sig[target]}]')
-        for target in targets:
-            if target in self.alive:
-                continue
-            prt(f'INFO: gone: {target} [sig={self.last_sig.get(target, None)}]')
-        return not bool(self.alive)
+        return {pid: line for pid, line, _ in PyKill._iter_matches(targets)}
+
+    @staticmethod
+    def kill_pid(pid, targets, grace=3.0, delay=0.1):
+        """Terminate one process, but only if its argv still names a target.
+
+        Returns True when the process is gone.  The name check is what makes
+        ``--replace`` safe: the pid recorded in a lock file may since have
+        been reused by an unrelated process, and a blind ``kill(2)`` would
+        then hit the wrong program.  A pid whose command line does not match
+        is never signalled.
+
+        This replaces the old unconditional ``kill_loop()`` that ran before
+        the lock was taken: killing an incumbent is a *takeover*, not the
+        normal start-up path.
+        """
+        targets = targets if isinstance(targets, (list, tuple)) else [targets]
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0 or pid == os.getpid():
+            return False
+        if pid not in PyKill.matching_pids(targets):
+            return False
+        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 1.0)):
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                return True      # already gone
+            deadline = time.time() + wait
+            while time.time() < deadline:
+                time.sleep(delay)
+                if pid not in PyKill.matching_pids(targets):
+                    return True
+        return pid not in PyKill.matching_pids(targets)
 
 
 class SingleInstance:
-    """Exclusive PID/lock file, the backstop for the process-name killer.
+    """Exclusive PID/lock file: the guarantee that two applets never coexist.
 
-    ``PyKill`` can only recognise the command lines it knows about, so a
-    single ``flock`` on a lock file is what actually guarantees that two
-    applets never coexist.  The kernel drops the lock when the holder exits --
-    even on SIGKILL -- so a crash cannot leave a stale lock that blocks the
-    next start.  The file's contents are informational (the holder's pid).
+    The lock -- not the process-name scan -- is authoritative.  A start tries
+    to take it *first*; if another live process holds it, the newcomer reports
+    the holder and exits unless ``--replace`` was given.  The kernel drops the
+    lock when the holder exits -- even on SIGKILL -- so a crash cannot leave a
+    stale lock that blocks the next start.  The file's contents are
+    informational (the holder's pid).
     """
     current = None   # the instance holding the lock in this process
 

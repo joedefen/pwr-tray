@@ -979,7 +979,11 @@ class PwrTray:
         env = dict(os.environ)
         env['PYTHONPATH'] = os.pathsep.join(
             [package_root] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
-        args = [sys.executable, '-m', 'pwr_tray.main', *sys.argv[1:]]
+        # --replace is never inherited: a restart releases the lock first, so
+        # the replacement has nothing to take over, and it must not keep a
+        # destructive flag should the lock change hands in between.
+        inherited = [arg for arg in sys.argv[1:] if arg != '--replace']
+        args = [sys.executable, '-m', 'pwr_tray.main', *inherited]
         Utils.SingleInstance.release_current()
         subprocess.Popen(args, env=env)
         os._exit(0)
@@ -1270,6 +1274,33 @@ def format_desktops(de_json, source=''):
     return lines
 
 
+def acquire_lock_or_take_over(lock, replace=False):
+    """Take the single-instance lock and report whether this process owns it.
+
+    The lock comes *first* now.  Killing the incumbent used to run before the
+    lock, so a second launch never detected the first one -- it terminated it
+    and then took over.  With ``Restart=always`` in the shipped units, a
+    systemd unit plus a DE autostart could then ping-pong forever: each new
+    instance killed the other, and each supervisor restarted its own.
+
+    Killing is now the *takeover* path, and it is opt-in (``--replace``).  Even
+    then the recorded pid is only signalled after its command line is confirmed
+    to still be pwr-tray, so a recycled pid or a foreign lock holder is left
+    alone.
+    """
+    if lock.acquire(retries=5, delay=0.2):
+        return True
+    holder = Utils.SingleInstance.read_pid(lock.path)
+    if not replace or not holder:
+        return False
+    prt(f'--replace: terminating lock holder pid {holder}')
+    if not PyKill().kill_pid(holder, ['pwr-tray']):
+        prt(f'WARNING: pid {holder} does not look like pwr-tray; not killing it')
+        return False
+    # The old process may need a moment to exit and let go of the flock.
+    return lock.acquire(retries=25, delay=0.2)
+
+
 def main():
     # pylint: disable=import-outside-toplevel
     import argparse
@@ -1294,6 +1325,9 @@ def main():
                  ' kde-wayland)')
     parser.add_argument('--list-des', action='store_true',
             help='list known desktops and the commands each requires, then exit')
+    parser.add_argument('--replace', action='store_true',
+            help='if another pwr-tray holds the single-instance lock, terminate'
+                 ' it and take over (default: refuse to start)')
     opts = parser.parse_args()
 
     if opts.list_des:
@@ -1324,16 +1358,19 @@ def main():
     # debug.log, which would hide the startup errors reported below.
     Utils.capture_console()
     prt('START-UP', to_stdout=opts.stdout)
-    PyKill().kill_loop('pwr-tray')
 
-    # The killer only recognises command lines it knows about; the lock is the
-    # real guarantee that two applets (and two swayidle managers) never coexist.
+    # The lock is the guarantee that two applets (and two swayidle managers)
+    # never coexist.  It is taken before anything destructive happens: a plain
+    # launch refuses to start when an instance already owns it, and only
+    # `--replace` inspects the holder, terminates it and takes over.
     lock = Utils.SingleInstance(os.path.join(ini_tool.folder, 'pwr-tray.lock'))
-    if not lock.acquire(retries=5, delay=0.2):
+    if not acquire_lock_or_take_over(lock, replace=opts.replace):
         holder = Utils.SingleInstance.read_pid(lock.path)
         message = 'another pwr-tray is already running'
         if holder:
             message += f' (pid {holder})'
+        if not opts.replace:
+            message += '; use --replace to terminate it and take over'
         prt(f'ERROR: {message}')
         Utils.error_print(f'ERROR: {message}')
         sys.exit(3)
