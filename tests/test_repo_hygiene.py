@@ -79,3 +79,59 @@ def test_readme_matches_the_applet_on_chdir_and_single_instance():
     sources = '\n'.join(path.read_text(encoding='utf-8')
                         for path in sorted((ROOT / 'pwr_tray').glob('*.py')))
     assert 'os.chdir' not in sources
+
+
+def test_the_release_gate_exists_and_the_documents_name_it():
+    """Audit F1: one release entry point, and docs that point at the real one.
+
+    The old six-step recipe uploaded `dist/*`, which accumulates every past
+    version and aborts on the first `File already exists`.
+    """
+    gate = ROOT / 'bless'
+    assert gate.is_file(), 'the release gate is missing'
+    assert gate.stat().st_mode & 0o111, './bless must be executable'
+
+    for document in ('README-DEV.md', 'pyproject.toml', 'plans/pypi-release-plan.md'):
+        text = (ROOT / document).read_text(encoding='utf-8')
+        assert './bless' in text, document
+        assert './release' not in text, document
+
+
+def test_no_documented_command_uploads_the_whole_dist_directory():
+    # Split so this test's own source does not trip the scan it performs.
+    needle = 'twine upload ' + 'dist/*'
+    skipped = {'.git', 'build', 'dist', '.venv', '.ruff_cache', '.pytest_cache'}
+    text_suffixes = {'', '.md', '.toml', '.yml', '.yaml', '.py', '.cfg', '.txt'}
+    offenders = []
+    for path in ROOT.rglob('*'):
+        relative = path.relative_to(ROOT)
+        if not path.is_file() or skipped & set(relative.parts):
+            continue
+        if path.suffix not in text_suffixes:
+            continue
+        try:
+            text = path.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            continue
+        if needle in text:
+            offenders.append(str(relative))
+    assert not offenders, offenders
+
+
+def test_the_documents_describe_the_testpypi_rehearsal():
+    """`./bless test` is a documented mode, not tribal knowledge.
+
+    The install line is the point of the rehearsal, and it is only correct with
+    a cache purge and a fallback index, so the document has to carry all three.
+    """
+    readme = (ROOT / 'README-DEV.md').read_text(encoding='utf-8')
+    assert './bless test' in readme
+    assert 'test.pypi.org' in readme
+    assert 'TWINE_TESTPYPI_PASSWORD' in readme
+    assert '--extra-index-url' in readme
+
+
+def test_ci_and_bless_share_the_distribution_inspector():
+    workflow = (ROOT / '.github' / 'workflows' / 'tests.yml').read_text(encoding='utf-8')
+    assert 'tests/inspect_dist.py' in workflow
+    assert 'zipfile' not in workflow, 'the inline inspector must not come back'

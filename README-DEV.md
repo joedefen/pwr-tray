@@ -133,13 +133,42 @@ Service integrations worth knowing, because they are policy rather than code:
 
 ## Releasing
 
-1. bump `__version__` in `pwr_tray/__init__.py` (the only place)
-2. run the test gate; commit; tag `vX.Y.Z`; push with tags
-3. `python -m build` -- `dist/*.whl` and `dist/*.tar.gz`
-4. `python -m twine check dist/*`
-5. `python -m twine upload dist/*`
-   (`TWINE_USERNAME=__token__`, `TWINE_PASSWORD=pypi-...`)
-6. install the artifact into a scratch environment
-   (`pipx install --force ./dist/pwr_tray-X.Y.Z-py3-none-any.whl`), then check
-   `pwr-tray --version` and `pwr-tray --list-des`, so the index cannot serve a
-   wheel this tree never ran.
+`./bless` is the whole procedure.  It is a dry run by default and prints the
+checklist it would execute; `./bless test` rehearses the upload on TestPyPI;
+`./bless publish` performs the irreversible part.
+
+1. bump `__version__` in `pwr_tray/__init__.py` (the only place), then commit.
+2. `./bless` -- preflight (clean tree, tag absent, tool floors), the PyPI
+   duplicate check, the same three gates CI runs, a build into
+   `build/bless-<version>/`, inspection with `tests/inspect_dist.py`, `twine
+   check --strict`, and a smoke install of the built wheel in a throwaway
+   virtualenv.
+3. `./bless test` -- the rehearsal.  It builds a throwaway `X.Y.Z.99.N` from a
+   *copy* of the tree, where `N` is one past the highest suffix TestPyPI
+   already holds for that base version (0 the first time), and uploads it only
+   to `test.pypi.org`.  The tree keeps its real version, no tag is created, no
+   branch moves, and the same gates and inspector run.  It then prints the
+   install line, which needs `python -m pip cache purge` first -- pip remembers
+   an index it has already read -- and `--extra-index-url
+   https://pypi.org/simple/`, because TestPyPI carries none of the
+   dependencies.  `TWINE_TESTPYPI_PASSWORD` is the TestPyPI token; a TestPyPI
+   token is not a PyPI token, so both can be exported at once.
+4. `./bless publish` -- fast-forward `main` and `dev` to one commit, tag
+   `vX.Y.Z`, upload the two named files to PyPI, verify the index, and push.
+
+The duplicate check runs in **every** mode, against the index that mode
+targets, and before anything is built.  If the version in
+`pwr_tray/__init__.py` is already published the command refuses and prints
+every release that index has, because an upload cannot be replaced.  A 404
+counts as "nothing published yet", which is what either index answers before a
+project's first upload.  For `publish`, `TWINE_PASSWORD` must be set;
+`TWINE_USERNAME` defaults to `__token__`.
+
+### Why not a release workflow
+
+Publishing is irreversible, and the owner runs it from the development tree, so
+the safety lives in one inspectable command rather than in a CI job that can
+only see what it just built.  CI stays a gate: it builds and inspects the same
+way (`tests/inspect_dist.py`) but never holds an upload credential.  The
+reasoning is recorded in `plans/pypi-release-plan.md` (R1/R2) so a later audit
+does not re-file it as missing automation.

@@ -113,48 +113,12 @@ jobs:
       - name: Build sdist and wheel
         run: python -m build
 
+      # The same inspector ./bless runs before an upload, so CI and the
+      # maintainer cannot disagree about what a valid artifact is.  It reads
+      # the expected metadata from pyproject.toml and pwr_tray/__init__.py,
+      # never from the artifact it is checking.
       - name: Inspect the built distributions
-        run: |
-          python - <<'PY'
-          import glob
-          import tarfile
-          import zipfile
-          from email.parser import Parser
-
-          import pwr_tray
-
-          wheel, = glob.glob('dist/*.whl')
-          sdist, = glob.glob('dist/*.tar.gz')
-
-          with zipfile.ZipFile(wheel) as archive:
-              names = archive.namelist()
-              metadata_name = next(n for n in names if n.endswith('.dist-info/METADATA'))
-              metadata = Parser().parsestr(
-                  archive.read(metadata_name).decode('utf-8'))
-
-          assert metadata['Name'] == 'pwr_tray'
-          assert metadata['Version'] == pwr_tray.__version__
-          assert metadata['Requires-Python'] == '>=3.11'
-          requires = metadata.get_all('Requires-Dist') or []
-          for dependency in ('psutil', 'PyQt5', 'ruamel.yaml'):
-              assert any(dep.startswith(dependency) for dep in requires), dependency
-
-          # The wheel must carry the runtime resources, and none of the
-          # development tree (tests, caches, virtualenvs).
-          for resource in ('pwr_tray/resources/commands.yaml',
-                           'pwr_tray/resources/lockpaper.png',
-                           'pwr_tray/resources/FullSun-v03.svg'):
-              assert resource in names, resource
-          assert not [n for n in names if n.startswith('tests/')]
-          assert not [n for n in names if '.venv' in n or '__pycache__' in n]
-
-          with tarfile.open(sdist) as archive:
-              sources = archive.getnames()
-          assert any(n.endswith('pwr_tray/resources/commands.yaml') for n in sources)
-          assert any(n.endswith('pyproject.toml') for n in sources)
-
-          print(f'distributions OK: {wheel} and {sdist}')
-          PY
+        run: python tests/inspect_dist.py dist/*.whl dist/*.tar.gz
 
       - name: Install the wheel into a clean virtualenv
         run: |

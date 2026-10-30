@@ -1,0 +1,668 @@
+#!/usr/bin/env python3
+"""bless -- the only path to a PyPI upload for this project.
+
+    ./bless            dry run: run every stage, print what publish would do
+    ./bless test       build X.Y.Z.99.N and upload it to TestPyPI; no tags
+    ./bless publish    run the same stages, then tag, upload and push to PyPI
+
+The default is the dry run, and there is no flag that turns one stage on and
+another off: publishing is a single intent or it does not happen.  `publish`
+does not prompt -- the confirmation is the dry run plus the typed word.
+
+`test` is the rehearsal, aimed at the upload path itself.  The working version
+is never spent on it: a throwaway `X.Y.Z.99.N` is built from a *copy* of the
+tree, where 99 keeps it clear of every real release and N is one past whatever
+TestPyPI already holds for that base (0 the first time).  It uploads only to
+test.pypi.org, creates no tag and moves no branch, and it prints the pip line
+that installs the result -- after a cache purge, because pip remembers an index
+it has already read, and with `--extra-index-url` for PyPI, because TestPyPI
+carries none of the dependencies.
+
+The duplicate check is mandatory in *every* mode, against the index that mode
+targets, and runs before anything is built or uploaded.  It refuses when the
+version is already there, printing every published version in the refusal,
+because an upload cannot be replaced.
+
+Why no CI publish job: the upload is irreversible and the owner runs it from
+the tree, so the safety has to be visible and local.  CI stays a gate.  See
+plans/pypi-release-plan.md for the reasoning (R1/R2) and for the branch model.
+
+Stages, in order: preflight (clean tree, tag absent, tool floors), index check,
+gates (ruff, compileall, pytest with coverage), build into build/bless-<ver>/,
+inspect the two files, `twine check --strict`, install-and-run smoke.  The dry
+run then prints the branch plan and the checklist.  `test` uploads and verifies
+against TestPyPI and stops there.  `publish` aligns the two branches, tags,
+uploads to PyPI, verifies and pushes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as installed_version
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+PYPI_URL = 'https://pypi.org/pypi/pwr_tray/json'
+TESTPYPI_URL = 'https://test.pypi.org/pypi/pwr_tray/json'
+TESTPYPI_UPLOAD = 'https://test.pypi.org/legacy/'
+INDEX_TIMEOUT = 15          # seconds for one index read
+VERIFY_ATTEMPTS = 10        # either index's JSON can lag an accepted upload
+VERIFY_DELAY = 3.0          # seconds between verify attempts
+TEST_TAG = 99               # X.Y.Z.99.N sorts clear of every real release
+TOOL_FLOORS = {'twine': (7, 0, 0), 'packaging': (26, 0, 0)}
+
+# The two destinations.  `upload` is None for PyPI because that is twine's own
+# default, and `token` is an environment variable name: a TestPyPI token is not
+# a PyPI token, so both can be exported at once without either hiding the other.
+PYPI = {'name': 'PyPI', 'index': PYPI_URL, 'upload': None,
+        'token': 'TWINE_PASSWORD'}
+TESTPYPI = {'name': 'TestPyPI', 'index': TESTPYPI_URL, 'upload': TESTPYPI_UPLOAD,
+            'token': 'TWINE_TESTPYPI_PASSWORD'}
+
+# What a throwaway build must not copy out of the tree.
+COPY_EXCLUDES = ('.git', 'build', 'dist', '.venv', 'env', 'venv', '__pycache__',
+                 '.pytest_cache', '.ruff_cache', '.mypy_cache', 'htmlcov',
+                 '.coverage*', '*.pyc')
+VERSION_LINE = re.compile(r'^__version__ = .*$', re.MULTILINE)
+
+
+class BlessError(RuntimeError):
+    """A stage refused; the message is the whole explanation shown to the user."""
+
+
+def say(stage: str, message: str) -> None:
+    print(f'[{stage}] {message}', flush=True)
+
+
+def run(command: list[str], *, capture: bool = False,
+        env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """Run a command from the repository root, capturing when asked."""
+    return subprocess.run(  # noqa: S603 - argv lists built here, never a shell string
+        [str(part) for part in command],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        check=False,
+    )
+
+
+def git(*arguments: str) -> str:
+    result = run(['git', *arguments], capture=True)
+    if result.returncode != 0:
+        raise BlessError(f'git {" ".join(arguments)} failed: {result.stderr.strip()}')
+    return result.stdout.strip()
+
+
+def _version_tuple(text: str) -> tuple[int, int, int]:
+    parts = tuple(int(part) for part in re.findall(r'\d+', text)[:3])
+    return (parts + (0, 0, 0))[:3]
+
+
+def _tool_floor(name: str, minimum: tuple[int, int, int]) -> None:
+    try:
+        found = installed_version(name)
+    except PackageNotFoundError:
+        raise BlessError(
+            f'{name} is not installed; use the dev extra: '
+            'python -m pip install -e ".[dev]"') from None
+    if _version_tuple(found) < minimum:
+        wanted = '.'.join(str(part) for part in minimum)
+        raise BlessError(
+            f'{name} {found} is older than the required {wanted}; '
+            f'the validator must be at least as new as the metadata writer')
+
+
+def preflight(version: str, *, release: bool = True) -> dict:
+    """Refuse to start unless the tree and the toolchain can be trusted.
+
+    `release=False` is the `test` mode: it skips the two checks that exist only
+    to protect a tag and a push.  The clean-tree check stays in every mode,
+    because what gets built has to describe something committed.
+    """
+    status = git('status', '--porcelain')
+    if status:
+        raise BlessError(
+            'the working tree is not clean, so what gets built would not '
+            f'describe a commit:\n{status}')
+
+    branch = git('rev-parse', '--abbrev-ref', 'HEAD')
+    if release and branch == 'HEAD':
+        raise BlessError('HEAD is detached; bless publishes only from main or dev')
+    sha = git('rev-parse', '--short', 'HEAD')
+    if release and run(['git', 'rev-parse', '-q', '--verify', f'refs/tags/v{version}'],
+                       capture=True).returncode == 0:
+        raise BlessError(f'the tag v{version} already exists locally')
+
+    for tool, minimum in TOOL_FLOORS.items():
+        _tool_floor(tool, minimum)
+    if run([sys.executable, '-m', 'build', '--version'], capture=True).returncode != 0:
+        raise BlessError('python -m build is unavailable; install the dev extra')
+
+    return {'branch': branch, 'sha': sha}
+
+
+def fetch_index(target: dict = PYPI) -> dict:
+    """The JSON document for this project on `target`, or a refusal.
+
+    A 404 is not a failure: it is what either index answers before the project
+    has its first upload, and the duplicate check then has nothing to collide
+    with.
+    """
+    url = target['index']
+    request = urllib.request.Request(url, headers={'Accept': 'application/json'})
+    try:
+        with urllib.request.urlopen(request, timeout=INDEX_TIMEOUT) as response:  # noqa: S310
+            document = json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise BlessError(
+                f'cannot read {url}: {exc}\n'
+                'the duplicate check is mandatory in every mode, so bless stops '
+                'here') from None
+        say('index', f'{url} has no project yet (404); reading it as empty')
+        return {'releases': {}}
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise BlessError(
+            f'cannot read {url}: {exc}\n'
+            'the duplicate check is mandatory in every mode, so bless stops '
+            'here') from None
+    if not isinstance(document.get('releases'), dict):
+        raise BlessError(f'{url} did not return a releases map; refusing to continue')
+    return document
+
+
+def _publication_key(text: str) -> tuple[int, tuple[int, ...]]:
+    try:
+        return (0, tuple(int(part) for part in text.split('.')))
+    except ValueError:
+        return (1, ())
+
+
+def published_versions(document: dict) -> list[str]:
+    return sorted(document['releases'], key=_publication_key)
+
+
+def next_test_version(version: str, document: dict) -> str:
+    """`2.0.0` becomes `2.0.0.99.0`, or one past the highest suffix in use.
+
+    Only suffixes of *this* base version count, so a rehearsal of an older
+    release never pushes the next one's counter forward, and a project that
+    TestPyPI has never seen starts at 0.
+    """
+    pattern = re.compile(rf'^{re.escape(version)}\.{TEST_TAG}\.(\d+)$')
+    used = [int(match.group(1)) for name in document['releases']
+            if (match := pattern.match(name))]
+    return f'{version}.{TEST_TAG}.{max(used, default=-1) + 1}'
+
+
+def check_index(version: str, document: dict | None = None,
+                target: dict = PYPI) -> list[str]:
+    """Refuse when `version` is already on `target`; return the published list.
+
+    Runs in the dry run and in the rehearsal as well as in `publish`: finding
+    out that the version exists must not require building the artifact first,
+    and the refusal names every version that index already has.
+    """
+    document = fetch_index(target) if document is None else document
+    releases = document['releases']
+    published = published_versions(document)
+    if str(version) in releases:
+        listing = ', '.join(published) if published else '(none)'
+        raise BlessError(
+            f'pwr_tray {version} is already on {target["name"]}, and an upload '
+            f'cannot be replaced.\n  published versions: {listing}\n'
+            '  bump __version__ in pwr_tray/__init__.py, commit, and bless again')
+    latest = published[-1] if published else 'none'
+    say('index', f'pwr_tray {version} is not on {target["name"]} '
+                 f'({len(published)} versions exist; latest is {latest})')
+    return published
+
+
+def gates() -> None:
+    """The same three gates CI runs, on the same interpreter."""
+    steps = [
+        ('lint', [sys.executable, '-m', 'ruff', 'check', '.']),
+        ('compile', [sys.executable, '-m', 'compileall', '-q',
+                     'pwr_tray', 'conftest.py', 'tests']),
+        ('tests', [sys.executable, '-m', 'pytest', '-q',
+                   '--cov=pwr_tray', '--cov-report=term-missing']),
+    ]
+    for name, command in steps:
+        say('gate', name)
+        result = run(command)
+        if result.returncode != 0:
+            raise BlessError(f'the {name} gate failed (exit {result.returncode})')
+
+
+def _artifacts(outdir: Path) -> tuple[Path, Path]:
+    """Exactly one wheel and one sdist, or a refusal naming what was found."""
+    wheels = sorted(outdir.glob('*.whl'))
+    sdists = sorted(outdir.glob('*.tar.gz'))
+    if len(wheels) != 1 or len(sdists) != 1:
+        raise BlessError(
+            f'expected exactly one wheel and one sdist in '
+            f'{outdir.relative_to(ROOT)}, found '
+            f'{[path.name for path in wheels + sdists]}')
+    return wheels[0], sdists[0]
+
+
+def build(version: str) -> tuple[Path, Path]:
+    """Build into a fresh directory so nothing older can be uploaded."""
+    outdir = ROOT / 'build' / f'bless-{version}'
+    if outdir.exists():
+        shutil.rmtree(outdir)
+    say('build', f'{outdir.relative_to(ROOT)} (wiped first)')
+    result = run([sys.executable, '-m', 'build', '--outdir', str(outdir)])
+    if result.returncode != 0:
+        raise BlessError(f'python -m build failed (exit {result.returncode})')
+    return _artifacts(outdir)
+
+
+def _set_version(root: Path, version: str) -> None:
+    """Rewrite the one `__version__` line in a *copy* of the tree."""
+    path = root / 'pwr_tray' / '__init__.py'
+    text = path.read_text(encoding='utf-8')
+    updated, count = VERSION_LINE.subn(f'__version__ = {version!r}', text)
+    if count != 1:
+        raise BlessError(
+            f'expected exactly one `__version__ = ...` line in '
+            f'{path.relative_to(root)}, found {count}; a throwaway version '
+            'cannot be built from this tree')
+    path.write_text(updated, encoding='utf-8')
+
+
+def build_for_test(version: str) -> tuple[Path, Path]:
+    """Build the throwaway version from a copy, leaving the real tree alone.
+
+    The backend reads `__version__` from the module, so a version that is not
+    the working one needs its own copy.  Editing the tree instead would dirty
+    it, spend the version it is holding, and make the next tag describe
+    something that was never committed.
+    """
+    work = ROOT / 'build' / f'bless-test-{version}'
+    if work.exists():
+        shutil.rmtree(work)
+    source = work / 'src'
+    say('build', f'{source.relative_to(ROOT)} (a copy, __version__ = {version})')
+    shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(*COPY_EXCLUDES))
+    _set_version(source, version)
+
+    outdir = work / 'dist'
+    result = run([sys.executable, '-m', 'build', '--outdir', str(outdir),
+                  str(source)])
+    if result.returncode != 0:
+        raise BlessError(f'python -m build failed (exit {result.returncode})')
+    return _artifacts(outdir)
+
+
+def inspector():
+    """Load the inspector CI also uses, so the two checks cannot drift."""
+    path = ROOT / 'tests' / 'inspect_dist.py'
+    spec = importlib.util.spec_from_file_location('inspect_dist', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def inspect_dist(wheel: Path, sdist: Path, version: str | None = None) -> None:
+    """Assert the artifacts against the tree; `version` is the rehearsal's own."""
+    say('inspect', f'{wheel.name} and {sdist.name}')
+    try:
+        inspector().check_all(wheel, sdist, version)
+    except ValueError as exc:
+        raise BlessError(str(exc)) from None
+
+
+def check(wheel: Path, sdist: Path) -> None:
+    say('check', 'twine check --strict')
+    result = run([sys.executable, '-m', 'twine', 'check', '--strict',
+                  str(wheel), str(sdist)])
+    if result.returncode != 0:
+        raise BlessError(
+            'twine check --strict failed. If it rejects a Metadata 2.5 field, '
+            'pin the build backend to flit_core<4 and bless again')
+
+
+def smoke(wheel: Path, version: str) -> None:
+    """Install the built wheel in a throwaway venv and run its console script."""
+    venv = wheel.parent / 'smoke-venv'
+    if venv.exists():
+        shutil.rmtree(venv)
+    say('smoke', f'installing {wheel.name} into {venv.relative_to(ROOT)}')
+    for step in ([sys.executable, '-m', 'venv', str(venv)],
+                 [str(venv / 'bin' / 'python'), '-m', 'pip', 'install',
+                  '--quiet', '--upgrade', 'pip'],
+                 [str(venv / 'bin' / 'python'), '-m', 'pip', 'install',
+                  '--quiet', str(wheel)]):
+        if run(step).returncode != 0:
+            raise BlessError(f'smoke install failed: {" ".join(step[1:])}')
+
+    console = venv / 'bin' / 'pwr-tray'
+    reported = run([console, '--version'], capture=True)
+    if reported.returncode != 0 or version not in reported.stdout:
+        raise BlessError(
+            f'the installed console script did not report {version}: '
+            f'{reported.stdout.strip() or reported.stderr.strip()}')
+    listing = run([console, '--list-des'], capture=True)
+    if listing.returncode != 0 or 'sway-wayland' not in listing.stdout:
+        raise BlessError('the installed console script could not list sway-wayland')
+    say('smoke', f'installed wheel reports pwr-tray {version} and lists sway-wayland')
+
+
+def branch_plan(current: str | None, tips: dict[str, str | None],
+                is_ancestor) -> dict:
+    """Decide what `publish` must do to leave main and dev identical.
+
+    Pure in everything that matters: the caller supplies the tips and the
+    ancestry test, so the whole table in the plan is testable without a git
+    remote.  Returns either `{'refusal': reason}` or `{'align': branch|None}`.
+    """
+    if current not in ('main', 'dev'):
+        where = 'a detached HEAD' if current is None else f'branch {current}'
+        return {'refusal': f'HEAD is on {where}; bless publishes only from main or dev'}
+
+    for branch in ('main', 'dev'):
+        if not tips.get(branch):
+            return {'refusal': f'{branch} does not exist locally'}
+        if not tips.get(f'origin/{branch}'):
+            return {'refusal': f'origin/{branch} does not exist; push it before blessing'}
+
+    main, dev = tips['main'], tips['dev']
+    if main == dev:
+        align = None
+    elif is_ancestor(main, dev):
+        align = 'main'
+    elif is_ancestor(dev, main):
+        align = 'dev'
+    else:
+        return {'refusal': (
+            f'main ({main[:7]}) and dev ({dev[:7]}) have diverged; merge or '
+            'rebase until one contains the other, then bless again')}
+
+    after = dict(tips)
+    if align:
+        after[align] = tips['dev' if align == 'main' else 'main']
+    for branch in ('main', 'dev'):
+        if not is_ancestor(tips[f'origin/{branch}'], after[branch]):
+            return {'refusal': (
+                f'pushing {branch} would not be a fast-forward on origin; '
+                f'pull/rebase {branch} first')}
+    return {'align': align}
+
+
+def _maybe_rev(reference: str) -> str | None:
+    result = run(['git', 'rev-parse', '--verify', '-q', reference], capture=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def branch_stage(branch: str) -> dict:
+    tips = {name: _maybe_rev(reference) for name, reference in (
+        ('main', 'main'), ('dev', 'dev'),
+        ('origin/main', 'origin/main'), ('origin/dev', 'origin/dev'))}
+    plan = branch_plan(
+        branch, tips,
+        lambda older, newer: run(
+            ['git', 'merge-base', '--is-ancestor', older, newer],
+            capture=True).returncode == 0)
+    if 'refusal' in plan:
+        raise BlessError(plan['refusal'])
+    if plan['align']:
+        say('branch', f'would fast-forward {plan["align"]} to {tips[branch][:7]}')
+    else:
+        say('branch', 'main and dev are already the same commit')
+    return plan
+
+
+def align_branches(plan: dict, branch: str) -> None:
+    if not plan['align']:
+        return
+    target = plan['align']
+    git('branch', '-f', target, branch)
+    say('branch', f'fast-forwarded {target} to {branch}')
+
+
+def tag(version: str) -> None:
+    git('tag', f'v{version}')
+    say('tag', f'v{version}')
+
+
+def untag(version: str) -> None:
+    with contextlib.suppress(BlessError):
+        git('tag', '-d', f'v{version}')
+
+
+def upload(wheel: Path, sdist: Path, version: str, target: dict = PYPI) -> None:
+    """Send the two named files to `target`; twine reads its token from the env."""
+    where, token = target['name'], target['token']
+    if not os.environ.get(token):
+        raise BlessError(
+            f'{token} is not set (TWINE_USERNAME defaults to __token__), and a '
+            f'{where} token is not a token for the other index')
+    env = dict(os.environ)
+    env.setdefault('TWINE_USERNAME', '__token__')
+    command = [sys.executable, '-m', 'twine', 'upload']
+    if target['upload']:
+        command += ['--repository-url', target['upload']]
+    say('upload', f'{wheel.name} and {sdist.name} to {where}')
+    result = run([*command, str(wheel), str(sdist)], env=env)
+    if result.returncode != 0:
+        if target['upload']:
+            raise BlessError(
+                f'twine upload to {where} failed; nothing was published and the '
+                'tree is untouched.\nIf that index rejected a Metadata 2.5 '
+                'field, pin the build backend to flit_core<4, rebuild, and '
+                'bless again.')
+        untag(version)
+        raise BlessError(
+            'twine upload failed; the local tag was removed and nothing was '
+            'pushed.\nIf PyPI rejected a Metadata 2.5 field, pin the build '
+            'backend to flit_core<4, rebuild, and bless again.')
+
+
+def _metadata_mismatches(version: str, wheel: Path, document: dict) -> list[str]:
+    releases = document['releases']
+    info = document.get('info', {})
+    project = inspector().project()
+    problems: list[str] = []
+
+    files = releases.get(version) or []
+    local_sha = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
+    digests = [entry.get('digests', {}).get('sha256')
+               for entry in files if entry.get('packagetype') == 'bdist_wheel']
+    if not digests or digests[0] != local_sha:
+        problems.append('the index wheel SHA256 differs from the uploaded file')
+
+    if info.get('summary') != project['description']:
+        problems.append(
+            f'summary: expected {project["description"]!r}, '
+            f'found {info.get("summary")!r}')
+    if info.get('requires_python') != project['requires-python']:
+        problems.append(
+            f'requires_python: expected {project["requires-python"]!r}, '
+            f'found {info.get("requires_python")!r}')
+
+    # The index reports the dev extra too, with an `extra == "dev"` marker.
+    expected = inspector().runtime_names(project['dependencies'])
+    found = inspector().runtime_names(info.get('requires_dist') or [])
+    if found != expected:
+        problems.append(
+            f'Requires-Dist: expected {sorted(expected)}, found {sorted(found)}')
+
+    wanted_keywords = set(project.get('keywords', []))
+    found_keywords = {part.strip() for part in (info.get('keywords') or '').split(',')
+                      if part.strip()}
+    if found_keywords != wanted_keywords:
+        problems.append(
+            f'keywords: expected {sorted(wanted_keywords)}, '
+            f'found {sorted(found_keywords)}')
+    return problems
+
+
+def verify_index(version: str, wheel: Path, target: dict = PYPI) -> None:
+    where = target['name']
+    say('verify', f'waiting for {where} to report the upload')
+    last: list[str] = ['the version never appeared']
+    for attempt in range(1, VERIFY_ATTEMPTS + 1):
+        try:
+            document = fetch_index(target)
+        except BlessError as exc:
+            last = [str(exc)]
+        else:
+            if str(version) in document['releases']:
+                last = _metadata_mismatches(version, wheel, document)
+                if not last:
+                    say('verify', f'{where} serves {version} with matching metadata')
+                    return
+        if attempt < VERIFY_ATTEMPTS:
+            time.sleep(VERIFY_DELAY)
+    raise BlessError(
+        f'{where} did not confirm pwr_tray {version}: ' + '; '.join(last) +
+        '\nThe upload was accepted; do not bless the same version again.')
+
+
+def install_hint(version: str) -> None:
+    """How to try the rehearsal build.
+
+    TestPyPI deliberately serves no dependencies, so the command has to fall
+    back to PyPI for those; and pip caches the index it has already read, so the
+    cache goes first or the new file will not be seen.
+    """
+    print()
+    print(f'pwr_tray {version} is on TestPyPI: not on PyPI, and nothing was '
+          'tagged.')
+    print('Purge the index pip has cached, then install:')
+    print()
+    print('  python -m pip cache purge')
+    print('  python -m pip install --no-cache-dir \\')
+    print('      --index-url https://test.pypi.org/simple/ \\')
+    print('      --extra-index-url https://pypi.org/simple/ \\')
+    print(f'      pwr_tray=={version}')
+    print()
+    print('The extra index is required: TestPyPI carries none of the '
+          'dependencies.')
+    print('Undo it with: python -m pip uninstall pwr_tray')
+
+
+def publish_git(version: str, branch: str, other: str) -> None:
+    for reference in (branch, other, f'v{version}'):
+        result = run(['git', 'push', 'origin', reference])
+        if result.returncode != 0:
+            raise BlessError(
+                f'git push origin {reference} failed; the index is already '
+                'correct.\nFinish the job with:\n'
+                f'  git push origin {branch} {other} v{version}')
+        say('push', reference)
+
+
+def checklist(version: str, facts: dict, public: list[str],
+              wheel: Path, sdist: Path, plan: dict) -> None:
+    other = 'dev' if facts['branch'] == 'main' else 'main'
+    align = (f'fast-forward {plan["align"]} to {facts["sha"]}'
+             if plan['align'] else 'nothing (main and dev already match)')
+    latest = public[-1] if public else 'none'
+    print()
+    print('DRY RUN -- nothing has been tagged, uploaded or pushed.')
+    print(f'  tree       clean at {facts["sha"]} on {facts["branch"]}')
+    print('  gates      ruff, compileall, pytest --cov all passed')
+    print(f'  index      {version} is not published (latest is {latest})')
+    print(f'  artifacts  {wheel.relative_to(ROOT)}')
+    print(f'             {sdist.relative_to(ROOT)}')
+    print('  checks     inspect_dist, twine check --strict, smoke install passed')
+    print('  branches   ' + align)
+    print(f'  would tag  v{version}')
+    print(f'  would send {wheel.name} and {sdist.name} to PyPI')
+    print(f'  would push {facts["branch"]}, {other} and v{version} to origin')
+    print()
+    print('Run ./bless test to rehearse the upload on TestPyPI first -- it')
+    print('builds a throwaway X.Y.Z.99.N from a copy and tags nothing.')
+    print('Run ./bless publish to do exactly that.')
+
+
+def rehearse(version: str) -> None:
+    """`bless test`: upload `X.Y.Z.99.N` to TestPyPI and touch no git state.
+
+    Everything else is the real gate -- the same tree checks, the same three
+    gates, the same inspector, the same smoke install -- so what this proves is
+    that the *upload path* works, not that a second, looser path exists.
+    """
+    facts = preflight(version, release=False)
+    say('preflight', f'clean tree at {facts["sha"]} '
+                     '(this mode tags nothing and pushes nothing)')
+    document = fetch_index(TESTPYPI)
+    candidate = next_test_version(version, document)
+    check_index(candidate, document, TESTPYPI)
+    gates()
+    wheel, sdist = build_for_test(candidate)
+    inspect_dist(wheel, sdist, candidate)
+    check(wheel, sdist)
+    smoke(wheel, candidate)
+    upload(wheel, sdist, candidate, TESTPYPI)
+    verify_index(candidate, wheel, TESTPYPI)
+    install_hint(candidate)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog='bless',
+        description='Run the release gate. The default is a dry run; "test" '
+                    'uploads a throwaway build to TestPyPI; "publish" tags, '
+                    'uploads to PyPI and pushes.')
+    parser.add_argument(
+        'mode', nargs='?', choices=['test', 'publish'], default=None,
+        help='test for a TestPyPI rehearsal, publish for the real thing '
+             '(default: dry run, nothing leaves the machine)')
+    arguments = parser.parse_args(argv)
+
+    import pwr_tray
+
+    version = pwr_tray.__version__
+    say('bless', f'pwr_tray {version} ({arguments.mode or "dry run"})')
+    try:
+        if arguments.mode == 'test':
+            rehearse(version)
+            return 0
+        facts = preflight(version)
+        say('preflight', f'clean tree at {facts["sha"]} on {facts["branch"]}')
+        public = check_index(version)
+        gates()
+        wheel, sdist = build(version)
+        inspect_dist(wheel, sdist)
+        check(wheel, sdist)
+        smoke(wheel, version)
+        plan = branch_stage(facts['branch'])
+
+        if arguments.mode != 'publish':
+            checklist(version, facts, public, wheel, sdist, plan)
+            return 0
+
+        align_branches(plan, facts['branch'])
+        tag(version)
+        upload(wheel, sdist, version)
+        verify_index(version, wheel)
+        publish_git(version, facts['branch'],
+                    'dev' if facts['branch'] == 'main' else 'main')
+    except BlessError as exc:
+        print(f'bless: refused: {exc}', file=sys.stderr)
+        return 1
+
+    say('done', f'pwr_tray {version} is published and main and dev are tagged')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

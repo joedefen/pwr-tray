@@ -47,15 +47,23 @@
 #
 # Releasing
 # ---------
-# `./release` is the only path to an upload, and it is a dry run unless it is
-# given `publish`: it refuses a dirty tree, runs the gate, builds into a fresh
-# directory (never the accumulating `dist/`), checks the metadata, installs the
-# built wheel in a scratch environment and runs it, and refuses a version the
-# index already has.  `./release publish` then makes `main` and `dev` the same
-# commit, tags it, uploads the two named files and pushes.  This project
-# releases by hand from the development tree, so the safety lives in one
-# inspectable command instead of a CI job that cannot see the files it would
-# publish (audit finding F1).
+# `./bless` is the only path to an upload, and it is a dry run unless it is
+# given `test` or `publish`.  Every mode reads the JSON index it targets before
+# building and refuses a version that is already published, listing every
+# release that index has, because an upload cannot be replaced.  It then
+# refuses a dirty tree, runs the gate, builds into a fresh directory (never the
+# accumulating `dist/`), inspects the two files with tests/inspect_dist.py --
+# the same inspector CI uses -- runs `twine check --strict`, installs the wheel
+# in a scratch virtualenv and runs it, and prints what `publish` would do.
+# `./bless test` rehearses the upload on test.pypi.org: it builds a throwaway
+# `X.Y.Z.99.N` from a copy of the tree (N is one past what TestPyPI already
+# has for that base), so the working version is never spent and no tag is made,
+# and it prints the pip line that installs the result.
+# `./bless publish` fast-forwards `main` and `dev` to one commit, tags it,
+# uploads the two named files to PyPI, verifies the index and pushes.  Releases
+# are run by hand from the development tree (plans/pypi-release-plan.md,
+# R1/R2), so the safety lives in one inspectable command instead of a CI job
+# that can only see what it just built.
 
 [build-system]
 # 3.12 is the oldest backend tested with the SPDX `license` form below.  The

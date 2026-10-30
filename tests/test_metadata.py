@@ -42,6 +42,25 @@ def test_summary_names_the_real_toolkit():
     assert 'pyqt5' in description
 
 
+def test_summary_names_the_wayland_desktops_the_index_never_mentions():
+    """The published 1.0.12 summary omits niri and Hyprland; this one must not."""
+    description = load_pyproject()['project']['description'].lower()
+    assert 'niri' in description
+    assert 'hyprland' in description
+
+
+def test_no_pydbus_dependency():
+    """pydbus was the GTK-era reader; logind is queried through busctl now."""
+    dependencies = load_pyproject()['project']['dependencies']
+    assert not any('pydbus' in dependency.lower() for dependency in dependencies)
+
+
+def test_license_is_declared_as_an_spdx_expression_with_its_file():
+    project = load_pyproject()['project']
+    assert project['license'] == 'MIT'
+    assert project['license-files'] == ['LICENSE']
+
+
 def test_python_baseline_is_311_or_newer():
     requires_python = load_pyproject()['project']['requires-python']
     assert requires_python == '>=3.11'

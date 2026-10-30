@@ -18,14 +18,18 @@ is a use-it-and-lose-data bug.
 
 What was genuinely unfinished fell into two groups:
 
-1. **The published artifact is behind the repository and describes the wrong
-   toolkit** ([F1](#f1--the-published-artifact-is-stale-and-misdescribes-the-package-p1)).
+1. **The published artifact is behind the repository**
+   ([F1](#f1--the-published-artifact-is-stale-and-misdescribes-the-package-p1--partly-resolved)).
+   The in-tree metadata that misdescribed it — a GTK summary and a duplicated
+   version — has been fixed and is now pinned by tests, and the local release
+   gate (`./bless`) exists; what remains is that the index still serves 1.0.12
+   with the old metadata because 2.0.0 has never been published.
 2. **Inhibition was decided by parsing human-readable command output and
    ignoring exit status**
    ([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1--resolved)).
 
-Four findings have since been closed: the shipped units retried permanent
-failures forever
+Four findings have since been closed outright: the shipped units retried
+permanent failures forever
 ([F2](#f2--the-shipped-units-retried-permanent-failures-indefinitely-p1--resolved)),
 inhibition now comes from logind's machine-readable property
 ([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1--resolved)),
@@ -184,7 +188,7 @@ Required test coverage of 75.0% reached. Total coverage: 76.32%
 416 passed in 2.55s
 
 $ python -m pwr_tray.main --version
-pwr-tray 1.0.13
+pwr-tray 2.0.0
 
 $ python -m pwr_tray.main --list-des
 desktops known to pwr-tray (from built-in commands.yaml):
@@ -209,19 +213,111 @@ now delegate to `Actions`, `IdleStateMachine` and `Desktop`.
 Severity: **P1** = will misbehave for a real user; **P2** = maintenance or
 diagnostic cost; **P3** = polish.
 
-### F1 — The published artifact is stale and misdescribes the package (P1)
+### F1 — The published artifact is stale and misdescribes the package (P1) — partly resolved
 
-`pyproject.toml` says `version = "1.0.13"` and
-"*A PyQt5 tray applet for power management on i3, sway, niri, Hyprland, and
-KDE*". The latest artifact on PyPI is **1.0.12**, whose summary still reads
-"*A GTK tray applet for power management for i3/sway/KDE*" — wrong toolkit, no
-niri, no Hyprland. Anyone installing from the index therefore receives a package
-whose own metadata misdescribes it, and whose code predates the current test
-suite. The repository is the source of truth and the index is not.
+The finding had two halves. The half about **this tree's metadata** is closed;
+the half about **what the index serves** is not.
 
-There is no release automation in CI: the packaging job builds and inspects
-distributions ([`.github/workflows/tests.yml:96`](../.github/workflows/tests.yml:96))
-but never uploads or verifies against the index.
+#### In-tree metadata: fixed
+
+* There is no `version =` in `pyproject.toml` any more. It declares
+  `dynamic = ["version"]` ([`pyproject.toml:73`](../pyproject.toml:73)), so the
+  only copy is [`pwr_tray/__init__.py:3`](../pwr_tray/__init__.py:3), and it
+  reads **2.0.0**. A second copy is exactly how the published metadata drifted
+  from the code before.
+* The summary ([`pyproject.toml:70`](../pyproject.toml:70)) now reads "A PyQt5
+  tray applet for power management on i3, sway, niri, Hyprland, and KDE" — the
+  real toolkit and both omitted Wayland desktops.
+* The dependency list no longer carries the unused `pydbus` or the
+  `importlib-metadata; python_version < "3.8"` marker that could never apply
+  with `requires-python = ">=3.11"`.
+* All of it is pinned by [`tests/test_metadata.py`](../tests/test_metadata.py:1):
+  [`test_version_comes_from_the_package_only`](../tests/test_metadata.py:24)
+  rejects a `version =` key and requires `dynamic` to name `version`,
+  [`test_summary_names_the_real_toolkit`](../tests/test_metadata.py:39) rejects
+  `gtk` and requires `pyqt5`, and
+  [`test_no_unreachable_importlib_metadata_dependency`](../tests/test_metadata.py:50)
+  keeps the dead marker out. The regression the finding describes cannot be
+  reintroduced without a red build.
+
+#### The index: unchanged
+
+Queried again while updating this section (2026-10-30, tree at `11fabef`), the
+PyPI JSON API still reports:
+
+```
+version:         1.0.12
+summary:         A GTK tray applet for power management for i3/sway/KDE
+requires_python: >=3.8
+requires_dist:   ['importlib-metadata; python_version < "3.8"', 'psutil>=5.9',
+                  'PyQt5>=5.15', 'ruamel.yaml>=0.17', 'pydbus>=0.6.0']
+```
+
+`1.0.13` never existed — the `releases` map jumps from `1.0.12` to nothing — and
+`2.0.0` has never been uploaded. So anyone installing from the index still
+receives the GTK-era code and the GTK-era metadata, while this tree is at
+2.0.0 with the current 400-plus-test suite behind it. The repository is the
+source of truth and the index is not.
+
+The packaging job still builds and inspects
+([`.github/workflows/tests.yml:95`](../.github/workflows/tests.yml:95)) and never
+uploads or verifies against the index — but that is now a decision rather than
+an omission: the upload is a local, auditable `./bless publish`
+(plan R2), not a job holding a credential.
+
+#### The local release gate: built
+
+[`bless`](../bless:1) is the entry point, and it is a verb because it is one: a
+dry run unless given `test` or `publish`.
+
+* **The duplicate check is mandatory in every mode and runs first.** Before the
+  gate, before the build, `check_index()` reads the JSON index the mode writes
+  to and refuses when the version it would upload is already in the `releases`
+  map, printing **every published version** in the refusal. Forgetting a
+  version bump costs a network round trip, not a build and a rejected upload.
+* The rest of the gate: clean tree, absent tag, `twine>=7` and
+  `packaging>=26`, ruff, `compileall`, pytest with coverage, a build into
+  `build/bless-<version>/` (wiped first), inspection, `twine check --strict`,
+  and a smoke install of the built wheel in a throwaway virtualenv.
+* `./bless test` rehearses the upload on TestPyPI. The working version is never
+  spent on it: a throwaway `X.Y.Z.99.N` is built from a *copy* of the tree, `N`
+  being one past whatever TestPyPI already holds for that base (0 the first
+  time), and uploaded under its own token variable
+  (`TWINE_TESTPYPI_PASSWORD`), with no tag and no push. It then prints the
+  install line — `pip cache purge` first, because pip remembers an index it has
+  already read, and `--extra-index-url https://pypi.org/simple/` because
+  TestPyPI carries no dependencies.
+* `./bless publish` then aligns `main` and `dev`, tags `v<version>`, uploads the
+  two named files to PyPI, verifies the index's metadata and wheel digest, and
+  pushes. It refuses without `TWINE_PASSWORD` before `twine` starts.
+* CI inspects with the same [`tests/inspect_dist.py`](../tests/inspect_dist.py:1),
+  so the artifact a maintainer blesses is the artifact CI already described.
+
+The decisions are recorded in
+[`plans/pypi-release-plan.md`](../plans/pypi-release-plan.md:1) (R1 as amended
+on 2026-10-30: a throwaway TestPyPI rehearsal is welcome, the real upload stays
+local and owner-run, and CI holds no credential). What was a plan is now a
+script that runs, and
+[`tests/test_bless.py`](../tests/test_bless.py:1) pins the parts that must not
+be wrong: the refusal lists every release, the check precedes every other
+stage, the dry run cannot reach tag/upload/push, `publish` reaches them in
+order, an upload without a token never starts `twine`, the rehearsal uploads a
+dotted version to TestPyPI and tags nothing, the branch table fast-forwards in
+both directions and refuses divergence, and the inspector rejects a GTK summary
+or a `pydbus` dependency.
+[`tests/test_repo_hygiene.py`](../tests/test_repo_hygiene.py:84) keeps
+`./bless` executable, requires every releasing document to name it, and refuses
+any document that names the old `./release` or uploads the whole `dist/`
+directory.
+
+#### What is left
+
+The code is ready and the gate is built; **2.0.0 has never been published**.
+`./bless` is the dry run to read, `./bless test` installs the same artifact from
+TestPyPI to try it for real, and `./bless publish` is the one irreversible
+command. CI could cheaply add a read-only assertion that the index serves the
+`__version__` this tree builds, which catches drift without giving a job the
+upload credential.
 
 ### F2 — The shipped units retried permanent failures indefinitely (P1) — resolved
 
@@ -560,15 +656,24 @@ role. As a general recommendation to a stranger, a single `hypridle` or
 Powerdevil configuration is the lower-risk choice; as a portable, inspectable
 policy layer with a tray, this is the more capable one.
 
-**Bottom line:** worth keeping and worth finishing — the remaining work is
-distribution hygiene (F1), not redesign; the structural item (F6) is done.
+**Bottom line:** worth keeping and worth finishing — the remaining work is one
+upload, not metadata, tooling or redesign: the tree describes itself correctly,
+the release gate is built and tested (F1's in-tree half is closed), so what is
+left is `./bless publish` for 2.0.0. The structural item (F6) is done.
 
 ---
 
 ## 7. Suggested order of work
 
-1. **F1** — tag and publish 1.0.13, then add a CI release job that uploads the
-   artifacts it already validates, so the index cannot drift from the tree again.
+1. **F1 — metadata and tooling done, publication open.** The summary, the
+   single-source version and the dependency list are fixed and pinned by
+   [`tests/test_metadata.py`](../tests/test_metadata.py:1); the local gate
+   ([`bless`](../bless:1), [`tests/inspect_dist.py`](../tests/inspect_dist.py:1),
+   [`tests/test_bless.py`](../tests/test_bless.py:1)) is built and shares its
+   inspector with CI. `1.0.13` never existed and `2.0.0` is unpublished. Run
+   `./bless` (dry run; its duplicate check lists every published release),
+   then `./bless publish`. Uploads stay local (plan R2); CI at most asserts
+   that the index serves the version this tree builds.
 2. **F2 — done.** `RestartPreventExitStatus=2 3` and
    `StartLimitIntervalSec=60`/`StartLimitBurst=5` are on all ten units, and
    [`tests/test_service_examples.py`](../tests/test_service_examples.py:1)
@@ -612,3 +717,8 @@ distribution hygiene (F1), not redesign; the structural item (F6) is done.
   GitHub API for adoption figures (§6).
 * Findings F2–F7 were confirmed by reading the cited lines, not by inference from
   the README.
+* F1's status was re-checked at `11fabef` on 2026-10-30: the PyPI JSON API for
+  the served version, summary, `Requires-Python` and `Requires-Dist`;
+  `pyproject.toml`, `pwr_tray/__init__.py` and `tests/test_metadata.py` for the
+  in-tree fix; and `./bless` plus `tests/test_bless.py`, which pin the release
+  gate and its duplicate check.
