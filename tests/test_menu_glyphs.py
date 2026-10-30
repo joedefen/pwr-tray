@@ -1,0 +1,192 @@
+"""The tray menu's "icons" are characters, so their font must be guaranteed.
+
+Every symbol in ``build_menu()`` is part of the label string, not a QIcon, so
+the toolkit renders it with whatever font fontconfig resolves for that
+codepoint.  Emoji-block codepoints (U+1F000 and up, plus a few others such as
+U+2B9C) are answered by ``Noto Color Emoji`` on a typical desktop: they come
+out coloured, wide and visually unrelated to the rest of the menu -- and as
+tofu boxes on a minimal install that has no symbol font at all.
+
+The contract pinned here:
+
+- ``pwr_tray/main.py`` uses only text-presentation glyphs that DejaVu Sans
+  (the de-facto floor next to Liberation Sans) covers;
+- no emoji-block codepoint appears in the shipped documentation either, so
+  the README does not advertise a glyph the menu no longer shows;
+- ``build_menu()`` produces labels drawn from that same set, and the labels
+  that users look for are still there.
+"""
+
+import os
+import types
+import unicodedata
+
+import pwr_tray.main as main_module
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Codepoints the menu may use.  Each one is text-presentation (no emoji
+# fallback) and present in DejaVu Sans, so it inherits the label's colour and
+# weight instead of arriving from a colour font.
+ALLOWED_GLYPHS = {
+    0x2003,  # EM SPACE                    indentation of sub-items
+    0x2190,  # ←  LEFTWARDS ARROW          "Presentation <- LockOnly Mode"
+    0x21AF,  # ↯  DOWNWARDS ZIGZAG ARROW   Plugged In (charging)
+    0x21BA,  # ↺  ANTICLOCKWISE ARROW      Restart this Applet
+    0x2261,  # ≡  IDENTICAL TO             Open Applet Log (lines of text)
+    0x2583,  # ▃  LOWER THREE EIGHTHS      LoBattery
+    0x2588,  # █  FULL BLOCK               HiBattery
+    0x25B7,  # ▷  WHITE RIGHT TRIANGLE     Lock/Blank/Reload/Restart/Log Off
+    0x25BC,  # ▼  BLACK DOWN TRIANGLE      Suspend/Reboot/PowerOff
+    0x25C9,  # ◉  FISHEYE                  Presentation mode
+    0x25CB,  # ○  WHITE CIRCLE             SleepAfterLock mode
+    0x25D0,  # ◐  CIRCLE LEFT HALF BLACK   LockOnly mode
+    0x2613,  # ☓  SALTIRE                  Quit this Applet
+    0x266B,  # ♫  BEAMED EIGHTH NOTES      PlayerCtl
+    0x267A,  # ♺  RECYCLING SYMBOL         rotate the lock/sleep timeout
+    0x270E,  # ✎  LOWER RIGHT PENCIL       Edit Applet Config
+}
+
+
+def _offenders(text):
+    """Return {char: name} for characters outside the allowlist."""
+    found = {}
+    for char in text:
+        if ord(char) > 0x7F and ord(char) not in ALLOWED_GLYPHS:
+            name = unicodedata.name(char, 'UNNAMED')
+            found.setdefault(char, name)
+    return found
+
+
+def _report(found, where):
+    lines = []
+    for char, name in found.items():
+        lines.append(f'  {char!r} U+{ord(char):04X} {name}')
+    return f'{where} uses glyphs outside the text-presentation allowlist:\n' + \
+        '\n'.join(lines)
+
+
+def test_source_uses_only_text_presentation_glyphs():
+    source = open(os.path.join(ROOT, 'pwr_tray', 'main.py'),
+                  encoding='utf-8').read()
+
+    found = _offenders(source)
+    assert not found, _report(found, 'pwr_tray/main.py')
+
+
+def test_readme_and_audit_do_not_advertise_emoji_glyphs():
+    """The docs quote the menu; they must quote what the menu now shows."""
+    for name in ('README.md', os.path.join('tests', 'AUDIT.md')):
+        text = open(os.path.join(ROOT, name), encoding='utf-8').read()
+        emoji = {char: unicodedata.name(char, 'UNNAMED')
+                 for char in text if ord(char) >= 0x1F000}
+        assert not emoji, _report(emoji, name)
+
+
+# --------------------------------------------------------------------------
+# the labels build_menu() actually hands to Qt
+# --------------------------------------------------------------------------
+
+class _FakeSignal:
+    def connect(self, _callback):
+        pass
+
+
+class _FakeAction:
+    def __init__(self, text):
+        self.text = text
+        self.triggered = _FakeSignal()
+
+
+class _FakeMenu:
+    def __init__(self):
+        self.actions = []
+
+    def addAction(self, action):
+        self.actions.append(action)
+
+    def clear(self):
+        self.actions = []
+
+
+class _FakeTrayIcon:
+    @staticmethod
+    def isVisible():
+        return True
+
+    @staticmethod
+    def setContextMenu(_menu):
+        pass
+
+
+def _fake_tray(**overrides):
+    """A tray with exactly the attributes build_menu() reads."""
+    noop = lambda *_args, **_kwargs: None
+    tray = types.SimpleNamespace(
+        menu=_FakeMenu(),
+        menu_items=[],
+        mode='LockOnly',
+        graphical='niri',
+        variables={'monitors_off': 'swaymsg "output * dpms off"',
+                   'reload_wm': 'niri msg action reload-config',
+                   'restart_wm': ''},
+        battery=types.SimpleNamespace(selector='HiBattery', percent=88),
+        has_playerctl=True,
+        enable_playerctl=True,
+        tray_icon=_FakeTrayIcon(),
+        get_params=lambda: types.SimpleNamespace(
+            turn_off_monitors=True, gui_editor='geany', log_viewer='xterm -e'),
+        _lock_rotate_str=lambda: '15m->30m',
+        _sleep_rotate_str=lambda: '5m->30m',
+    )
+    tray.__dict__.update(overrides)
+    for name in ('enable_presentation_mode', 'enable_nosleep_mode',
+                 'enable_normal_mode', 'lock_screen', 'blank_quick',
+                 'reload_wm', 'restart_wm', 'exit_wm', 'suspend', 'reboot',
+                 'poweroff', '_toggle_battery', 'toggle_playerctl',
+                 'edit_config', 'open_log', 'quit_self', 'restart_self',
+                 'dummy'):
+        setattr(tray, name, noop)
+    return tray
+
+
+def _menu_labels(monkeypatch, rows=None, **overrides):
+    monkeypatch.setattr(main_module, 'QAction', _FakeAction)
+    tray = _fake_tray(**overrides)
+    main_module.PwrTray.build_menu(tray, rows=rows)
+    return [action.text for action in tray.menu.actions]
+
+
+def test_build_menu_labels_use_only_allowed_glyphs(monkeypatch):
+    for label in _menu_labels(monkeypatch):
+        found = _offenders(label)
+        assert not found, _report(found, f'menu label {label!r}')
+
+
+def test_build_menu_still_offers_the_expected_actions(monkeypatch):
+    labels = _menu_labels(monkeypatch)
+
+    assert '≡  Open Applet Log' in labels
+    assert '✎  Edit Applet Config' in labels
+    assert '♫ PlayerCtl: Enabled' in labels
+    assert '◉ Presentation ← LockOnly Mode' in labels
+    assert '○ SleepAfterLock ← LockOnly Mode' in labels
+    assert '█ HiBattery 88%' in labels
+    assert '☓ Quit this Applet' in labels
+    assert '↺ Restart this Applet' in labels
+
+
+def test_battery_plugged_in_uses_the_zigzag_arrow(monkeypatch):
+    labels = _menu_labels(
+        monkeypatch,
+        battery=types.SimpleNamespace(selector='Settings', percent=100))
+
+    assert '↯ Plugged In' in labels
+
+
+def test_rows_stay_untouched(monkeypatch):
+    """Header/detail rows come from the inhibitor scan and stay plain."""
+    rows = ['systemd-inhibit: sleep', '   (blocking: handle-power-key)']
+    labels = _menu_labels(monkeypatch, rows=rows)
+
+    assert labels[:len(rows)] == rows

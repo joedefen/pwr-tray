@@ -283,7 +283,7 @@ The rotation only fires when stdout is not a tty, so a `-o/--stdout` run never
 rotates a file it is not writing. `-f/--follow-log` still works because
 `tail -F` reopens the log by name.
 
-The same log is now reachable from the tray: **📜 Open Applet Log** runs
+The same log is now reachable from the tray: **≡ Open Applet Log** runs
 `less --follow-name +F debug.log [debug.log.old]` inside a terminal window
 (the applet has no tty of its own, so a terminal prefix is taken from the
 `log_viewer` setting or auto-detected).

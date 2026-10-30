@@ -865,14 +865,20 @@ class PwrTray:
             for row in rows:
                 add_item(row, self.dummy)
 
+        # Menu "icons" are glyphs, not images, so they must come from the same
+        # font as the labels: only characters covered by DejaVu Sans (the
+        # de-facto floor on Linux desktops, alongside Liberation Sans) are
+        # used here.  Emoji-block codepoints (U+1F000 and up) fall back to
+        # Noto Color Emoji, which renders them coloured, wide and out of
+        # style -- and as tofu boxes where that font is absent.
         if self.mode not in ('Presentation',):
-            add_item(f'🅟 Presentation ⮜ {self.mode} Mode', self.enable_presentation_mode)
+            add_item(f'◉ Presentation ← {self.mode} Mode', self.enable_presentation_mode)
 
         if self.mode not in ('LockOnly',):
-            add_item(f'🅛 LockOnly ⮜ {self.mode} Mode', self.enable_nosleep_mode)
+            add_item(f'◐ LockOnly ← {self.mode} Mode', self.enable_nosleep_mode)
 
         if self.mode not in ('SleepAfterLock',):
-            add_item(f'🅢 SleepAfterLock ⮜ {self.mode} Mode', self.enable_normal_mode)
+            add_item(f'○ SleepAfterLock ← {self.mode} Mode', self.enable_normal_mode)
 
         add_item(f'{self.graphical}:  ▷ Lock Screen', self.lock_screen)
 
@@ -891,7 +897,7 @@ class PwrTray:
         add_item('    ▼ PowerOff', self.poweroff)
 
         selector, percent = self.battery.selector, self.battery.percent
-        add_item('🗲 Plugged In' if selector == 'Settings'
+        add_item('↯ Plugged In' if selector == 'Settings'
                      else (('█' if selector == 'HiBattery' else '▃') + f' {selector}')
                 + (f' {percent}%' if percent < 100 or selector != 'Settings' else '')
                 , self._toggle_battery)
@@ -904,17 +910,17 @@ class PwrTray:
         add_item(f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}',
                  lambda: self._sleep_rotate_next())
 
-        label = '🎝 PlayerCtl: '
+        label = '♫ PlayerCtl: '
         label += ('not installed' if not self.has_playerctl
                    else 'Enabled' if self.enable_playerctl
                    else 'Disabled')
         add_item(label, self.toggle_playerctl)
         if self.get_params().gui_editor:
-            add_item('🖹  Edit Applet Config', self.edit_config)
+            add_item('✎  Edit Applet Config', self.edit_config)
         # Only offer the log viewer when something can actually show it: the
         # applet has no tty of its own, so less needs a terminal emulator.
         if Utils.terminal_argv([], getattr(self.get_params(), 'log_viewer', '')):
-            add_item('📜  Open Applet Log', self.open_log)
+            add_item('≡  Open Applet Log', self.open_log)
 
         add_item('☓ Quit this Applet', self.quit_self)
 
@@ -1022,6 +1028,9 @@ class PwrTray:
         Launched with Popen rather than run(): the viewer stays open for as
         long as the user keeps it open, and blocking the Qt event loop that
         long would freeze the tray, the idle polling and every other action.
+        spawn_detached() puts the viewer in its own session -- and, under
+        systemd, its own transient scope -- so a stop or restart of the applet
+        does not take the log window down with it.
         """
         this = PwrTray.singleton
         try:
@@ -1040,7 +1049,7 @@ class PwrTray:
 
         prt('+', 'running:', arguments)
         try:
-            subprocess.Popen(arguments)
+            Utils.spawn_detached(arguments)
         except (OSError, subprocess.SubprocessError) as e:
             prt(f'Open Log ERR: {e}')
 
@@ -1334,7 +1343,8 @@ def main():
     parser.add_argument('-D', '--debug', action='store_true',
             help='override debug_mode from .ini initially')
     parser.add_argument('-o', '--stdout', action='store_true',
-            help='log to stdout (if a tty)')
+            help='keep logging on stdout instead of debug.log (ignored inside'
+                 ' a systemd unit)')
     parser.add_argument('-f', '--follow-log', action='store_true',
             help='exec tail -n50 -F on log file')
     parser.add_argument('-e', '--edit-config', action='store_true',

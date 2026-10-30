@@ -223,9 +223,10 @@ def test_the_log_directory_is_one_svc_install_can_create(path):
 
     ``plan_install()`` reads these back out of the unit, so every shipped
     ``StandardOutput=``/``StandardError=`` file target has to expand to an
-    absolute directory.  A target it skipped would be a unit that cannot start.
+    absolute directory.  The target is the applet's own ``debug.log``, so the
+    menu and ``--follow-log`` read the file systemd makes the applet write.
     """
     folders = service.output_dirs(path.read_text(encoding='utf-8'), {'HOME': '/home/user'})
     assert folders, 'no absolute StandardOutput=/StandardError= file target'
     assert all(folder.is_absolute() for folder in folders), folders
-    assert folders == [Path('/home/user/.local/log')], folders
+    assert folders == [Path('/home/user/.config/pwr-tray')], folders

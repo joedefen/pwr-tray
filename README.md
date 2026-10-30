@@ -74,7 +74,7 @@ Per-DE requirements:
 ### Command Line Options
 | Option | Description |
 |--------|-------------|
-| `-o`, `--stdout` | Log to stdout (if a tty). |
+| `-o`, `--stdout` | Keep logging on stdout instead of `debug.log` (ignored inside a systemd unit, where stdout is the unit's own redirect). |
 | `-D`, `--debug` | Enable debug mode (more frequent/elaborate logging); overrides the `debug_mode` config setting. |
 | `-q`, `--quick` | Quick mode: sets lock and sleep timeouts to 1 minute and runs double-time (timers expire in 30s wall clock). Useful for testing. |
 | `-e`, `--edit-config` | Open `~/.config/pwr-tray/config.ini` in `$EDITOR` (default: `vim`). |
@@ -99,9 +99,9 @@ For initial setup and troubleshooting, `pwr-tray -D -o` is a good starting point
 Open the `pwr-tray` menu with a right-click. Then left-click a line to have an effect ...
 
 Choose from three *major power modes* (to control the effects of timeouts):
-- **🅟 Presentation ⮜** -  Keeps the screen unlocked/on and system up.
-- **🅛 LockOnly ⮜** - Keeps the system up, but the screen may lock.
-- **🅢 SleepAfterLock ⮜** - Allows screen locking and system to go down (the "normal" mode).
+- **◉ Presentation ←** -  Keeps the screen unlocked/on and system up.
+- **◐ LockOnly ←** - Keeps the system up, but the screen may lock.
+- **○ SleepAfterLock ←** - Allows screen locking and system to go down (the "normal" mode).
 
 Or choose from various locking/blanking/DE operations:
 - **▷ Lock Screen** - locks the screen immediately.
@@ -115,14 +115,14 @@ Or choose a new *system state*:
 - **▼ Poweroff System** - power down the system immediately.
 
 Next, you may see:
-- **🗲 Plugged In** (or HiBattery or LoBattery). Shows the state of the battery.
+- **↯ Plugged In** (or HiBattery or LoBattery). Shows the state of the battery.
 - **♺ Chg Screen Idle: 15m->30m** - change the time to start the screen saver; each time clicked, it changes to the next choice.
 - **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next choice.
-- **🎝 PlayerCtl** - shows the state (not installed, enabled, disabled); if installed, a click toggles whether playing media inhibits screen locking and sleeping.
+- **♫ PlayerCtl** - shows the state (not installed, enabled, disabled); if installed, a click toggles whether playing media inhibits screen locking and sleeping.
 
 Or act on the applet itself:
-- **🖹  Edit Applet Config** - edit the applet's .ini file.
-- **📜 Open Applet Log** - show `debug.log` (and the rotated `debug.log.old`, when present) in a terminal window, following the current log with `less +F`. It is offered only when a terminal emulator can be found; see `log_viewer` below.
+- **✎  Edit Applet Config** - edit the applet's .ini file.
+- **≡ Open Applet Log** - show `debug.log` (and the rotated `debug.log.old`, when present) in a terminal window, following the current log with `less +F`. It is offered only when a terminal emulator can be found; see `log_viewer` below. The viewer is started in its own session -- and, when the applet runs as a systemd service, in its own transient scope -- so it keeps following the log when the applet stops or restarts.
 - **☓ Quit this Applet** -  exit applet.
 - **↺ Restart this Applet** - restart applet.
 
@@ -164,7 +164,7 @@ Here are the current 'Settings' defaults with explanation.
 * If you have issues with monitors failing to sleep or the system cannot wake when the monitors are off, then disable the `turn_off_monitors` feature.
 * You can set `gui_editor = konsole -e vim`, for example, to use vim in a terminal window.  If you don't have `geany` installed, then be sure to change `gui_editor`.
 * `log_viewer` is the command prefix `pwr-tray` uses to start the log viewer inside a terminal window, e.g. `log_viewer = xterm -e` or `log_viewer = gnome-terminal --`. When empty it picks the first installed terminal it knows (x-terminal-emulator, gnome-terminal, konsole, kitty, alacritty, foot, xterm, xfce4-terminal, mate-terminal, lxterminal).
-* `debug.log` is capped at 2 MiB. When it grows past that, it is rotated: the current file becomes `debug.log.old`, any previous `debug.log.old` is discarded, and a fresh `debug.log` is started -- so there are never more than two log files.
+* `debug.log` is the file the menu and `-f` follow, and it is capped at 2 MiB. When it grows past that, it is rotated: the current file becomes `debug.log.old`, any previous `debug.log.old` is discarded, and a fresh `debug.log` is started -- so there are never more than two log files. The applet writes this file even when a systemd unit redirected its stdout elsewhere, so the visible log never goes stale.
 * Edits to `config.ini` are picked up while `pwr-tray` is running; there is no need to restart it.
 * Your picks of mode, timeouts, etc. are saved to disk when changed, and restored on the next start.
 * Items may be absent depending on the mode and battery state.
@@ -200,7 +200,7 @@ pwr-tray --svc-uninstall   # stop, disable and delete the unit
 
 `--svc-install` picks the unit for the detected desktop (`--de NAME` overrides the detection), substitutes the real path of the `pwr-tray` executable plus your live `WAYLAND_DISPLAY`/`DISPLAY`, writes `~/.config/systemd/user/pwr-tray.service`, reloads the manager and enables it. It does not start the applet, and it will not overwrite a unit you have edited without showing the difference first. `--yes` answers the question in advance; `--force` replaces or deletes a unit pwr-tray did not write.
 
-It also creates the directory the unit logs into (`~/.local/log`), and says so before it does. systemd does not create it: it fails every process of the unit with `EXIT_STDOUT` (`status=209/STDOUT`, "Failed to set up standard output") *before* `ExecStartPre=` is reached, so a unit installed without it never starts.
+The units append stdout/stderr to the applet's own log, `~/.config/pwr-tray/debug.log`, so the tray menu and `-f/--follow-log` always show what the applet is actually writing. `--svc-install` also creates that directory, and says so before it does. systemd does not create it: it fails every process of the unit with `EXIT_STDOUT` (`status=209/STDOUT`, "Failed to set up standard output") *before* `ExecStartPre=` is reached, so a unit installed without it never starts.
 
 `--svc-status` is meant for scripts: it exits `0` when the service is running, `1` when it is installed but stopped or failed, and `2` when no unit is installed. It names a failed unit as `failed` and points at `journalctl --user -xeu pwr-tray.service`.
 
@@ -211,7 +211,7 @@ pwr-tray --svc-status || pwr-tray --svc-start --yes
 The same units are readable in the source tree and in the wheel under [`pwr_tray/resources/systemd/`](pwr_tray/resources/systemd/). To install one by hand, copy it as `~/.config/systemd/user/pwr-tray.service`, then:
 
 ```
-mkdir -p ~/.local/log     # --svc-install does this for you
+mkdir -p ~/.config/pwr-tray     # --svc-install does this for you
 systemctl --user daemon-reload
 systemctl --user enable --now pwr-tray.service
 ```
@@ -239,12 +239,12 @@ Environment=XDG_CURRENT_DESKTOP=sway
 Environment=XDG_SESSION_TYPE=wayland
 Environment=WAYLAND_DISPLAY=wayland-1
 ExecStartPre=/bin/sleep 1
-ExecStart=%h/.local/bin/pwr-tray -o --de sway-wayland
+ExecStart=%h/.local/bin/pwr-tray --de sway-wayland
 Restart=always
 RestartSec=5
 RestartPreventExitStatus=2 3
-StandardOutput=append:%h/.local/log/pwr-tray.log
-StandardError=append:%h/.local/log/pwr-tray.err.log
+StandardOutput=append:%h/.config/pwr-tray/debug.log
+StandardError=inherit
 
 [Install]
 WantedBy=graphical-session.target

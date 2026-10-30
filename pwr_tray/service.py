@@ -12,11 +12,14 @@ the ``pwr-tray`` executable actually lives, and which display the session is
 on -- so :func:`render` rewrites just those.  Everything else is copied byte
 for byte, which is what lets the tests keep asserting the shipped text.
 
-The units capture stdout/stderr into ``%h/.local/log``, and systemd will not
-create that directory: it fails every process with ``EXIT_STDOUT`` (209)
-before ``ExecStart=`` is reached.  :func:`missing_dirs` reads the paths back
-out of the unit so ``--svc-install`` can create them rather than leaving the
-user with a unit that cannot start.
+The units append stdout/stderr to the applet's own log,
+``~/.config/pwr-tray/debug.log`` (``StandardError=inherit`` shares the file),
+so the tray menu and ``-f/--follow-log`` always show what the applet is
+actually writing.  systemd will not create that directory: it fails every
+process with ``EXIT_STDOUT`` (209) before ``ExecStart=`` is reached.
+:func:`missing_dirs` reads the paths back out of the unit so
+``--svc-install`` can create them rather than leaving the user with a unit
+that cannot start.
 
 Nothing here shells out to systemctl on its own: the verbs are built as
 :class:`Step` lists by the ``plan_*()`` functions and performed by

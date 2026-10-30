@@ -71,8 +71,9 @@ def env(tmp_path):
 
 @pytest.fixture
 def log_dir(env):
-    """The directory the shipped units log into, which systemd will not create."""
-    return Path(env['HOME']) / '.local' / 'log'
+    """The applet's log directory, which the shipped units write into and
+    systemd will not create for them."""
+    return Path(env['HOME']) / '.config' / 'pwr-tray'
 
 
 @pytest.fixture
@@ -95,7 +96,7 @@ def test_install_writes_the_unit_reloads_and_enables(env, unit_path):
     assert run_verb('install', env, run) == service.OK
 
     text = unit_path.read_text(encoding='utf-8')
-    assert f'ExecStart={SCRIPT} -o --de {DESKTOP}' in text
+    assert f'ExecStart={SCRIPT} --de {DESKTOP}' in text
     assert 'Environment=WAYLAND_DISPLAY=wayland-0' in text
     # DISPLAY is not pinned by a Wayland unit, so it must not be injected
     assert 'Environment=DISPLAY=' not in text
@@ -408,7 +409,7 @@ def test_unknown_desktop_lists_what_is_shipped():
 def test_executable_with_spaces_is_quoted(env):
     text = service.read_unit(service.template_for(DESKTOP))
     rendered = service.render(text, DESKTOP, '/opt/my tools/pwr-tray', env)
-    assert 'ExecStart="/opt/my tools/pwr-tray" -o --de niri-wayland' in rendered
+    assert 'ExecStart="/opt/my tools/pwr-tray" --de niri-wayland' in rendered
 
 
 def test_missing_executable_is_explained(env):

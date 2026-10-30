@@ -9,13 +9,16 @@ The contract pinned here:
 - ``prt()`` rotates the file it is appending to, not whatever stdout is -- a
   ``--stdout`` run must never rotate a log it is not writing;
 - the viewer is started inside a terminal emulator (the applet has no tty of
-  its own) and pages the current log first, plus the rotated one if present.
+  its own), pages the current log first, plus the rotated one if present, and
+  is detached so an applet stop/restart does not kill it.
 """
 
 import os
 import subprocess
 import sys
 import types
+
+import pytest
 
 import pwr_tray.Utils as utils
 from pwr_tray.Utils import LOG_OLD_SUFFIX, log_viewer_argv, rotate_log, terminal_argv
@@ -103,6 +106,62 @@ U.prt('after-the-rotation')
     assert 'before-the-rotation' not in log.read_text(encoding='utf-8')
 
 
+def test_prt_takes_over_from_a_foreign_redirect(tmp_path):
+    """A unit redirecting stdout elsewhere must not hide the applet's log.
+
+    This is the regression behind "--svc-* broke logging": the unit sent
+    stdout to ~/.local/log while the menu tailed ~/.config/pwr-tray/debug.log,
+    so the visible log froze at whatever it held before the unit was installed.
+    """
+    log = tmp_path / 'debug.log'
+    foreign = tmp_path / 'pwr-tray.log'
+    script = f"""\
+import pwr_tray.Utils as U
+U.prt_path = {str(log)!r}
+U.prt('first-line')
+U.prt('second-line')
+"""
+    with open(foreign, 'w', encoding='utf-8') as handle:
+        result = subprocess.run([sys.executable, '-c', script], cwd=ROOT,
+                                env=dict(os.environ, PYTHONPATH=ROOT),
+                                stdout=handle, stderr=handle, check=False,
+                                timeout=60)
+
+    assert result.returncode == 0, foreign.read_text(encoding='utf-8')
+    assert 'first-line' in log.read_text(encoding='utf-8')
+    assert 'second-line' in log.read_text(encoding='utf-8')
+
+
+def test_prt_writes_through_a_redirect_already_named_debug_log(tmp_path):
+    """systemd `StandardOutput=append:debug.log` hands us the log itself.
+
+    prt() must write through that descriptor rather than reopen it on every
+    call -- and rotation must still work: the renamed inode becomes .old and
+    the fresh debug.log is created by the reopen that follows.
+    """
+    log = tmp_path / 'debug.log'
+    script = f"""\
+import pwr_tray.Utils as U
+U.prt_path = {str(log)!r}
+U.prt_kb = 1
+U.prt('first-line')
+with open(U.prt_path, 'a', encoding='utf-8') as handle:
+    handle.write('pad ' + 'x' * 4096)
+U.prt('after-the-rotation')
+"""
+    with open(log, 'a', encoding='utf-8') as handle:
+        result = subprocess.run([sys.executable, '-c', script], cwd=ROOT,
+                                env=dict(os.environ, PYTHONPATH=ROOT),
+                                stdout=handle, stderr=handle, check=False,
+                                timeout=60)
+
+    assert result.returncode == 0
+    old = tmp_path / OLD_NAME
+    assert 'first-line' in old.read_text(encoding='utf-8')
+    assert 'after-the-rotation' in log.read_text(encoding='utf-8')
+    assert 'after-the-rotation' not in old.read_text(encoding='utf-8')
+
+
 # --------------------------------------------------------------------------
 # terminal wrapper
 # --------------------------------------------------------------------------
@@ -188,8 +247,9 @@ def test_open_log_launches_the_viewer(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module.PwrTray, 'singleton',
                         tray_stub(log, old), raising=False)
     monkeypatch.setattr(main_module, 'prt', lambda *args, **kwargs: None)
-    monkeypatch.setattr(main_module, 'subprocess', types.SimpleNamespace(
-        Popen=launched.append, SubprocessError=subprocess.SubprocessError))
+    # main.open_log() defers the spawn policy to spawn_detached(), which is
+    # what keeps the viewer alive across an applet restart.
+    monkeypatch.setattr(utils, 'spawn_detached', launched.append)
     monkeypatch.setattr(utils, 'less_follow_name_supported', lambda: True)
 
     main_module.PwrTray.open_log(None)
@@ -212,11 +272,51 @@ def test_open_log_reports_when_no_terminal_exists(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module, 'prt',
                         lambda *args, **kwargs: messages.append(
                             ' '.join(str(arg) for arg in args)))
-    monkeypatch.setattr(main_module, 'subprocess', types.SimpleNamespace(
-        Popen=launched.append, SubprocessError=subprocess.SubprocessError))
+    monkeypatch.setattr(utils, 'spawn_detached', launched.append)
     monkeypatch.setattr(utils.shutil, 'which', lambda name: None)
 
     main_module.PwrTray.open_log(None)
 
     assert launched == []
     assert any('no terminal emulator' in message for message in messages)
+
+
+# --------------------------------------------------------------------------
+# viewer detachment
+# --------------------------------------------------------------------------
+
+def test_spawn_detached_starts_a_new_session(monkeypatch):
+    """setsid(2) via start_new_session: no controlling terminal, no SIGHUP."""
+    calls = []
+    monkeypatch.setattr(utils.shutil, 'which', lambda name, path=None: None)
+
+    utils.spawn_detached(['less', '+F', '/tmp/x.log'],
+                         spawn=lambda argv, **kwargs: calls.append((argv, kwargs)),
+                         env={})
+
+    assert calls == [(['less', '+F', '/tmp/x.log'],
+                      {'start_new_session': True})]
+
+
+def test_spawn_detached_escapes_the_unit_cgroup(monkeypatch):
+    """systemd kills the whole cgroup on stop/restart, so the viewer must leave it."""
+    calls = []
+    monkeypatch.setattr(
+        utils.shutil, 'which',
+        lambda name, path=None: '/usr/bin/systemd-run' if name == 'systemd-run' else None)
+
+    utils.spawn_detached(
+        ['less', '+F', '/tmp/x.log'],
+        spawn=lambda argv, **kwargs: calls.append((argv, kwargs)),
+        env={'INVOCATION_ID': 'inv-1', 'PATH': '/usr/bin'})
+
+    assert calls == [([
+        '/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--',
+        'less', '+F', '/tmp/x.log'], {'start_new_session': True})]
+
+
+def test_spawn_detached_ignores_an_empty_command():
+    def spawn(*_args, **_kwargs):
+        pytest.fail('nothing should be spawned')
+
+    assert utils.spawn_detached([], spawn=spawn) is None

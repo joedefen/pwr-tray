@@ -2,7 +2,7 @@
 #
 # Structurally validated in CI; still review before use.
 # Install (copy as ~/.config/systemd/user/pwr-tray.service):
-#   mkdir -p ~/.local/log ~/.config/systemd/user
+#   mkdir -p ~/.config/pwr-tray ~/.config/systemd/user
 #   cp pwr-tray-i3.service ~/.config/systemd/user/pwr-tray.service
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now pwr-tray.service
@@ -29,7 +29,7 @@ Environment=XDG_SESSION_TYPE=x11
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=%h/.Xauthority
 ExecStartPre=/bin/sleep 1
-ExecStart=%h/.local/bin/pwr-tray -o --de i3-x11
+ExecStart=%h/.local/bin/pwr-tray --de i3-x11
 Restart=always
 RestartSec=5
 # Exit codes 2 and 3 are permanent: 3 means another pwr-tray holds the lock,
@@ -37,8 +37,8 @@ RestartSec=5
 # resource, or a required command missing from PATH).  Restarting those only
 # repeats the same failure every 5 seconds, so let the unit fail instead.
 RestartPreventExitStatus=2 3
-StandardOutput=append:%h/.local/log/pwr-tray.log
-StandardError=append:%h/.local/log/pwr-tray.err.log
+StandardOutput=append:%h/.config/pwr-tray/debug.log
+StandardError=inherit
 
 [Install]
 WantedBy=graphical-session.target

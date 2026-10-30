@@ -14,7 +14,6 @@ import re
 import shlex
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import time
@@ -31,6 +30,10 @@ except ImportError:     # non-POSIX: SingleInstance degrades to a no-op
 prt_kb = 2048
 prt_path = ''
 prt_to_init = True
+# Set by `-o/--stdout`: keep using stdout even when it is not a terminal.  A
+# systemd unit is exempt (see in_systemd_service()): there stdout is the
+# unit's own redirect, not a request from a person.
+prt_keep_stdout = False
 
 # One generation of history: debug.log -> debug.log.old, and the .old that was
 # there before is discarded.  Two files are all we keep.
@@ -128,61 +131,100 @@ def where(above=0):
     # return f'[:{line_number}]'
 
 
+def in_systemd_service(env=None):
+    """True when a systemd unit started this process.
+
+    systemd sets ``INVOCATION_ID`` for every service it launches.  prt() uses
+    this to ignore ``-o/--stdout`` inside a unit: there stdout is the unit's
+    own redirect, not a request from a person, and honouring it would put the
+    log somewhere the tray menu never looks.
+    """
+    return bool((os.environ if env is None else env).get('INVOCATION_ID'))
+
+
+def _same_file(fd, path):
+    """True when `fd` and `path` name the same file."""
+    try:
+        here = os.fstat(fd)
+        there = os.stat(path)
+    except (OSError, ValueError, TypeError):
+        return False
+    return (here.st_dev, here.st_ino) == (there.st_dev, there.st_ino)
+
+
 def prt(*args, **kwargs):
     """ Our custom print routine ...
      - use instead of print() to get time stamps.
-     - unless stdout is a tty, say for debugging, ~/.config/pwr-tray/debug.log is used for stdout
+     - unless `to_stdout` (`-o/--stdout`) asks otherwise, stdout/stderr are
+       redirected into ~/.config/pwr-tray/debug.log -- including when a
+       systemd unit had already redirected stdout somewhere else, so the tray
+       menu and `-f/--follow-log` always show the live log.
      - if we create a log file, its size is limited to `prt_kb` (2M) and then it
        is rotated: debug.log becomes debug.log.old and the previous .old is
        discarded, so there are never more than two files.
+     - `to_stdout=True` keeps stdout in use (a terminal, a pipe or a redirect),
+       unless a systemd unit started us; there stdout belongs to the unit.
      """
+    def is_tty():
+        try:
+            os.ttyname(sys.stdout.fileno())
+            return True
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def reopen():
+        global prt_to_init
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                stream.flush()
+
+        # Open the log first: if that fails, stdout is left untouched.  The
+        # handle must outlive this function; it becomes sys.stdout/stderr.
+        new_f = open(prt_path, "a+", encoding='utf-8')  # noqa: SIM115
+
+        # Close the old wrappers *before* redirecting.  They own fds 1 and 2,
+        # and closing them after `dup2()` would close the very descriptors we
+        # had just pointed at the log, leaving later subprocesses with a
+        # closed stdout/stderr.
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        for stream in (old_stdout, old_stderr):
+            if stream is None or stream is new_f:
+                continue
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                stream.close()
+
+        os.dup2(new_f.fileno(), 1)
+        os.dup2(new_f.fileno(), 2)
+        # new_f is UTF-8 regardless of the locale a unit may start us with.
+        sys.stdout = new_f
+        sys.stderr = new_f
+        prt_to_init = False
+
     def check_stdout(use_stdout=None):
-        def is_tty():
-            try:
-                os.ttyname(sys.stdout.fileno())
-                return True
-            except (OSError, ValueError, AttributeError):
-                return False
-        def is_reg():
-            try:
-                return stat.S_ISREG(os.fstat(sys.stdout.fileno()).st_mode)
-            except (OSError, ValueError, AttributeError):
-                return False
-        def reopen():
-            global prt_to_init
-
-            # Capture the old stdout/stderr to close them
-            old_stdout = sys.stdout
-            old_stderr = sys.stderr
-
-            # Open the new one.  It must outlive this function: it becomes
-            # sys.stdout/stderr for the life of the process.
-            new_f = open(prt_path, "a+", encoding='utf-8')  # noqa: SIM115
-
-            # Redirect
-            sys.stdout = new_f
-            sys.stderr = new_f
-            os.dup2(new_f.fileno(), 1)
-            os.dup2(new_f.fileno(), 2)
-
-            # CLOSE the old ones if they weren't the original system TTYs
-            # This prevents the leak
-            with contextlib.suppress(OSError, ValueError):
-                if old_stdout and not old_stdout.isatty():
-                    old_stdout.close()
-                if old_stderr and old_stderr is not old_stdout and not old_stderr.isatty():
-                    old_stderr.close()
-
-            prt_to_init = False
+        global prt_keep_stdout
+        if use_stdout is False:
+            prt_keep_stdout = False     # explicit "write the log file"
+        elif use_stdout is True and not in_systemd_service():
+            prt_keep_stdout = True      # -o from a person, not from a unit
 
         if prt_kb > 0 and prt_path: # non-positive disables stdout "tuning"
+            # Already appending to our own log -- a unit whose StandardOutput=
+            # is append:debug.log?  Then leave the descriptor alone; rotation
+            # below still applies.
+            ours = False
+            if not is_tty():
+                try:
+                    ours = _same_file(sys.stdout.fileno(), prt_path)
+                except (OSError, ValueError, AttributeError):
+                    ours = False
             should_reopen = (
                 use_stdout is False
                 or (prt_to_init and sys.stdout.closed)
-                or (prt_to_init and not is_tty() and not is_reg()))
+                or (prt_to_init and not prt_keep_stdout
+                    and not is_tty() and not ours))
             if should_reopen:
                 reopen()
-            elif not is_tty() and rotate_log():
+            elif not is_tty() and not prt_keep_stdout and rotate_log():
                 # What we were appending to just became debug.log.old;
                 # reopen() creates the new, empty current file.
                 reopen()
@@ -280,6 +322,32 @@ def log_viewer_argv(log_path, old_path=None, preferred=''):
     if old_path and os.path.exists(old_path):
         command.append(old_path)
     return terminal_argv(command, preferred)
+
+
+def spawn_detached(command, spawn=None, env=None):
+    """Start `command` so that it outlives this process.
+
+    The log viewer has to keep running when the applet stops or restarts.
+    Under systemd the applet and everything it spawns share one cgroup, and
+    systemd kills that whole cgroup on stop/restart (the default
+    ``KillMode=control-group``); ``systemd-run --user --scope`` moves the
+    viewer into a transient scope of its own, outside ours.
+    ``start_new_session=True`` is setsid(2): it detaches the viewer from our
+    session and controlling terminal, which is what keeps it alive when the
+    applet was started from a terminal or a DE autostart.
+
+    `spawn`/`env` are injectable for tests.  Returns whatever `spawn` returns
+    (``None`` for an empty command).
+    """
+    command = [str(part) for part in command]
+    if not command:
+        return None
+    env = os.environ if env is None else env
+    runner = shutil.which('systemd-run', path=env.get('PATH'))
+    if runner and in_systemd_service(env):
+        command = [runner, '--user', '--scope', '--quiet', '--', *command]
+    spawn = subprocess.Popen if spawn is None else spawn
+    return spawn(command, start_new_session=True)
 
 
 _PYTHON_RE = re.compile(r'^python[0-9.]*$')
