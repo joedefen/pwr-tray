@@ -60,6 +60,14 @@ def test_niri_keyword_is_documented():
     assert 'niri' in readme
 
 
+def test_pyqt5_hint_names_the_interpreter_that_needs_it():
+    """PyQt5 is a declared dependency, so the hint must not send a pipx user
+    to a distro package a venv can never import."""
+    readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+    assert 'pipx inject' in readme, 'a pipx venv needs PyQt5 added to itself'
+    assert 'python3-pyqt5' in readme, 'the system-interpreter case stays documented'
+
+
 def test_main_does_not_inject_system_dist_packages():
     """A pipx venv must not silently shadow its packages with system ones."""
     source = (ROOT / 'pwr_tray' / 'main.py').read_text(encoding='utf-8')

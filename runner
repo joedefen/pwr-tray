@@ -16,6 +16,16 @@ on that command line when it takes over from one.
 ``--replace``: the applet takes the single-instance lock first and, if another
 instance still holds it, terminates that instance and takes over.  Pass
 ``--replace`` yourself and it is not added twice.
+
+Every ``--svc-*`` verb is passed through, so ``./runner --svc-status`` reports
+on the installed unit and ``./runner --svc-restart`` restarts it.  Mind the
+difference in what runs: ``./runner`` runs this working tree, while a
+``--svc-*`` verb that has to name an executable uses the ``pwr-tray`` found on
+``$PATH``.  An activated project virtualenv puts its own ``pwr-tray`` first,
+and the unit then records that path -- which is how a service ends up running
+a copy of the package while ``./runner`` runs the source.  Run the install
+verb from a shell where ``pwr-tray`` resolves to the editable (pipx) install,
+then ``./runner --svc-restart`` to make the running applet match it.
 """
 
 import os

@@ -50,6 +50,7 @@ Per-DE requirements:
 
 ### HowTo Install and Start pwr-tray
 * Basically: `pipx install pwr-tray` (exactly how depends on your installation and its state)
+* From a checkout, `pipx install --editable .` makes `pwr-tray` run that tree; after editing, `pwr-tray --svc-restart` reloads the applet systemd is running (see "Verifying the version that is actually running" under Testing).
 * Manually run as `pwr-tray -o`:
     * Creates config (in `~/.config/pwr-tray/config.ini`).
     * Copies default DE commands to `~/.config/pwr-tray/commands.yaml`.
@@ -62,10 +63,16 @@ Per-DE requirements:
       if any are missing. Note:
       * `systemctl` is always required.
       * Optionally, install `playerctl` if you wish playing media to inhibit screen saving and sleeping.
-    * If you find you are missing PyQt5, then you'll need to install it; examples:
-        * `sudo apt install python3-pyqt5` # if debian based
-        * `sudo pacman -S python-pyqt5` # if arch based
-        * `sudo dnf install python3-qt5` # if fedora based
+    * **PyQt5 is installed for you.** It is a declared dependency, and the
+      published wheels bundle the Qt libraries they need, so `pipx install
+      pwr-tray` (or `pip install`) is normally all there is to it. A missing
+      `ModuleNotFoundError: No module named 'PyQt5'` therefore means something
+      else ran pwr-tray -- usually a Python that was never set up for it. Add
+      PyQt5 to *that* interpreter:
+        * `pipx inject pwr-tray PyQt5` -- the pipx venv that `pwr-tray` runs from
+        * `pip install PyQt5` -- inside an activated venv, or `pip install -e '.[dev]'` from a checkout
+        * `sudo apt install python3-pyqt5` (Debian/Ubuntu), `sudo pacman -S python-pyqt5` (Arch), `sudo dnf install python3-qt5` (Fedora) -- only when you run pwr-tray with the **system** Python; a venv does not see distro packages. Same for `./runner`, which uses whichever interpreter you invoke it with.
+      Only if pip cannot use a prebuilt wheel (an unusual CPU architecture, or a musl system such as Alpine) does it fall back to compiling PyQt5, which needs Qt development headers (e.g. `qtbase5-dev` plus `python3-dev`).
 
 * Then, follow the "Per-DE Specific Notes" below to ensure proper operation. To just kick the tires, you can defer this until ready to go forward.
 * Read the other sections for customization and everyday use.
@@ -84,7 +91,8 @@ Per-DE requirements:
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
 | `--svc` / `--svc-status` | Report the `systemd --user` unit: installed, enabled, running. Exits `0` running, `1` installed-but-stopped, `2` not installed. |
 | `--svc-install` | Write the unit matching this desktop to `~/.config/systemd/user/`, reload, and enable it (does not start it now). |
-| `--svc-start` | `--svc-install` if needed, then enable and start it now. |
+| `--svc-start` | `--svc-install` if needed, then enable and start it now. An already-running unit is left alone; use `--svc-restart` to load new code. |
+| `--svc-restart` | `--svc-install` if needed, then `systemctl --user restart` it, so the running applet is the one the unit's `ExecStart=` names. This is what applies an editable install or a `git pull`. |
 | `--svc-stop` | Stop the unit. It stays enabled, so it returns at your next login. |
 | `--svc-uninstall` | Stop, disable and delete the unit. `config.ini`, picks and logs are kept. |
 | `-y`, `--yes` | Never prompt for the `--svc-*` verbs (needed when stdin is not a terminal). |
@@ -141,6 +149,38 @@ Or act on the applet itself:
 - To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`
 - To test media inhibit: with `playerctl` installed, play media in any MPRIS-capable player; the `PlayingNow` icon appears and the lock/sleep timeouts are suspended until playback stops.
 - To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states. While it is synthetic, the menu entry is suffixed with `(TESTING)` so it cannot be mistaken for a real power state.
+
+#### Verifying the version that is actually running
+
+`./runner` (or `python -m pwr_tray.main`) always runs the checkout you are in.
+The applet you see after login can come from somewhere else: the `pwr-tray` on
+`$PATH`, the `ExecStart=` recorded in `~/.config/systemd/user/pwr-tray.service`,
+and the process systemd started are three separate choices, and only the last
+one is running. Check them in order:
+
+```
+pwr-tray --version                        # the $PATH executable and its version
+python -c "import pwr_tray; print(pwr_tray.__file__)"   # where $PATH imports from
+pwr-tray --svc-status                     # `runs:` names the unit's executable
+```
+
+`--svc-status` prints the executable the installed unit runs and adds a note
+when that is not the `pwr-tray` on `$PATH`. When they disagree, the unit is
+stale -- typically it was installed from an activated virtualenv that holds a
+copied (non-editable) package, so the service keeps running a snapshot of the
+code no matter what the checkout says:
+
+```
+pipx install --editable --force .         # make $PATH point at this checkout
+pwr-tray --svc-restart                    # rewrite the unit if stale, then restart
+pwr-tray --svc-status                     # active, and `runs:` is that executable
+```
+
+`--svc-start` deliberately leaves an already-running, up-to-date unit alone.
+An editable install changes the code without changing the unit file, and a
+running Python process keeps the modules it imported at startup, so neither
+`--svc-install` nor `--svc-start` can apply it: **`--svc-restart` is the verb
+that applies a `pipx install --editable .` or a `git pull`.**
 
 ---
 
@@ -199,9 +239,17 @@ Instead of your DE/WM's own autostart, you can run `pwr-tray` as a `systemd --us
 pwr-tray --svc-status      # installed? enabled? running?
 pwr-tray --svc-install     # write the unit for this desktop and enable it
 pwr-tray --svc-start       # ...or do both and start it now
+pwr-tray --svc-restart     # install if needed, then restart (loads new code)
 pwr-tray --svc-stop        # stop it; it comes back at your next login
 pwr-tray --svc-uninstall   # stop, disable and delete the unit
 ```
+
+`--svc-restart` is how an update reaches the running applet. `--svc-install`
+only writes the unit when its text differs from the shipped one, and
+`--svc-start` leaves an active unit alone, so a `pipx install --editable .` or
+a `git pull` (which change the code, not the unit file) would otherwise keep
+running whatever the process imported at startup. `--svc-status` reports the
+executable the unit names, so all three layers can be checked at once.
 
 `--svc-install` picks the unit for the detected desktop (`--de NAME` overrides the detection), substitutes the real path of the `pwr-tray` executable plus your live `WAYLAND_DISPLAY`/`DISPLAY`, writes `~/.config/systemd/user/pwr-tray.service`, reloads the manager and enables it. It does not start the applet, and it will not overwrite a unit you have edited without showing the difference first. `--yes` answers the question in advance; `--force` replaces or deletes a unit pwr-tray did not write.
 

@@ -1387,6 +1387,10 @@ def main():
     svc.add_argument('--svc-start', dest='svc', action='store_const',
             const='start',
             help='install if needed, enable, and start it now')
+    svc.add_argument('--svc-restart', dest='svc', action='store_const',
+            const='restart',
+            help='install if needed, then restart it so it runs the current'
+                 ' code (use after an editable install or a pull)')
     svc.add_argument('--svc-stop', dest='svc', action='store_const',
             const='stop',
             help='stop it now; it stays enabled for your next login')

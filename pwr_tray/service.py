@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install, inspect and remove the pwr-tray ``systemd --user`` unit.
+"""Install, inspect, refresh and remove the pwr-tray ``systemd --user`` unit.
 
 The unit files in ``pwr_tray/resources/systemd/`` are the single source of
 truth.  They ship inside the wheel (flit includes everything under the module
@@ -56,6 +56,7 @@ FAILED = 1
 SESSION_KEYS = ('WAYLAND_DISPLAY', 'DISPLAY')
 
 _DE_PATTERN = re.compile(r'--de[ =]([A-Za-z0-9-]+)')
+_EXEC_START_RE = re.compile(r'^ExecStart=(.*)$', re.MULTILINE)
 
 #: ``StandardOutput=append:/path`` and friends: systemd opens these itself.
 _OUTPUT_RE = re.compile(
@@ -150,6 +151,26 @@ def desktop_of(text):
     """Return the compound desktop name a unit forces via ``--de``."""
     match = _DE_PATTERN.search(text)
     return match.group(1) if match else None
+
+
+def installed_executable(text):
+    """Return the executable named by the first ``ExecStart=`` line, or ``None``.
+
+    This is the one fact that tells a stale unit from a current one.  A unit
+    installed from an activated project virtualenv names that virtualenv's
+    ``pwr-tray``; an installed package and an editable install name different
+    paths again, and only the executable decides which code actually runs.
+    """
+    match = _EXEC_START_RE.search(text)
+    if not match:
+        return None
+    command = match.group(1).strip()
+    if not command:
+        return None
+    if command.startswith('"'):
+        end = command.find('"', 1)
+        return command[1:end] if end > 0 else None
+    return command.split()[0]
 
 
 def templates(source=None):
@@ -324,6 +345,11 @@ def plan_install(rendered, status, force=False, holder=None, env=None):
     else:
         plan.steps.append(Step(f'write {target}', write=(target, rendered)))
         wrote = True
+    executable = installed_executable(rendered)
+    if wrote and executable:
+        # Which executable a unit names is the difference between running this
+        # tree and running a snapshot of it, so never leave it implicit.
+        plan.notes.append(f'the unit will run {executable}')
     # systemd does not create the directories it is told to log into, it fails
     # the unit with EXIT_STDOUT (209), so install time is when they must exist.
     for folder in missing_dirs(rendered, env):
@@ -342,22 +368,58 @@ def plan_install(rendered, status, force=False, holder=None, env=None):
     return plan
 
 
+def _systemd_hint():
+    return (f'inspect it with: systemctl --user status {UNIT_NAME}'
+            f' or: journalctl --user -xeu {UNIT_NAME}')
+
+
+def _running_outside_systemd(holder):
+    return ServiceError(
+        f'pwr-tray is already running outside systemd (pid {holder}); the unit'
+        ' would exit 3 against the single-instance lock.  Remove the desktop'
+        ' autostart that started it (or quit that instance) and run this again')
+
+
 def plan_start(rendered, status, force=False, holder=None, env=None):
     """Install if needed, enable, and start now."""
     plan = plan_install(rendered, status, force=force, holder=holder, env=env)
     if status.active:
-        plan.notes.append(f'{UNIT_NAME} is already running')
+        if status.up_to_date:
+            plan.notes.append(f'{UNIT_NAME} is already running')
+        else:
+            # The unit was rewritten above, but `start` on an active unit is a
+            # no-op: without a restart the old definition (and the old
+            # executable it names) keeps running.
+            plan.steps.append(Step(
+                f'restart {UNIT_NAME} to apply the new unit',
+                argv=systemctl('restart', UNIT_NAME),
+                hint=_systemd_hint()))
         return plan
     if holder:
-        raise ServiceError(
-            f'pwr-tray is already running outside systemd (pid {holder}); the unit'
-            ' would exit 3 against the single-instance lock.  Remove the desktop'
-            ' autostart that started it (or quit that instance) and run this again')
+        raise _running_outside_systemd(holder)
     plan.steps.append(Step(
         f'start {UNIT_NAME}',
         argv=systemctl('start', UNIT_NAME),
-        hint=(f'inspect it with: systemctl --user status {UNIT_NAME}'
-              f' or: journalctl --user -xeu {UNIT_NAME}')))
+        hint=_systemd_hint()))
+    return plan
+
+
+def plan_restart(rendered, status, force=False, holder=None, env=None):
+    """Install if needed, enable, and restart so the unit runs this tree now.
+
+    An editable install changes the *code* without changing the unit file, so
+    neither ``--svc-install`` nor ``--svc-start`` can notice it: only a
+    restart makes systemd load the modules the current checkout provides.
+    """
+    plan = plan_install(rendered, status, force=force, holder=holder, env=env)
+    if holder and not status.active:
+        raise _running_outside_systemd(holder)
+    plan.steps.append(Step(
+        f'restart {UNIT_NAME}',
+        argv=systemctl('restart', UNIT_NAME),
+        hint=_systemd_hint()))
+    plan.notes.append(
+        f'{UNIT_NAME} restarts now, so it runs the code the executable names')
     return plan
 
 
@@ -467,6 +529,8 @@ def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
         plan = plan_install(rendered, status, force=force, holder=holder, env=env)
     elif verb == 'start':
         plan = plan_start(rendered, status, force=force, holder=holder, env=env)
+    elif verb == 'restart':
+        plan = plan_restart(rendered, status, force=force, holder=holder, env=env)
     elif verb == 'stop':
         plan = plan_stop(status)
     elif verb == 'uninstall':
@@ -526,6 +590,16 @@ def _report(desktop, env, echo, run, script):
     flags = 'enabled' if status.enabled else 'disabled'
     echo(f'{UNIT_NAME}: {state} ({flags})')
     echo(f'  unit: {path}')
+    installed_exe = installed_executable(read_unit(path))
+    if installed_exe:
+        echo(f'  runs: {installed_exe}')
+        try:
+            current = executable_path(env)
+        except ServiceError:
+            current = None
+        if current and Path(current) != Path(installed_exe):
+            echo(f'  note: pwr-tray on $PATH is {current}; install and restart'
+                 ' the unit to run that one instead')
     if not status.installed:
         return STATUS_ABSENT
     if status.failed:

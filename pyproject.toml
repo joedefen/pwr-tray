@@ -1,3 +1,69 @@
+# pwr-tray -- basics, testing, and releasing
+# ==========================================
+#
+# Basics
+# ------
+# * Build backend: flit_core.  The version lives in `pwr_tray/__init__.py`
+#   only; never add `version =` to [project].  tests/test_metadata.py enforces
+#   this because a second copy of the version is how the published metadata
+#   drifted from the code before.
+# * Layout: the package is `pwr_tray/`; runtime resources (commands.yaml,
+#   icons, systemd units) live under `pwr_tray/resources/` and ride in the
+#   wheel.  `pwr-tray` is the console script (pwr_tray.main:main).
+# * `./runner` executes this source tree immediately (`python -m
+#   pwr_tray.main`, with `--replace`), so it is always the newest code -- but
+#   it is not what a systemd unit or a pipx shim runs.
+#
+# Full test of the working version
+# --------------------------------
+# Three layers can each name different code: the `pwr-tray` on $PATH, the
+# ExecStart= of ~/.config/systemd/user/pwr-tray.service, and the process
+# systemd is running right now.  `--svc-status` prints the middle one
+# (`runs: ...`) and warns when it is not the executable on $PATH.  To make all
+# three agree with this checkout:
+#
+#   pipx install --editable --force .   # $PATH -> this checkout
+#   pwr-tray --version                  # must print pwr_tray.__version__
+#   pwr-tray --svc-status               # `runs:` must be that executable
+#   pwr-tray --svc-restart              # rewrite a stale unit, then restart
+#   pwr-tray --svc-status               # active, and running the right file
+#   pwr-tray --follow-log               # watch what it actually says
+#
+# An editable install changes the code, not the unit file, and a running
+# Python process keeps the modules it imported at startup: `--svc-install`
+# and `--svc-start` cannot notice either change.  `--svc-restart` is the verb
+# that applies a `pipx install --editable .` or a `git pull`.
+#
+# Do not run `--svc-install` from an activated project virtualenv: the unit
+# records the absolute path of the `pwr-tray` that `which` finds there, and
+# that virtualenv may hold a copied (non-editable) package frozen at install
+# time.
+#
+# The test gate, from a checkout with the `dev` extra installed:
+#
+#   python -m pip install -e '.[dev]'
+#   python -m ruff check .
+#   python -m compileall -q pwr_tray
+#   python -m pytest -q                 # 300+ tests, about a second
+#   python -m pytest -q --cov=pwr_tray  # optional coverage report
+#
+# Tests never touch ~/.config: conftest.py redirects HOME to a temporary
+# directory and stubs PyQt5/ruamel.yaml/psutil when they are absent, so the
+# suite runs in a bare container as well as on a desktop.
+#
+# Releasing
+# ---------
+#   1. bump `__version__` in pwr_tray/__init__.py (the only place)
+#   2. run the test gate above; commit; tag `vX.Y.Z`; push with tags
+#   3. python -m build                  # dist/*.whl and dist/*.tar.gz
+#   4. python -m twine check dist/*
+#   5. python -m twine upload dist/*    # TWINE_USERNAME=__token__,
+#                                       # TWINE_PASSWORD=pypi-...
+#   6. install the artifact into a scratch environment (pipx install
+#      --force ./dist/pwr_tray-X.Y.Z-py3-none-any.whl) and check
+#      `pwr-tray --version` and `pwr-tray --list-des`, so the index cannot
+#      serve a wheel that the tree never ran (audit finding F1).
+
 [build-system]
 requires = ["flit_core>=3.4"]
 build-backend = "flit_core.buildapi"
@@ -38,7 +104,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
+    "pytest-cov>=5",
     "ruff>=0.6",
+    "build>=1.2",
+    "twine>=5",
 ]
 
 [project.scripts]
@@ -50,6 +119,13 @@ include = ["pwr_tray/resources/"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.coverage.run]
+branch = true
+source = ["pwr_tray"]
+
+[tool.coverage.report]
+skip_covered = true
 
 [tool.ruff]
 # Keep the lint gate identical on every machine: no global/user config can

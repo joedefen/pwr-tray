@@ -72,8 +72,9 @@ def _report(found, where):
 
 
 def test_source_uses_only_text_presentation_glyphs():
-    source = open(os.path.join(ROOT, 'pwr_tray', 'main.py'),
-                  encoding='utf-8').read()
+    with open(os.path.join(ROOT, 'pwr_tray', 'main.py'),
+              encoding='utf-8') as handle:
+        source = handle.read()
 
     found = _offenders(source)
     assert not found, _report(found, 'pwr_tray/main.py')
@@ -82,7 +83,8 @@ def test_source_uses_only_text_presentation_glyphs():
 def test_readme_and_audit_do_not_advertise_emoji_glyphs():
     """The docs quote the menu; they must quote what the menu now shows."""
     for name in ('README.md', os.path.join('tests', 'AUDIT.md')):
-        text = open(os.path.join(ROOT, name), encoding='utf-8').read()
+        with open(os.path.join(ROOT, name), encoding='utf-8') as handle:
+            text = handle.read()
         emoji = {char: unicodedata.name(char, 'UNNAMED')
                  for char in text if ord(char) >= 0x1F000}
         assert not emoji, _report(emoji, name)
@@ -126,7 +128,10 @@ class _FakeTrayIcon:
 
 def _fake_tray(**overrides):
     """A tray with exactly the attributes build_menu() reads."""
-    noop = lambda *_args, **_kwargs: None
+
+    def noop(*_args, **_kwargs):
+        return None
+
     tray = types.SimpleNamespace(
         menu=_FakeMenu(),
         menu_items=[],

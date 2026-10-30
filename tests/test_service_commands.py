@@ -5,8 +5,8 @@ effect (``execute`` performs them), so every decision here can be asserted by
 argv instead of by poking a live user manager: what gets written, in which
 order, what is *not* called, and what happens when the answer is no.
 
-The last three tests drive the real ``main()`` argparse wiring, so a flag that
-is renamed or made mutually exclusive is caught here rather than by a user.
+The last tests drive the real ``main()`` argparse wiring, so a flag that is
+renamed or made mutually exclusive is caught here rather than by a user.
 """
 
 import os
@@ -188,6 +188,62 @@ def test_start_when_already_active_starts_nothing(env, unit_path):
     assert run_verb('start', env, run, echo=output.append) == service.OK
     assert run.mutating() == []
     assert any('already running' in line for line in output), output
+
+
+def test_start_restarts_an_active_unit_that_changed(env, unit_path):
+    """`start` on an active unit does nothing, so a rewrite needs a restart.
+
+    This is the case that left a service running an executable from an old
+    project virtualenv after the unit had been re-rendered: the file changed,
+    the running process did not.
+    """
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    edited = unit_path.read_text(encoding='utf-8').replace(
+        f'ExecStart={SCRIPT}', 'ExecStart=/snap/bin/pwr-tray')
+    unit_path.write_text(edited, encoding='utf-8')
+
+    run = FakeSystemctl(enabled=True, active=True)
+    assert run_verb('start', env, run, yes=True) == service.OK
+    assert run.mutating() == [
+        ('systemctl', '--user', 'daemon-reload'),
+        ('systemctl', '--user', 'restart', service.UNIT_NAME),
+    ]
+    assert f'ExecStart={SCRIPT}' in unit_path.read_text(encoding='utf-8')
+
+
+def test_restart_installs_enables_and_restarts(env, unit_path):
+    run = FakeSystemctl()
+    assert run_verb('restart', env, run) == service.OK
+    assert run.mutating() == [
+        ('systemctl', '--user', 'daemon-reload'),
+        ('systemctl', '--user', 'enable', service.UNIT_NAME),
+        ('systemctl', '--user', 'restart', service.UNIT_NAME),
+    ]
+
+
+def test_restart_applies_a_rewritten_unit(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    unit_path.write_text('stale\n', encoding='utf-8')
+
+    output = []
+    run = FakeSystemctl(enabled=True, active=True)
+    assert run_verb('restart', env, run, echo=output.append, yes=True) == service.OK
+    assert run.mutating() == [
+        ('systemctl', '--user', 'daemon-reload'),
+        ('systemctl', '--user', 'restart', service.UNIT_NAME),
+    ]
+    assert any('restarts now' in line for line in output), output
+    assert f'ExecStart={SCRIPT}' in unit_path.read_text(encoding='utf-8')
+
+
+def test_restart_refuses_while_the_applet_runs_outside_systemd(env, unit_path):
+    """A restart would start a unit that exits 3 against the lock."""
+    run = FakeSystemctl()
+    with pytest.raises(service.ServiceError, match='outside systemd') as excinfo:
+        run_verb('restart', env, run, holder=4242)
+    assert '4242' in str(excinfo.value)
+    assert run.mutating() == []
+    assert not unit_path.exists()
 
 
 def test_start_refuses_while_the_applet_runs_outside_systemd(env, unit_path):
@@ -384,6 +440,32 @@ def test_status_reports_an_out_of_date_unit(env, unit_path):
     assert any('differs from the shipped unit' in line for line in output), output
 
 
+def test_status_names_the_executable_the_unit_runs(env, unit_path):
+    """Which executable the unit names decides which code a restart loads."""
+    run_verb('install', env, FakeSystemctl(enabled=True))
+
+    output = []
+    run_verb('status', env, FakeSystemctl(enabled=True), echo=output.append)
+    assert f'runs: {SCRIPT}' in '\n'.join(output), output
+
+
+def test_status_points_out_a_unit_that_runs_another_pwr_tray(env, unit_path, tmp_path):
+    """A unit installed from an old virtualenv must not look current."""
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    bindir = tmp_path / 'bin'
+    bindir.mkdir()
+    other = bindir / 'pwr-tray'
+    other.write_text('#!/bin/sh\n', encoding='utf-8')
+    other.chmod(0o755)
+
+    output = []
+    run_verb('status', dict(env, PATH=f'{bindir}:/usr/bin:/bin'),
+             FakeSystemctl(enabled=True), echo=output.append)
+    joined = '\n'.join(output)
+    assert str(other) in joined
+    assert 'install and restart' in joined
+
+
 def test_verbs_refuse_to_run_without_systemd(env, unit_path):
     with pytest.raises(service.ServiceError, match='no systemd user manager'):
         run_verb('install', env, FakeSystemctl(), systemd=False)
@@ -410,6 +492,11 @@ def test_executable_with_spaces_is_quoted(env):
     text = service.read_unit(service.template_for(DESKTOP))
     rendered = service.render(text, DESKTOP, '/opt/my tools/pwr-tray', env)
     assert 'ExecStart="/opt/my tools/pwr-tray" --de niri-wayland' in rendered
+    assert service.installed_executable(rendered) == '/opt/my tools/pwr-tray'
+
+
+def test_installed_executable_of_a_unit_without_exec_start_is_none():
+    assert service.installed_executable('[Service]\nType=simple\n') is None
 
 
 def test_missing_executable_is_explained(env):
@@ -420,7 +507,7 @@ def test_missing_executable_is_explained(env):
 
 def test_dispatch_rejects_an_unknown_verb(env):
     with pytest.raises(service.ServiceError, match='unknown service verb'):
-        run_verb('restart', env, FakeSystemctl())
+        run_verb('reload', env, FakeSystemctl())
 
 
 def cli_session(monkeypatch, tmp_path, argv):
@@ -457,6 +544,14 @@ def test_cli_install_without_systemd_changes_nothing(monkeypatch, tmp_path, capf
     assert excinfo.value.code == 1
     assert 'no systemd user manager' in capfd.readouterr().err
     assert not (Path(tmp_path) / 'systemd' / 'user' / service.UNIT_NAME).exists()
+
+
+def test_cli_restart_verb_is_wired(monkeypatch, tmp_path, capfd):
+    cli = cli_session(monkeypatch, tmp_path, ['--svc-restart', '--yes'])
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == 1
+    assert 'no systemd user manager' in capfd.readouterr().err
 
 
 def test_cli_rejects_two_verbs(monkeypatch, capsys):
