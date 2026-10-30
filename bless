@@ -27,6 +27,38 @@ Why no CI publish job: the upload is irreversible and the owner runs it from
 the tree, so the safety has to be visible and local.  CI stays a gate.  See
 plans/pypi-release-plan.md for the reasoning (R1/R2) and for the branch model.
 
+How to reuse: copy this file to another project's root.  Nothing about this
+project is written into it -- `identity()` reads the whole of it from
+`pyproject.toml` at start-up:
+
+  * the distribution name, used in the index URLs, the install line and every
+    message, is `[project] name`;
+  * the package that owns the release number is that name with `-` and `.`
+    turned into `_`, overridable with `[tool.bless] module = "..."`;
+  * the console script the smoke run starts is the first entry of
+    `[project.scripts]`, and its name is all that is needed;
+  * the inspector is `tests/inspect_dist.py`, overridable with
+    `[tool.bless] inspect = "path"`, or `inspect = ""` to skip it knowingly;
+  * `[tool.bless] smoke_args` adds an argv to that smoke run and
+    `smoke_expect` is the text its output must contain.
+
+What a project must then provide, because these are the assumptions that are
+not worth guessing:
+
+  * a flat layout -- the package directory at the root, since ROOT is the
+    directory this file sits in;
+  * `__version__ = "X.Y.Z"` in `<package>/__init__.py`, read by the build
+    backend (flit does exactly this); bless rewrites that line only inside a
+    throwaway copy, never in the tree;
+  * `python -m build` working on the tree, and a dev extra holding ruff,
+    pytest, pytest-cov, build, twine>=7 and packaging>=26, because `gates()`
+    runs precisely ruff, compileall and pytest --cov=<package>;
+  * an inspector at that path: bless never uploads a distribution it has not
+    inspected, so a missing one is a refusal, not a silent skip;
+  * a console script, if declared, that prints the version for `--version`;
+  * for `publish`, the `main`/`dev` pair and `vX.Y.Z` tags.  The dry run and
+    `test` require only that HEAD is not detached.
+
 Stages, in order: preflight (clean tree, tag absent, tool floors), index check,
 gates (ruff, compileall, pytest with coverage), build into build/bless-<ver>/,
 inspect the two files, `twine check --strict`, install-and-run smoke.  The dry
@@ -48,6 +80,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from importlib.metadata import PackageNotFoundError
@@ -55,28 +88,20 @@ from importlib.metadata import version as installed_version
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PYPI_URL = 'https://pypi.org/pypi/pwr_tray/json'
-TESTPYPI_URL = 'https://test.pypi.org/pypi/pwr_tray/json'
 TESTPYPI_UPLOAD = 'https://test.pypi.org/legacy/'
 INDEX_TIMEOUT = 15          # seconds for one index read
 VERIFY_ATTEMPTS = 10        # either index's JSON can lag an accepted upload
 VERIFY_DELAY = 3.0          # seconds between verify attempts
 TEST_TAG = 99               # X.Y.Z.99.N sorts clear of every real release
 TOOL_FLOORS = {'twine': (7, 0, 0), 'packaging': (26, 0, 0)}
-
-# The two destinations.  `upload` is None for PyPI because that is twine's own
-# default, and `token` is an environment variable name: a TestPyPI token is not
-# a PyPI token, so both can be exported at once without either hiding the other.
-PYPI = {'name': 'PyPI', 'index': PYPI_URL, 'upload': None,
-        'token': 'TWINE_PASSWORD'}
-TESTPYPI = {'name': 'TestPyPI', 'index': TESTPYPI_URL, 'upload': TESTPYPI_UPLOAD,
-            'token': 'TWINE_TESTPYPI_PASSWORD'}
+DEFAULT_INSPECTOR = 'tests/inspect_dist.py'
 
 # What a throwaway build must not copy out of the tree.
 COPY_EXCLUDES = ('.git', 'build', 'dist', '.venv', 'env', 'venv', '__pycache__',
                  '.pytest_cache', '.ruff_cache', '.mypy_cache', 'htmlcov',
                  '.coverage*', '*.pyc')
 VERSION_LINE = re.compile(r'^__version__ = .*$', re.MULTILINE)
+VERSION_VALUE = re.compile(r"""^__version__ = ['"]([^'"]+)['"]""", re.MULTILINE)
 
 
 class BlessError(RuntimeError):
@@ -85,6 +110,95 @@ class BlessError(RuntimeError):
 
 def say(stage: str, message: str) -> None:
     print(f'[{stage}] {message}', flush=True)
+
+
+def _manifest(root: Path) -> dict:
+    """This tree's pyproject.toml: the one place its identity is written down."""
+    path = root / 'pyproject.toml'
+    try:
+        return tomllib.loads(path.read_text(encoding='utf-8'))
+    except OSError as exc:
+        raise BlessError(
+            f'cannot read {path}: {exc}\nbless learns the project name, the '
+            'package holding `__version__` and the console script from it, and '
+            'will not guess any of them') from None
+
+
+def identity(root: Path = ROOT) -> dict:
+    """What bless must know about the project, read rather than written here.
+
+    `[project] name` gives the distribution name; the package holding the
+    release number is that name with `-` and `.` turned into `_`; the console
+    script is the first entry of `[project.scripts]`; `[tool.bless]` overrides
+    any of it.  Refusing here -- and naming both ways to fix it -- is what lets
+    the script move to another project without guessing wrong in silence.
+    """
+    manifest = _manifest(root)
+    project = manifest.get('project') or {}
+    settings = (manifest.get('tool') or {}).get('bless') or {}
+    name = project.get('name')
+    if not name:
+        raise BlessError(
+            f'{root / "pyproject.toml"} has no [project] name, which bless needs '
+            'for the index URLs, the install line and every message')
+    module = settings.get('module') or re.sub(r'[-.]+', '_', name)
+    package = root / module / '__init__.py'
+    if not package.is_file():
+        raise BlessError(
+            f'[project] name is {name!r}, so bless reads the release number from '
+            f'{module}/__init__.py, but {package.relative_to(root)} is missing.\n'
+            'Put the package and its `__version__` line there, or name the package '
+            'that holds them:\n  [tool.bless]\n  module = "the_package"')
+    if not VERSION_LINE.search(package.read_text(encoding='utf-8')):
+        raise BlessError(
+            f'{package.relative_to(root)} declares no `__version__ = ...`; bless '
+            'takes the release number from there and refuses to invent one')
+    scripts = list(project.get('scripts') or {})
+    return {
+        'root': root,
+        'name': name,
+        'module': module,
+        'console': scripts[0] if scripts else None,
+        'inspector': settings.get('inspect', DEFAULT_INSPECTOR),
+        'smoke_args': list(settings.get('smoke_args') or []),
+        'smoke_expect': settings.get('smoke_expect'),
+    }
+
+
+try:
+    PROJECT = identity()
+except BlessError as complaint:
+    print(f'bless: {complaint}', file=sys.stderr)
+    raise SystemExit(1) from None
+
+NAME = PROJECT['name']
+MODULE = PROJECT['module']
+
+
+def read_version(root: Path = ROOT, module: str = MODULE) -> str:
+    """The release number, read out of the package instead of importing it.
+
+    Reading the line keeps bless working on a GUI package without starting one,
+    and keeps it working in a tree that was never installed.
+    """
+    package = root / module / '__init__.py'
+    match = VERSION_VALUE.search(package.read_text(encoding='utf-8'))
+    if match is None:
+        raise BlessError(
+            f'{package.relative_to(root)} has no quoted `__version__ = ...` line; '
+            'bless takes the release number from there and refuses to invent one')
+    return match.group(1)
+
+
+# The two destinations.  `upload` is None for PyPI because that is twine's own
+# default, and `token` is an environment variable name: a TestPyPI token is not
+# a PyPI token, so both can be exported at once without either hiding the other.
+PYPI_URL = f'https://pypi.org/pypi/{NAME}/json'
+TESTPYPI_URL = f'https://test.pypi.org/pypi/{NAME}/json'
+PYPI = {'name': 'PyPI', 'index': PYPI_URL, 'upload': None,
+        'token': 'TWINE_PASSWORD'}
+TESTPYPI = {'name': 'TestPyPI', 'index': TESTPYPI_URL, 'upload': TESTPYPI_UPLOAD,
+            'token': 'TWINE_TESTPYPI_PASSWORD'}
 
 
 def run(command: list[str], *, capture: bool = False,
@@ -224,23 +338,24 @@ def check_index(version: str, document: dict | None = None,
     if str(version) in releases:
         listing = ', '.join(published) if published else '(none)'
         raise BlessError(
-            f'pwr_tray {version} is already on {target["name"]}, and an upload '
+            f'{NAME} {version} is already on {target["name"]}, and an upload '
             f'cannot be replaced.\n  published versions: {listing}\n'
-            '  bump __version__ in pwr_tray/__init__.py, commit, and bless again')
+            f'  bump __version__ in {MODULE}/__init__.py, commit, and bless again')
     latest = published[-1] if published else 'none'
-    say('index', f'pwr_tray {version} is not on {target["name"]} '
+    say('index', f'{NAME} {version} is not on {target["name"]} '
                  f'({len(published)} versions exist; latest is {latest})')
     return published
 
 
 def gates() -> None:
     """The same three gates CI runs, on the same interpreter."""
+    compiled = [MODULE, *(name for name in ('conftest.py', 'tests')
+                          if (ROOT / name).exists())]
     steps = [
         ('lint', [sys.executable, '-m', 'ruff', 'check', '.']),
-        ('compile', [sys.executable, '-m', 'compileall', '-q',
-                     'pwr_tray', 'conftest.py', 'tests']),
+        ('compile', [sys.executable, '-m', 'compileall', '-q', *compiled]),
         ('tests', [sys.executable, '-m', 'pytest', '-q',
-                   '--cov=pwr_tray', '--cov-report=term-missing']),
+                   f'--cov={MODULE}', '--cov-report=term-missing']),
     ]
     for name, command in steps:
         say('gate', name)
@@ -274,8 +389,12 @@ def build(version: str) -> tuple[Path, Path]:
 
 
 def _set_version(root: Path, version: str) -> None:
-    """Rewrite the one `__version__` line in a *copy* of the tree."""
-    path = root / 'pwr_tray' / '__init__.py'
+    """Rewrite the one `__version__` line in a *copy* of this tree.
+
+    The module name is the one resolved at start-up, because the copy *is* this
+    tree: same layout, same `[project]` table, different version.
+    """
+    path = root / MODULE / '__init__.py'
     text = path.read_text(encoding='utf-8')
     updated, count = VERSION_LINE.subn(f'__version__ = {version!r}', text)
     if count != 1:
@@ -312,7 +431,16 @@ def build_for_test(version: str) -> tuple[Path, Path]:
 
 def inspector():
     """Load the inspector CI also uses, so the two checks cannot drift."""
-    path = ROOT / 'tests' / 'inspect_dist.py'
+    where = PROJECT['inspector']
+    if not where:
+        raise BlessError(
+            '[tool.bless] inspect is empty, so there is nothing to inspect with')
+    path = ROOT / where
+    if not path.is_file():
+        raise BlessError(
+            f'{where} is missing, and bless never uploads a distribution it has '
+            'not inspected.\nAdd the inspector, point [tool.bless] inspect at '
+            'yours, or set inspect = "" to skip it knowingly.')
     spec = importlib.util.spec_from_file_location('inspect_dist', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -321,7 +449,10 @@ def inspector():
 
 def inspect_dist(wheel: Path, sdist: Path, version: str | None = None) -> None:
     """Assert the artifacts against the tree; `version` is the rehearsal's own."""
-    say('inspect', f'{wheel.name} and {sdist.name}')
+    if not PROJECT['inspector']:
+        say('inspect', 'skipped: [tool.bless] inspect is empty')
+        return
+    say('inspect', f'{wheel.name} and {sdist.name} against {PROJECT["inspector"]}')
     try:
         inspector().check_all(wheel, sdist, version)
     except ValueError as exc:
@@ -339,7 +470,12 @@ def check(wheel: Path, sdist: Path) -> None:
 
 
 def smoke(wheel: Path, version: str) -> None:
-    """Install the built wheel in a throwaway venv and run its console script."""
+    """Install the built wheel in a throwaway venv and run what it installed.
+
+    `[project.scripts]` decides what runs: the first console script, if the
+    project declares one, otherwise the package itself.  Either way the version
+    has to come back out, which is why the docstring calls that a requirement.
+    """
     venv = wheel.parent / 'smoke-venv'
     if venv.exists():
         shutil.rmtree(venv)
@@ -352,16 +488,31 @@ def smoke(wheel: Path, version: str) -> None:
         if run(step).returncode != 0:
             raise BlessError(f'smoke install failed: {" ".join(step[1:])}')
 
-    console = venv / 'bin' / 'pwr-tray'
-    reported = run([console, '--version'], capture=True)
+    script = venv / 'bin' / PROJECT['console'] if PROJECT['console'] else None
+    reported = run(
+        [script, '--version'] if script else
+        [venv / 'bin' / 'python', '-c',
+         f'import {MODULE}; print({MODULE}.__version__)'],
+        capture=True)
     if reported.returncode != 0 or version not in reported.stdout:
         raise BlessError(
-            f'the installed console script did not report {version}: '
-            f'{reported.stdout.strip() or reported.stderr.strip()}')
-    listing = run([console, '--list-des'], capture=True)
-    if listing.returncode != 0 or 'sway-wayland' not in listing.stdout:
-        raise BlessError('the installed console script could not list sway-wayland')
-    say('smoke', f'installed wheel reports pwr-tray {version} and lists sway-wayland')
+            f'the installed package did not report {version}: '
+            f'{reported.stdout.strip() or reported.stderr.strip()}\n'
+            'bless requires a declared console script to print the version '
+            'for --version')
+    say('smoke', f'installed wheel reports {NAME} {version}')
+
+    if script and PROJECT['smoke_args']:
+        wanted = PROJECT['smoke_expect'] or ''
+        command = [script, *PROJECT['smoke_args']]
+        listing = run(command, capture=True)
+        if listing.returncode != 0 or wanted not in listing.stdout:
+            raise BlessError(
+                f'the installed console script failed '
+                f'{" ".join(PROJECT["smoke_args"])}: '
+                f'{listing.stdout.strip() or listing.stderr.strip()}')
+        say('smoke', f'{PROJECT["console"]} {" ".join(PROJECT["smoke_args"])} '
+                     f'printed {wanted!r}')
 
 
 def branch_plan(current: str | None, tips: dict[str, str | None],
@@ -531,7 +682,7 @@ def verify_index(version: str, wheel: Path, target: dict = PYPI) -> None:
         if attempt < VERIFY_ATTEMPTS:
             time.sleep(VERIFY_DELAY)
     raise BlessError(
-        f'{where} did not confirm pwr_tray {version}: ' + '; '.join(last) +
+        f'{where} did not confirm {NAME} {version}: ' + '; '.join(last) +
         '\nThe upload was accepted; do not bless the same version again.')
 
 
@@ -543,7 +694,7 @@ def install_hint(version: str) -> None:
     cache goes first or the new file will not be seen.
     """
     print()
-    print(f'pwr_tray {version} is on TestPyPI: not on PyPI, and nothing was '
+    print(f'{NAME} {version} is on TestPyPI: not on PyPI, and nothing was '
           'tagged.')
     print('Purge the index pip has cached, then install:')
     print()
@@ -551,11 +702,11 @@ def install_hint(version: str) -> None:
     print('  python -m pip install --no-cache-dir \\')
     print('      --index-url https://test.pypi.org/simple/ \\')
     print('      --extra-index-url https://pypi.org/simple/ \\')
-    print(f'      pwr_tray=={version}')
+    print(f'      {NAME}=={version}')
     print()
     print('The extra index is required: TestPyPI carries none of the '
           'dependencies.')
-    print('Undo it with: python -m pip uninstall pwr_tray')
+    print(f'Undo it with: python -m pip uninstall {NAME}')
 
 
 def publish_git(version: str, branch: str, other: str) -> None:
@@ -627,12 +778,9 @@ def main(argv: list[str] | None = None) -> int:
         help='test for a TestPyPI rehearsal, publish for the real thing '
              '(default: dry run, nothing leaves the machine)')
     arguments = parser.parse_args(argv)
-
-    import pwr_tray
-
-    version = pwr_tray.__version__
-    say('bless', f'pwr_tray {version} ({arguments.mode or "dry run"})')
     try:
+        version = read_version()
+        say('bless', f'{NAME} {version} ({arguments.mode or "dry run"})')
         if arguments.mode == 'test':
             rehearse(version)
             return 0
@@ -660,7 +808,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f'bless: refused: {exc}', file=sys.stderr)
         return 1
 
-    say('done', f'pwr_tray {version} is published and main and dev are tagged')
+    say('done', f'{NAME} {version} is published and main and dev are tagged')
     return 0
 
 

@@ -133,6 +133,18 @@ pwr-tray = "pwr_tray.main:main"
 # sdist that cannot run its own gate leaves a downstream packager guessing.
 include = ["pwr_tray/resources/", "tests/", "conftest.py"]
 
+[tool.bless]
+# `./bless` reads this project's identity out of the tables above instead of
+# carrying a copy of it: the distribution name is `[project] name`, the package
+# that owns `__version__` is that name with `-` and `.` turned into `_` (here
+# `pwr_tray`), and the console script is the first entry of `[project.scripts]`
+# (`pwr-tray`).  Only what cannot be derived is written down here.  `inspect`
+# defaults to tests/inspect_dist.py, and setting it to "" would skip inspection
+# knowingly; `smoke_args` is the extra argv the smoke install runs and
+# `smoke_expect` the text its output has to contain.
+smoke_args = ["--list-des"]
+smoke_expect = "sway-wayland"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

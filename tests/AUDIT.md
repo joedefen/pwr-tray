@@ -290,6 +290,13 @@ dry run unless given `test` or `publish`.
 * `./bless publish` then aligns `main` and `dev`, tags `v<version>`, uploads the
   two named files to PyPI, verifies the index's metadata and wheel digest, and
   pushes. It refuses without `TWINE_PASSWORD` before `twine` starts.
+* The script carries no copy of this project's identity: `identity()` reads
+  `[project] name` from `pyproject.toml`, derives the package holding
+  `__version__` from it (`-`/`.` become `_`), takes the console script from
+  `[project.scripts]`, and honours `[tool.bless]` for the module, the inspector
+  and the extra smoke argv. A tree that does not declare these is refused with
+  both remedies named, and the docstring's "How to reuse" paragraph states what
+  another project must provide to use the same file.
 * CI inspects with the same [`tests/inspect_dist.py`](../tests/inspect_dist.py:1),
   so the artifact a maintainer blesses is the artifact CI already described.
 

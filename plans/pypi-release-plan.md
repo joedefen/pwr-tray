@@ -239,6 +239,18 @@ functions are pure enough to test: `preflight()`, `check_index()`, `gates()`,
 `verify_index()`, `publish_git()`, plus `next_test_version()`, `rehearse()` and
 `install_hint()` for the third mode.
 
+Nothing about *this* project is written into the script, so it can be the model
+for another one. `identity()` reads `[project] name` from `pyproject.toml`,
+derives the package that owns `__version__` from it (`-` and `.` become `_`),
+takes the console script from the first entry of `[project.scripts]`, and
+honours `[tool.bless]` for the module, the inspector path and the extra smoke
+argv. `read_version()` reads the version line instead of importing a GUI
+package, so the gate also works in a tree that was never installed. A tree that
+does not declare what is needed is refused with both remedies named, and the
+docstring's "How to reuse" paragraph is the checklist a second project has to
+meet (flat layout, `__version__` in the package, an inspector, a console script
+that answers `--version`).
+
 The two destinations are two small dictionaries (`PYPI`, `TESTPYPI`) holding
 the JSON endpoint, the upload URL and the name of the environment variable the
 token is read from. `upload()` and `verify_index()` take one of them, so no

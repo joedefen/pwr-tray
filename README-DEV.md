@@ -164,6 +164,30 @@ counts as "nothing published yet", which is what either index answers before a
 project's first upload.  For `publish`, `TWINE_PASSWORD` must be set;
 `TWINE_USERNAME` defaults to `__token__`.
 
+### Reusing `bless` in another project
+
+`bless` holds no copy of this project's identity: it reads `[project] name`,
+the package holding `__version__` (that name with `-` and `.` turned into `_`),
+the console script (the first entry of `[project.scripts]`) and `[tool.bless]`
+from `pyproject.toml` at start-up.  Copy the file to another project's root and
+it works there, provided the project:
+
+* keeps a flat layout -- the package directory at the root, since the script
+  takes its root from its own path;
+* declares `__version__ = "X.Y.Z"` in `<package>/__init__.py`, which the build
+  backend reads (flit does), and never needs writing anywhere else;
+* builds with `python -m build`, and has a dev extra with ruff, pytest,
+  pytest-cov, build, twine>=7 and packaging>=26 -- `gates()` runs exactly
+  ruff, compileall and `pytest --cov=<package>`;
+* ships an inspector at `tests/inspect_dist.py` (or names one with
+  `[tool.bless] inspect = "path"`), because bless refuses to upload what it has
+  not inspected; `inspect = ""` opts out knowingly;
+* if it declares a console script, has it print the version for `--version`;
+* for `publish` only, keeps the `main`/`dev` pair and tags `vX.Y.Z`.  The dry
+  run and `test` need only that HEAD is not detached.
+
+The rules are stated at the top of the script itself, so they travel with it.
+
 ### Why not a release workflow
 
 Publishing is irreversible, and the owner runs it from the development tree, so

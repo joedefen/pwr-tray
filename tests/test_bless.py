@@ -313,8 +313,148 @@ def test_the_install_hint_purges_the_cache_and_falls_back_to_pypi(capsys):
     assert 'pip cache purge' in out
     assert '--index-url https://test.pypi.org/simple/' in out
     assert '--extra-index-url https://pypi.org/simple/' in out
-    assert f'pwr_tray=={candidate}' in out
+    assert f'{bless.NAME}=={candidate}' in out
     assert 'not on PyPI' in out
+
+
+# --- reuse: the identity is read from pyproject.toml, not written in here ----
+
+def make_project(root, name, *, module=None):
+    """A throwaway tree shaped the way `identity()` expects to find one."""
+    root.mkdir(parents=True, exist_ok=True)
+    package = module or name.replace('-', '_').replace('.', '_')
+    (root / package).mkdir()
+    (root / package / '__init__.py').write_text('__version__ = "1.2.3"\n')
+    table = ['[project]', f'name = "{name}"', 'dynamic = ["version"]']
+    if module:
+        table += ['', '[tool.bless]', f'module = "{module}"']
+    (root / 'pyproject.toml').write_text('\n'.join(table) + '\n')
+    return root
+
+
+def test_the_identity_is_read_from_the_project_table(tmp_path):
+    told = bless.identity(make_project(tmp_path / 'plain', 'some-proj'))
+
+    assert told['name'] == 'some-proj'
+    # `-` becomes `_`: the name is written once, the package derived from it.
+    assert told['module'] == 'some_proj'
+    assert told['console'] is None
+    assert told['inspector'] == 'tests/inspect_dist.py'
+    assert told['smoke_args'] == [] and told['smoke_expect'] is None
+
+
+def test_the_tool_table_overrides_the_derivation(tmp_path):
+    root = make_project(tmp_path / 'odd', 'some-proj', module='odd_name')
+
+    assert bless.identity(root)['module'] == 'odd_name'
+
+
+def test_a_missing_package_is_refused_with_both_remedies(tmp_path):
+    (tmp_path / 'pyproject.toml').write_text('[project]\nname = "nope"\n')
+
+    with pytest.raises(bless.BlessError) as caught:
+        bless.identity(tmp_path)
+    message = str(caught.value)
+    assert 'nope/__init__.py' in message
+    assert '[tool.bless]' in message and 'module = "the_package"' in message
+
+
+def test_a_tree_without_a_pyproject_is_refused(tmp_path):
+    with pytest.raises(bless.BlessError, match=r'pyproject\.toml'):
+        bless.identity(tmp_path)
+
+
+def test_a_project_without_a_name_is_refused(tmp_path):
+    (tmp_path / 'pyproject.toml').write_text('[tool.other]\nx = 1\n')
+
+    with pytest.raises(bless.BlessError, match=r'\[project\] name'):
+        bless.identity(tmp_path)
+
+
+def test_a_package_without_a_version_line_is_refused(tmp_path):
+    (tmp_path / 'pyproject.toml').write_text('[project]\nname = "quiet"\n')
+    (tmp_path / 'quiet').mkdir()
+    (tmp_path / 'quiet' / '__init__.py').write_text('"""no version here"""\n')
+
+    with pytest.raises(bless.BlessError, match='__version__'):
+        bless.identity(tmp_path)
+
+
+def test_the_version_is_read_without_importing_the_package(tmp_path):
+    root = make_project(tmp_path / 'read', 'readable')
+
+    assert bless.read_version(root, 'readable') == '1.2.3'
+
+
+def test_this_tree_derives_its_own_identity():
+    name = PROJECT['name']
+    index = f'https://pypi.org/pypi/{name}/json'
+    rehearsal = f'https://test.pypi.org/pypi/{name}/json'
+
+    assert bless.PROJECT['name'] == name
+    assert bless.PROJECT['module'] == name.replace('-', '_')
+    assert bless.PROJECT['console'] in list(PROJECT['scripts'])
+    assert index == bless.PYPI_URL
+    assert rehearsal == bless.TESTPYPI_URL
+    assert bless.read_version() == VERSION
+
+
+def test_the_refusal_names_the_project_and_where_the_version_lives():
+    with pytest.raises(bless.BlessError) as caught:
+        bless.check_index(VERSION, pypi_document(VERSION))
+    message = str(caught.value)
+    assert f'{bless.NAME} {VERSION}' in message
+    assert f'{bless.MODULE}/__init__.py' in message
+
+
+def test_the_gate_compiles_and_covers_the_derived_package(monkeypatch):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append([str(part) for part in command])
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(bless, 'run', fake_run)
+    bless.gates()
+
+    compiling = next(argv for argv in commands if 'compileall' in argv)
+    assert bless.MODULE in compiling
+    testing = next(argv for argv in commands if 'pytest' in argv)
+    assert f'--cov={bless.MODULE}' in testing
+
+
+def test_the_smoke_run_starts_the_declared_console_script(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        argv = [str(part) for part in command]
+        calls.append(argv)
+        if argv[-1] == '--version':
+            printed = f'{VERSION}\n'
+        elif argv[-1] == bless.PROJECT['smoke_args'][0]:
+            printed = f'{bless.PROJECT["smoke_expect"]}\n'
+        else:
+            printed = ''
+        return subprocess.CompletedProcess(argv, 0, stdout=printed, stderr='')
+
+    monkeypatch.setattr(bless, 'run', fake_run)
+    bless.smoke(ROOT / 'build' / 'x.whl', VERSION)
+
+    wanted = bless.PROJECT['smoke_args'][0]
+    reported = next(argv for argv in calls if argv[-1] == '--version')
+    extra = next(argv for argv in calls if argv[-1] == wanted)
+
+    assert reported[0].endswith(bless.PROJECT['console'])
+    assert extra[1] == wanted
+
+
+def test_the_docstring_states_what_reuse_requires():
+    doc = bless.__doc__
+    assert 'How to reuse' in doc
+    for requirement in ('[project] name', '`-` and `.`', '[tool.bless] module',
+                        '[project.scripts]', 'tests/inspect_dist.py',
+                        '__version__', 'pytest --cov=<package>'):
+        assert requirement in doc, requirement
 
 
 # --- the branch model -------------------------------------------------------
