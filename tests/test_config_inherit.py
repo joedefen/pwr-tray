@@ -3,6 +3,11 @@
 README guarantees that missing or invalid settings in [HiBattery] and
 [LoBattery] are inherited from [Settings].  The parsed [Settings] values must
 therefore become the base for both tiers, not the hard-coded defaults.
+
+The other half of the rule (audit R3): "inherit from [Settings]" means the
+values the user *wrote* there.  A key absent from both the file's [Settings]
+and the tier has to use the tier's own entry in ``IniTool.defaults`` -- before
+R3 that table was documentation nothing honoured.
 """
 
 from pwr_tray.IniTool import IniTool
@@ -52,6 +57,73 @@ lock_min_list = [4, 5]
     assert lo_battery.lock_min_list == [3, 7]
     assert lo_battery.sleep_min_list == [9, 11]
     assert lo_battery.gui_editor == 'my-edit'
+
+
+def test_tier_defaults_win_when_settings_does_not_set_the_key(isolated_home):
+    """R3: the per-tier table, not the [Settings] default, decides."""
+    params = load_params(isolated_home, """\
+[Settings]
+gui_editor = my-edit
+""")
+
+    # [Settings] itself keeps the built-in defaults.
+    settings = params['Settings']
+    assert settings.power_down is False
+    assert settings.lock_min_list == [15, 30]
+    assert settings.sleep_min_list == [5, 30]
+
+    # LoBattery is absent, and power_down is absent from [Settings]: the
+    # LoBattery table says True, so it is True.
+    lo_battery = params['LoBattery']
+    assert lo_battery.power_down is True
+    assert lo_battery.lock_min_list == [1, 1]
+    assert lo_battery.sleep_min_list == [1, 1]
+    assert lo_battery.gui_editor == 'my-edit'   # still inherited
+
+    hi_battery = params['HiBattery']
+    assert hi_battery.power_down is False
+    assert hi_battery.lock_min_list == [10, 20]
+    assert hi_battery.sleep_min_list == [1, 10]
+
+
+def test_explicit_settings_value_beats_the_tier_default(isolated_home):
+    """R3 must not reintroduce v1 #4: a written [Settings] value wins."""
+    params = load_params(isolated_home, """\
+[Settings]
+power_down = False
+lock_min_list = [3, 7]
+""")
+
+    lo_battery = params['LoBattery']
+    assert lo_battery.power_down is False
+    assert lo_battery.lock_min_list == [3, 7]
+    # The keys [Settings] did not set still come from the LoBattery table.
+    assert lo_battery.sleep_min_list == [1, 1]
+
+
+def test_invalid_settings_value_does_not_block_the_tier_default(isolated_home):
+    """An unusable [Settings] value counts as absent, so the tier default applies."""
+    params = load_params(isolated_home, """\
+[Settings]
+power_down = maybe
+""")
+
+    assert params['Settings'].power_down is False
+    assert params['LoBattery'].power_down is True
+
+
+def test_empty_tier_section_gets_the_tier_defaults(isolated_home):
+    params = load_params(isolated_home, """\
+[Settings]
+
+[LoBattery]
+sleep_min_list = [7, 9]
+""")
+
+    lo_battery = params['LoBattery']
+    assert lo_battery.power_down is True
+    assert lo_battery.lock_min_list == [1, 1]
+    assert lo_battery.sleep_min_list == [7, 9]
 
 
 def test_invalid_tier_values_inherit_settings(isolated_home):

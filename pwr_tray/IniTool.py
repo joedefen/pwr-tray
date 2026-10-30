@@ -218,80 +218,116 @@ class IniTool:
         self._parse_config()
         return True # updated
 
+    def _tier_base(self, selector, settings_params, explicit_settings):
+        """Start a tier from [Settings], preferring the tier's own defaults.
+
+        A tier inherits every value the user actually wrote in [Settings]
+        (v1 #4).  A key absent from both the file's [Settings] and the tier
+        itself falls back to this tier's entry in `self.defaults`, so the
+        per-tier table is authoritative instead of decorative (audit R3).
+        """
+        base = copy.deepcopy(settings_params)
+        for key in self.defaults[selector]:
+            if key not in explicit_settings:
+                base[key] = self.the_default(selector, key)
+        return base
+
+    def _apply_section(self, selector, params, goldens):
+        """Overlay the user's values for `selector` onto `params`.
+
+        Returns the set of keys whose file value was accepted.  A rejected
+        value counts as absent, so callers can tell "the user chose this" from
+        "this is only a default" -- which is what lets a tier fall back to its
+        own default when [Settings] holds nothing usable for a key.
+        """
+        applied = set()
+        if selector not in self.config:
+            return applied
+
+        # iterate the candidates
+        candidates = dict(self.config[selector])
+        for key, value in candidates.items():
+            if key not in goldens:
+                prt(f'skip {selector}.{key}: {value!r} [unknown key]')
+                continue
+
+            if key.endswith('_list'):
+                list_value = to_array(value)
+                if list_value is None:
+                    # Malformed spec: keep a list already inherited from
+                    # [Settings], otherwise fall back to the default list
+                    # (with_list_defaults() also covers the missing-key case).
+                    if isinstance(params[key], list):
+                        prt(f'skip {selector}.{key}: {value!r}'
+                            f' [bad list spec; keeping {params[key]}]')
+                    else:
+                        params[key] = self.the_default(selector, key)
+                        prt(f'skip {selector}.{key}: {value!r}'
+                            f' [bad list spec; using default {params[key]}]')
+                else:
+                    params[key] = list_value
+                    applied.add(key)
+                continue
+
+            if isinstance(goldens[key], bool):
+                if isinstance(value, str):
+                    if value.lower() == 'true':
+                        value = True
+                    elif value.lower() == 'false':
+                        value = False
+                if isinstance(value, bool):
+                    params[key] = value
+                    applied.add(key)
+                else:
+                    prt(f'skip {selector}.{key}: {value!r} [expecting bool]')
+                continue
+
+            if isinstance(goldens[key], int):
+                try:
+                    params[key] = int(value)
+                except (TypeError, ValueError):
+                    prt(f'skip {selector}.{key}: {value!r} [expecting int repr]')
+                else:
+                    applied.add(key)
+                continue
+
+            if isinstance(goldens[key], str):
+                if isinstance(value, str):
+                    params[key] = value
+                    applied.add(key)
+                else:
+                    prt(f'skip {selector}.{key}: {value!r} [expecting string]')
+                continue
+
+            # Unreachable for the built-in defaults; never assert here:
+            # -O would remove the guard and the value would go unparsed.
+            prt(f'skip {selector}.{key}: {value!r} [unhandled default type]')
+            continue
+        return applied
+
     def _parse_config(self):
         """Rebuild `params_by_selector` from the parsed `self.config`."""
         goldens = self.defaults['Settings']
-        running = goldens
         all_params = {}
+        explicit_settings = set()
+        settings_params = None
 
         # Access the configuration values in order
         prt('parsing config.ini...')
         for selector in self.get_selectors():
-            all_params[selector] = params = copy.deepcopy(running)
-            # After [Settings] is parsed, the tiers inherit the user's values,
-            # not the hard-coded defaults (see README: HiBattery and LoBattery
-            # inherit missing/invalid settings from 'Settings').
             if selector == 'Settings':
-                running = params
-            if selector not in self.config:
-                all_params[selector] = self.with_list_defaults(selector, params)
-                continue
-
-            # iterate the candidates
-            candidates = dict(self.config[selector])
-            for key, value in candidates.items():
-                if key not in goldens:
-                    prt(f'skip {selector}.{key}: {value!r} [unknown key]')
-                    continue
-
-                if key.endswith('_list'):
-                    list_value = to_array(value)
-                    if list_value is None:
-                        # Malformed spec: keep a list already inherited from
-                        # [Settings], otherwise fall back to the default list
-                        # (with_list_defaults() also covers the missing-key case).
-                        if isinstance(params[key], list):
-                            prt(f'skip {selector}.{key}: {value!r}'
-                                f' [bad list spec; keeping {params[key]}]')
-                        else:
-                            params[key] = self.the_default(selector, key)
-                            prt(f'skip {selector}.{key}: {value!r}'
-                                f' [bad list spec; using default {params[key]}]')
-                    else:
-                        params[key] = list_value
-                    continue
-
-                if isinstance(goldens[key], bool):
-                    if isinstance(value, str):
-                        if value.lower() == 'true':
-                            value = True
-                        elif value.lower() == 'false':
-                            value = False
-                    if isinstance(value, bool):
-                        params[key] = value
-                    else:
-                        prt(f'skip {selector}.{key}: {value!r} [expecting bool]')
-                    continue
-
-                if isinstance(goldens[key], int):
-                    try:
-                        params[key] = int(value)
-                        continue
-                    except (TypeError, ValueError):
-                        prt(f'skip {selector}.{key}: {value!r} [expecting int repr]')
-                        continue
-
-                if isinstance(goldens[key], str):
-                    if isinstance(value, str):
-                        params[key] = value
-                    else:
-                        prt(f'skip {selector}.{key}: {value!r} [expecting string]')
-                    continue
-
-                # Unreachable for the built-in defaults; never assert here:
-                # -O would remove the guard and the value would go unparsed.
-                prt(f'skip {selector}.{key}: {value!r} [unhandled default type]')
-                continue
+                params = copy.deepcopy(goldens)
+                explicit_settings = self._apply_section(selector, params,
+                                                        goldens)
+                settings_params = params
+            else:
+                # Tiers inherit the user's [Settings] values, but only the ones
+                # the user actually wrote there; anything else uses the tier's
+                # own default (see README: HiBattery and LoBattery inherit
+                # missing/invalid settings from 'Settings').
+                params = self._tier_base(selector, settings_params,
+                                         explicit_settings)
+                self._apply_section(selector, params, goldens)
             all_params[selector] = self.with_list_defaults(selector, params)
 
         self.params_by_selector = all_params

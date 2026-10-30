@@ -12,7 +12,7 @@
 
 The v1 audit reported 16 findings (3 × P0, 7 × P1, 6 × P2). **All 15 findings that were actionable in-repo are now fixed**, each in a commit named after the finding, and each independently re-verified below rather than accepted on the strength of the commit message.
 
-The project is now in a materially different category from v1: it lints clean, compiles clean, has a 166-test suite that runs in under a second, has real CI (lint + matrix test + wheel packaging assertion), has lost two of its three runtime dependencies, and no longer ships an unrunnable wheel or uses `assert` for user-facing errors.
+The project is now in a materially different category from v1: it lints clean, compiles clean, has a 170-test suite that runs in under a second, has real CI (lint + matrix test + wheel packaging assertion), has lost two of its three runtime dependencies, and no longer ships an unrunnable wheel or uses `assert` for user-facing errors.
 
 What remains is a short list of *new* issues created by the rewrite (mostly concurrency semantics and stale docs).  The three test-coverage gaps that sat exactly on the former P0s were the sharpest item in the first draft of this section and are now closed (R2).
 
@@ -54,7 +54,7 @@ $ python3 -m compileall -q pwr_tray
 COMPILE_OK
 
 $ python3 -m pytest -q
-166 passed in 0.75s
+170 passed in 0.76s
 ```
 
 Behavioural probes, run with `HOME`/`XDG_CONFIG_HOME` pointed at a throwaway directory so the live `~/.config/pwr-tray` was never touched:
@@ -62,6 +62,7 @@ Behavioural probes, run with `HOME`/`XDG_CONFIG_HOME` pointed at a throwaway dir
 * **Inheritance (v1 #4).** With `[Settings] lock=[3,7] sleep=[9,11] editor=my-edit` and a `[HiBattery]` section that sets only `lock`:
   `HiBattery lock=[4,5] sleep=[9,11] editor='my-edit'` — the unset keys now inherit instead of falling back to the built-in table.
 * **Malformed list (v1 #5).** `lock_min_list = not-json` → `[15, 30]` (the declared default), not `None`, and the applet stays usable.
+* **Per-tier default (R3).** With `[Settings]` containing only `gui_editor = my-edit`, `LoBattery` resolves to `power_down=True lock=[1, 1] sleep=[1, 1]`; adding `power_down = False` to `[Settings]` makes `LoBattery.power_down` `False` again, and the generated file (which contains a `[LoBattery]` section) still yields `True`.
 * **Deleted config (v1 #14).** `os.remove(config.ini)` then construct → the applet still comes up and rewrites a valid file.
 * **CLI.** `pwr-tray --version` → version string matching `pyproject.toml`; `pwr-tray --list-des` renders the full table including `sway-wayland`, `niri-wayland`, `kde-wayland`; `--help` exits 0.
 
@@ -91,11 +92,15 @@ The fixes for v1 #1/#2/#3 were verified by reading the code and by the author's 
 
 [`../tests/test_power_events.py`](../tests/test_power_events.py) gains a harness that crosses the once-per-sample branch with `power_down` True and False, asserting `poweroff()` and `suspend()` respectively through [`_get_down_state()`](../pwr_tray/main.py:525).
 
-**Re-verified by mutation.** Reverting the three fixes (`inhibited = inhibited`, `media_playing = False`, `_get_down_state()` returning a fixed `'Suspend'`) fails six of the new tests; nothing else in the tree changed.  `ruff check .` and `pytest -q` (166 passed) are clean.
+**Re-verified by mutation.** Reverting the three fixes (`inhibited = inhibited`, `media_playing = False`, `_get_down_state()` returning a fixed `'Suspend'`) fails six of the new tests; nothing else in the tree changed.  `ruff check .` and `pytest -q` (170 passed) are clean.
 
-### R3 — P2 — Per-tier defaults are unreachable once a section is absent
+### R3 — P2 — Per-tier defaults were unreachable once a section was absent — **Fixed**
 
-[`../pwr_tray/IniTool.py:51`](../pwr_tray/IniTool.py:51) declares per-tier defaults (e.g. `LoBattery.power_down = True`), but [`../pwr_tray/IniTool.py:234`](../pwr_tray/IniTool.py:234) makes a tier inherit the *user's* `[Settings]` whenever it is present or absent — which is the correct fix for v1 #4 but leaves two competing notions of "default". Probe: with only `[Settings]` in the file, `LoBattery.power_down` resolves to `False` (inherited) even though the table says `True`. Either the table's per-tier values should win when a key is absent from *both* `[Settings]` and the tier, or the table should not claim per-tier values at all. Right now the declaration is documentation that nothing honours.
+[`../pwr_tray/IniTool.py:52`](../pwr_tray/IniTool.py:52) declares per-tier defaults (e.g. `LoBattery.power_down = True`), but the old parser made a tier inherit the *user's* `[Settings]` whenever it was present or absent — the correct fix for v1 #4, but it left two competing notions of "default": with only `[Settings]` in the file, `LoBattery.power_down` resolved to `False` even though the table said `True`, so the declaration was documentation that nothing honoured.
+
+**Fix.** "Inherit from `[Settings]`" now means the values the user actually *wrote* there. [`IniTool._apply_section()`](../pwr_tray/IniTool.py:235) returns the set of keys whose file value was accepted (a rejected value counts as absent), and [`IniTool._tier_base()`](../pwr_tray/IniTool.py:221) starts each tier from the parsed `[Settings]` and then substitutes the tier's own `self.defaults[selector]` entry for every key the user did not set. The precedence is therefore: tier value > written `[Settings]` value > tier default > built-in `[Settings]` default. v1 #4 is untouched, because any value the user wrote in `[Settings]` still reaches both tiers.
+
+**Re-verified.** Four new tests in [`../tests/test_config_inherit.py`](../tests/test_config_inherit.py) pin the cases that decide the rule: absent from both (tier default wins), explicitly written in `[Settings]` (user wins), invalid in `[Settings]` (counts as absent), and an empty tier section (its table still applies). With `_tier_base()` mutated back to a plain copy of `[Settings]`, four of the new tests fail while the two older inheritance tests stay green — so the new rule is pinned without weakening v1 #4. Probe: `[Settings]` containing only `gui_editor = my-edit` now yields `LoBattery power_down=True lock=[1, 1] sleep=[1, 1]`, while `[Settings] power_down = False` yields `LoBattery power_down=False`. `ruff check .` and `pytest -q` (170 passed) are clean.
 
 ### R4 — P2 — Two README statements are now false
 
@@ -145,7 +150,7 @@ Current shape:
 | `pwr_tray/` Python lines | 1,007 (`main.py`) | 1,380 (`main.py`) + 849 across 6 modules |
 | Runtime dependencies | 3 (`psutil`, `pydbus`, `ruamel.yaml`) + PyQt5 | 3 (`psutil`, `PyQt5`, `ruamel.yaml`) |
 | `ruff` | not configured | clean, 11 rule families |
-| Tests | 0 | 166 in 15 files, 0.75 s |
+| Tests | 0 | 170 in 15 files, 0.76 s |
 | CI | none | lint + 3.11/3.12/3.13 test + wheel packaging assertion |
 | `requires-python` | unreleased / unstated | `>=3.11` |
 
@@ -173,7 +178,7 @@ What has *not* changed is the market. 2 stars, 1 watcher, 0 issues, 21 releases 
 1. ~~**R1** — move `lock.acquire()` ahead of `PyKill().kill_loop()`, make the kill the *takeover* branch, and add `--replace` for the intentional case.~~ **Done** (see §4, R1).
 2. ~~**R2** — three small tests: `check_inhibited()` returning `'player'`; `SwayIdleManager.build_cmd()` omitting lock/sleep when `was_inhibited == 'player'`; `on_timeout()` calling `poweroff()` when `_get_down_state()` is `'PowerDown'`. Without these the audit's own P0s are one revert away.~~ **Done** (see §4, R2).
 3. **R4** — correct [`../README.md:156`](../README.md:156) and [`../README.md:239`](../README.md:239) to match the new behaviour, and say plainly which supervisor should own the process when a systemd unit is used.
-4. **R3** — decide whether per-tier defaults exist; make [`../pwr_tray/IniTool.py:51`](../pwr_tray/IniTool.py:51) authoritative or delete the per-tier entries.
+4. ~~**R3** — decide whether per-tier defaults exist; make [`../pwr_tray/IniTool.py:51`](../pwr_tray/IniTool.py:51) authoritative or delete the per-tier entries.~~ **Done** — the per-tier table is authoritative when a key is absent from both `[Settings]` and the tier (see §4, R3).
 5. **R5** — fold resume detection into `PowerEvents`' existing system-bus notifier and delete the third child process.
 6. **R6/R7** — close the paren, fix `%(prog)s`, delete the three dead attributes/methods.
 

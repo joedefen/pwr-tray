@@ -137,8 +137,8 @@ Or act on the applet itself:
 - When the program is started w/o a `config.ini`, that file is created with defaults.
 - It has three sections:
     * **Settings**: The settings for when plugged in.  Missing/invalid settings are inherited from the defaults. Here are the defaults:
-    * **HiBattery**: The settings for when on battery on and not a low battery condition.  Missing/invalid settings are inherited from 'Settings'.
-    * **LoBattery**: The settings for when on battery in a low battery condition.  Missing/invalid settings are inherited from 'Settings'.
+    * **HiBattery**: The settings for when on battery on and not a low battery condition.  Missing/invalid settings are inherited from 'Settings'.  A key absent from both sections uses the HiBattery default: `power_down = False`, `lock_min_list = [10, 20]`, `sleep_min_list = [1, 10]`.
+    * **LoBattery**: The settings for when on battery in a low battery condition.  Missing/invalid settings are inherited from 'Settings'.  A key absent from both sections uses the LoBattery default: `power_down = True`, `lock_min_list = [1]`, `sleep_min_list = [1]`.
 
 Here are the current 'Settings' defaults with explanation.
 ```
