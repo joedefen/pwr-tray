@@ -11,3 +11,8 @@ pwr-tray-exe
 venv/
 .ruff_cache/
 .mypy_cache/
+# Coverage artefacts: the data file is per-run state, the reports are output.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

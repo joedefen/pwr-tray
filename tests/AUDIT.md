@@ -12,9 +12,9 @@ This document describes the code as it stands. Nothing here is a changelog.
 ## 1. Verdict
 
 Sound, deliberately engineered, and small enough to keep sound. The suite is real
-(285 tests, 0.91 s) and the lint gate is clean; the architecture separates event
-detection from policy and both from presentation. Nothing found is a
-use-it-and-lose-data bug.
+(416 tests, 2.6 s with coverage) and the lint gate is clean; the architecture
+separates event detection from policy and both from presentation. Nothing found
+is a use-it-and-lose-data bug.
 
 What was genuinely unfinished fell into two groups:
 
@@ -24,18 +24,21 @@ What was genuinely unfinished fell into two groups:
    ignoring exit status**
    ([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1--resolved)).
 
-Three findings have since been closed: the shipped units retried permanent
+Four findings have since been closed: the shipped units retried permanent
 failures forever
 ([F2](#f2--the-shipped-units-retried-permanent-failures-indefinitely-p1--resolved)),
 inhibition now comes from logind's machine-readable property
 ([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1--resolved)),
-and the action layer has tests that pin the exact command per desktop
-([F4](#f4--the-action-layer-is-not-exercised-p2--resolved)).
+the action layer has tests that pin the exact command per desktop
+([F4](#f4--the-action-layer-is-not-exercised-p2--resolved)), and coverage is
+measured with a floor CI enforces
+([F7](#f7--there-is-no-coverage-measurement-p3--resolved)).
 
-The rest is structural: one very large class
-([F6](#f6--one-1115-line-class-holds-every-concern-p2)), a log that was never
-rotated ([F5](#f5--debuglog-is-never-rotated-p2), since capped), and no coverage
-measurement ([F7](#f7--there-is-no-coverage-measurement-p3)).
+The remaining structural item has also been closed: the idle state machine, the
+action layer and the desktop-detection helpers now live in their own modules,
+and `PwrTray` is a composition root plus a thin facade
+([F6](#f6--one-1115-line-class-holds-every-concern-p2--resolved)). The log is
+capped ([F5](#f5--debuglog-is-never-rotated-p2)).
 
 ---
 
@@ -49,7 +52,10 @@ Policy is per battery tier; behaviour is per desktop, chosen from a YAML table.
 
 | File | Lines | Responsibility |
 | --- | ---: | --- |
-| [`pwr_tray/main.py`](../pwr_tray/main.py:1) | 1,462 | `PwrTray` class (state machine, menu, icons, actions), DE detection, tray waiting, lock takeover, `main()` |
+| [`pwr_tray/main.py`](../pwr_tray/main.py:1) | 1,310 | Composition root: Qt timer/tray wiring, dirty-flag scheduler, menu, icons, event handlers, `main()`, and thin delegates to the modules below |
+| [`pwr_tray/IdleStateMachine.py`](../pwr_tray/IdleStateMachine.py:1) | 97 | The idle branch ladder: lock / blank / suspend / power off / reset / awake, plus the idle-time and state primitives |
+| [`pwr_tray/Actions.py`](../pwr_tray/Actions.py:1) | 206 | The user-action layer: every menu entry that starts a process, with the shell semantics of `commands.yaml` |
+| [`pwr_tray/Desktop.py`](../pwr_tray/Desktop.py:1) | 166 | DE detection, command validation and resource installation over `commands.yaml` |
 | [`pwr_tray/PowerEvents.py`](../pwr_tray/PowerEvents.py:54) | 296 | Event sources: two long-lived `dbus-monitor` children (system bus, session bus) plus a config-file watcher |
 | [`pwr_tray/IniTool.py`](../pwr_tray/IniTool.py:49) | 336 | `config.ini` parsing, tier inheritance, defaults, list parsing, change detection |
 | [`pwr_tray/Utils.py`](../pwr_tray/Utils.py:1) | 370 | Console capture, logging, process discovery/killing, `flock` single-instance lock |
@@ -128,14 +134,21 @@ separately in `picks.json`
 
 ### 2.5 Tests, packaging, CI
 
-* 16 test modules, 285 tests, shared isolation in
+* 22 test modules and their shared isolation in
   [`conftest.py`](../conftest.py:97): `HOME` is redirected to a temporary
   directory for every test, and modules that cannot be imported on the runner
-  are replaced by permissive stubs.
+  are replaced by permissive stubs. The idle state machine and the action-state
+  transitions now have their own process-free unit modules, so the extracted
+  collaborators are tested without `object.__new__(PwrTray)`.
 * Gate-level tests rather than smoke tests: config inheritance, degenerate
   `config.ini` and `picks.json`, icon loading, DE detection failures, event-line
   classification, dirty-flag coalescing, single-instance behaviour, tray waiting,
   and the shipped unit files are all asserted.
+* Coverage is part of the same gate, not a tool nobody runs: branch coverage
+  over `pwr_tray` with
+  [`fail_under = 75`](../pyproject.toml:154) in `pyproject.toml`, so
+  `pytest --cov=pwr_tray` -- the command CI runs on 3.11, 3.12 and 3.13 -- fails
+  below the floor.
 * Packaging is flit; `pyproject.toml` declares Python >= 3.11, three runtime
   dependencies (`psutil`, `PyQt5`, `ruamel.yaml`), and the resources directory in
   the sdist.
@@ -158,7 +171,17 @@ $ python3 -m compileall -q pwr_tray conftest.py tests
 rc=0
 
 $ python3 -m pytest -q
-285 passed in 0.91s
+416 passed in 1.41s
+
+$ python3 -m pytest -q --cov=pwr_tray --cov-report=term-missing
+Name                      Stmts   Miss Branch BrPart  Cover   Missing
+...
+pwr_tray/main.py            953    302    288     38  66.5%   109-116, 233->238, ...
+pwr_tray/service.py         456     29    184     17  92.8%   135-140, 189, ...
+---------------------------------------------------------------------
+TOTAL                      2208    485    752     98  76.3%
+Required test coverage of 75.0% reached. Total coverage: 76.32%
+416 passed in 2.55s
 
 $ python -m pwr_tray.main --version
 pwr-tray 1.0.13
@@ -172,9 +195,12 @@ desktops known to pwr-tray (from built-in commands.yaml):
 force a desktop with: pwr-tray --de NAME
 ```
 
-Static totals: 5,330 lines of Python across 7 modules, `conftest.py`, and 15 test
-modules. [`main.py`](../pwr_tray/main.py:1) holds 66 functions, 60 of them methods
-of [`PwrTray`](../pwr_tray/main.py:51).
+Static totals: 9,211 lines of Python across 10 modules, `conftest.py`, and 22
+test modules -- 4,020 of them in `pwr_tray/`, 5,048 in `tests/`.
+[`main.py`](../pwr_tray/main.py:1) holds 68 functions, 58 of them methods of
+[`PwrTray`](../pwr_tray/main.py:51); the count is deliberately unchanged because
+the menu and the historical static call surface are preserved, but the bodies
+now delegate to `Actions`, `IdleStateMachine` and `Desktop`.
 
 ---
 
@@ -194,7 +220,7 @@ whose own metadata misdescribes it, and whose code predates the current test
 suite. The repository is the source of truth and the index is not.
 
 There is no release automation in CI: the packaging job builds and inspects
-distributions ([`.github/workflows/tests.yml:90`](../.github/workflows/tests.yml:90))
+distributions ([`.github/workflows/tests.yml:96`](../.github/workflows/tests.yml:96))
 but never uploads or verifies against the index.
 
 ### F2 — The shipped units retried permanent failures indefinitely (P1) — resolved
@@ -359,27 +385,93 @@ What remains outside the applet's control: the shipped units append
 deployment that redirects there still needs its own logrotate/logrotate-style
 handling.
 
-### F6 — One 1,115-line class holds every concern (P2)
+### F6 — One 1,115-line class holds every concern (P2) — resolved
 
-[`PwrTray`](../pwr_tray/main.py:51) is 60 methods covering DE detection helpers,
-config access, icon selection, menu construction, inhibit evaluation, the idle
-state machine, `swayidle` lifecycle, and every user action. The tests cope by
-building instances without running `__init__`
-([`tests/test_power_events.py:151`](../tests/test_power_events.py:151) —
-`object.__new__(PwrTray)` plus hand-assigned attributes), which means the
-constructor's own wiring is only covered indirectly.
+`PwrTray` used to hold DE detection helpers, config access, icon selection, menu
+construction, inhibit evaluation, the idle state machine, `swayidle` lifecycle,
+and every user action. The concerns now live where their tests do:
 
-The seams that already exist (`PowerEvents`, `SwayIdleMgr`, `IniTool`,
-`Errors`) show the intended decomposition; the remaining coupling is inside the
-class, not between modules.
+* [`pwr_tray/Desktop.py`](../pwr_tray/Desktop.py:1) — DE detection, command
+  validation, variable expansion and resource installation. `PwrTray` keeps
+  static aliases, so `--list-des`, the `--svc-*` verbs and the tests keep their
+  entry points.
+* [`pwr_tray/Actions.py`](../pwr_tray/Actions.py:1) — every action that starts a
+  process. `Actions` is handed the applet explicitly instead of reaching for
+  `PwrTray.singleton`, and the command-line/shell knowledge now sits next to the
+  tests that pin it ([`tests/test_actions.py`](../tests/test_actions.py:1)).
+* [`pwr_tray/IdleStateMachine.py`](../pwr_tray/IdleStateMachine.py:1) — the idle
+  branch ladder and the idle-time/state primitives. `on_timeout()` is now only
+  the scheduler; the once-per-sample decision is a collaborator, and the tick
+  tests drive the real class rather than a stand-in.
 
-### F7 — There is no coverage measurement (P3)
+`PwrTray` is consequently a composition root plus a facade: it wires Qt, the
+event sources and the menu, and delegates. The method count is deliberately
+unchanged, because removing the delegating entry points would move the menu and
+the historical static call surface (`PwrTray.suspend(None)`, ...) as well; what
+changed is that no concern's implementation lives in the class any more.
 
-`[project.optional-dependencies]` lists `pytest` and `ruff`; CI runs both and no
-coverage tool, so "285 tests" is a count, not a statement about which lines run.
-The action layer in [`tests/test_actions.py`](../tests/test_actions.py:1) is now
-pinned by hand-written expectations; a coverage report is what would say which
-action branches nobody has written one for.
+Automated tests never touch the machine's power state. The action layer is
+driven by a recorded fake `subprocess`, and [`conftest.py`](../conftest.py:97)
+installs an autouse tripwire that makes any un-faked call through `Actions`
+fail instead of locking the session or powering the machine off. Real
+power-state verification remains a manual step, by design.
+
+### F7 — There is no coverage measurement (P3) — resolved
+
+`[project.optional-dependencies]` listed `pytest` and `ruff`; CI ran both and no
+coverage tool, so "285 tests" was a count, not a statement about which lines run.
+The action layer in [`tests/test_actions.py`](../tests/test_actions.py:1) was
+pinned by hand-written expectations; a coverage report is what says which action
+branches nobody has written one for.
+
+Coverage is now measured as part of the gate rather than kept as an optional
+habit:
+
+* `pytest-cov>=5` is in the `dev` extra;
+* [`[tool.coverage.run]`](../pyproject.toml:139) sets `branch = true` and
+  `source = ["pwr_tray"]`, because the misses that matter here are the arms of
+  an `if` nobody takes, not only statements nobody executes;
+* [`[tool.coverage.report]`](../pyproject.toml:146) carries
+  [`fail_under = 75`](../pyproject.toml:154), and pytest-cov reads that floor
+  from `pyproject.toml` itself, so CI and a developer running the documented
+  command enforce one number instead of two;
+* CI runs `python -m pytest --cov=pwr_tray --cov-report=term-missing` on every
+  supported Python
+  ([`.github/workflows/tests.yml:93`](../.github/workflows/tests.yml:93)).
+
+Measured when the gate was introduced: **76.3% total** -- 2,208 statements and
+752 branches, of which 485 statements and 98 partial branches are missed. The
+figure is identical on 3.11 and 3.13, and identical with the real
+PyQt5/psutil/ruamel.yaml and with `conftest`'s stubs, so it does not depend on
+whether the runner has a desktop stack. Per module:
+
+| Module | Cover |
+| --- | ---: |
+| [`Errors.py`](../pwr_tray/Errors.py:1) | 90.7% |
+| [`IniTool.py`](../pwr_tray/IniTool.py:49) | 93.5% |
+| [`service.py`](../pwr_tray/service.py:1) | 92.8% |
+| [`Utils.py`](../pwr_tray/Utils.py:1) | 73.7% |
+| [`PowerEvents.py`](../pwr_tray/PowerEvents.py:54) | 71.4% |
+| [`main.py`](../pwr_tray/main.py:1) | 66.5% |
+| [`SwayIdleMgr.py`](../pwr_tray/SwayIdleMgr.py:19) | 63.6% |
+
+That distribution is the answer the finding asked for, and the line numbers
+distinguish two kinds of miss. The first needs a session and cannot be tested
+here: `PwrTray.__init__` and the menu it builds (lines 248-404), the
+`QTimer`/menu-refresh wiring (812-961), and
+[`SwayIdleMgr`](../pwr_tray/SwayIdleMgr.py:19)'s supervisor
+([102-123](../pwr_tray/SwayIdleMgr.py:102)). The second is simply a method nobody
+has written a test for yet -- [`update_battery_status`](../pwr_tray/main.py:770)
+and [`set_state`](../pwr_tray/main.py:805), for instance -- which is precisely
+the list that had to be reconstructed by hand before. The action methods
+themselves are pinned by [`tests/test_actions.py`](../tests/test_actions.py:1);
+the report keeps the remainder in line numbers instead of in memory.
+
+The floor is deliberately just under the measured value: it is a ratchet against
+new code arriving untested, not a target. The gate cannot quietly rot away,
+either: `tests/test_repo_hygiene.py` asserts the dependency, the branch setting,
+the floor, the CI command, the documented command, and the ignored `.coverage`
+file.
 
 ### F8 — The units are syntax-checked, not field-tested (P3) — partly mitigated
 
@@ -437,8 +529,9 @@ reachable from the shipped text alone; both are covered by
   failures reach the terminal that launched the applet.
 * **Packaging discipline.** Wheel contents, metadata, and the installed console
   script are asserted in CI, not assumed; the sdist carries the resources.
-* **Test isolation and speed.** 285 tests in 0.91 s with `HOME` redirected, so
-  the suite cannot read or write a developer's real configuration.
+* **Test isolation and speed.** 416 tests in 1.4 s (2.6 s with coverage) with
+  `HOME` redirected, so the suite cannot read or write a developer's real
+  configuration.
 
 ---
 
@@ -468,7 +561,7 @@ Powerdevil configuration is the lower-risk choice; as a portable, inspectable
 policy layer with a tray, this is the more capable one.
 
 **Bottom line:** worth keeping and worth finishing — the remaining work is
-distribution hygiene (F1) and test/ops polish (F6–F7), not redesign.
+distribution hygiene (F1), not redesign; the structural item (F6) is done.
 
 ---
 
@@ -493,9 +586,16 @@ distribution hygiene (F1) and test/ops polish (F6–F7), not redesign.
    the exact command for every desktop, read from the shipped `commands.yaml`,
    and pins the lock-then-blank order and the suspend-locker rule. It also
    exposed a dead "no shell needed" branch in `run_command()`, now removed.
-5. **F7** — add `pytest-cov` and publish the number in CI.
-6. **F6** — if the class is touched again, extract the idle state machine and the
-   action layer; both are already well separated conceptually.
+5. **F7 — done.** `pytest-cov` is in the dev extra, branch coverage is measured
+   over `pwr_tray`, and `fail_under = 75` makes the CI command fail below it.
+   The next step is the ordinary one: raise the floor as `main.py`'s untested
+   arms acquire tests.
+6. **F6 — done.** The action layer, the idle state machine and the DE-detection
+   helpers moved to `Actions.py`, `IdleStateMachine.py` and `Desktop.py`.
+   `PwrTray` is a composition root and facade; the existing public entry points
+   are preserved as thin delegates. The tests that used to build a bare
+   `object.__new__(PwrTray)` now drive the real `IdleStateMachine`, and the
+   shared test setup refuses any un-faked process launch from the action layer.
 
 ---
 

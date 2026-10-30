@@ -16,6 +16,7 @@ gating/decision logic, not Qt or D-Bus.
 from types import SimpleNamespace
 
 import pwr_tray.PowerEvents as events_module
+from pwr_tray.IdleStateMachine import IdleStateMachine
 from pwr_tray.main import PwrTray
 from pwr_tray.PowerEvents import PowerEvents
 
@@ -149,6 +150,10 @@ def _bare_tray(bus_ok=True, config_ok=True):
     """A PwrTray stripped down to what on_timeout() touches at loop < sample."""
     calls = []
     tray = object.__new__(PwrTray)
+    # The class delegates the slow branch to this collaborator; give the bare
+    # instance the real one so the tick tests exercise the shipped logic rather
+    # than a stand-in.
+    tray.idle_state = IdleStateMachine(tray)
     tray.loop = 0
     tray.loop_sample = 15
     tray.quick = False

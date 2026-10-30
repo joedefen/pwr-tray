@@ -34,6 +34,36 @@ def test_ci_runs_lint_tests_and_a_packaging_smoke_test():
     assert 'pwr-tray --version' in workflow
 
 
+def test_the_coverage_gate_is_wired_and_cannot_quietly_disappear():
+    """Audit F7: the suite reports coverage and enforces a floor.
+
+    The gate is only real when all four links are present -- the dependency,
+    the configuration, the CI command and the documented command.  Lose any one
+    of them and "76% covered" decays silently back into "N tests ran".
+    """
+    pyproject = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
+
+    dev = pyproject['project']['optional-dependencies']['dev']
+    assert any(requirement.startswith('pytest-cov') for requirement in dev), dev
+
+    measure = pyproject['tool']['coverage']
+    assert measure['run']['branch'] is True
+    assert measure['run']['source'] == ['pwr_tray']
+    floor = measure['report']['fail_under']
+    # A floor is either a number that a red build can trip or it is decoration.
+    assert 0 < floor <= 100, floor
+
+    workflow = (ROOT / '.github' / 'workflows' / 'tests.yml').read_text(encoding='utf-8')
+    assert 'pytest-cov' in workflow
+    assert '--cov=pwr_tray' in workflow
+
+    readme = (ROOT / 'README-DEV.md').read_text(encoding='utf-8')
+    assert '--cov=pwr_tray' in readme
+
+    # The data file belongs to the run, not to the repository.
+    assert '.coverage' in (ROOT / '.gitignore').read_text(encoding='utf-8').splitlines()
+
+
 def test_readme_matches_the_applet_on_chdir_and_single_instance():
     """Audit R4: the README promised two things the applet no longer does.
 

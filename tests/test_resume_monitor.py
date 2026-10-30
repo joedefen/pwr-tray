@@ -12,6 +12,7 @@ so these tests pin two things:
 stop the event source itself, which is pinned here too.
 """
 
+import pwr_tray.Actions as actions_module
 import pwr_tray.main as main_module
 import pwr_tray.PowerEvents as events_module
 from pwr_tray.PowerEvents import PowerEvents
@@ -133,14 +134,18 @@ def test_restart_self_stops_event_source_before_spawning(monkeypatch):
         tray_icon = FakeTrayIcon()
         events = FakeEvents()
 
+        @staticmethod
+        def save_picks():
+            calls.append('save-picks')
+
     monkeypatch.setattr(main_module.PwrTray, 'singleton', FakeThis())
-    monkeypatch.setattr(main_module.PwrTray, 'save_picks',
-                        staticmethod(lambda: calls.append('save-picks')))
     monkeypatch.setattr(main_module.Utils.SingleInstance, 'release_current',
                         staticmethod(lambda: calls.append('release-lock')))
-    monkeypatch.setattr(main_module.subprocess, 'Popen',
+    # restart_self() lives in the action layer now, so the process it would
+    # spawn is faked there -- never in main.py.
+    monkeypatch.setattr(actions_module.subprocess, 'Popen',
                         lambda *a, **kw: calls.append('spawn'))
-    monkeypatch.setattr(main_module.os, '_exit',
+    monkeypatch.setattr(actions_module.os, '_exit',
                         lambda code: calls.append(f'exit-{code}'))
 
     main_module.PwrTray.restart_self(None)

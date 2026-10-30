@@ -175,8 +175,10 @@ def test_must_haves_merge_all_three_layers():
 
 
 def test_missing_commands_reports_only_absent_binaries(monkeypatch):
+    # missing_commands() now lives in Desktop.py, so that is where $PATH is
+    # intercepted; PwrTray.missing_commands is a thin alias to it.
     monkeypatch.setattr(
-        'pwr_tray.main.shutil.which',
+        'pwr_tray.Desktop.shutil.which',
         lambda cmd: None if cmd == 'gone' else f'/usr/bin/{cmd}')
     assert PwrTray.missing_commands({'must_haves': ['sh', 'gone']}) == ['gone']
 

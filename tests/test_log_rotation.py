@@ -236,6 +236,7 @@ def tray_stub(log, old, log_viewer='xterm -e'):
 
 
 def test_open_log_launches_the_viewer(monkeypatch, tmp_path):
+    import pwr_tray.Actions as actions_module
     import pwr_tray.main as main_module
 
     log = tmp_path / 'debug.log'
@@ -246,9 +247,9 @@ def test_open_log_launches_the_viewer(monkeypatch, tmp_path):
     launched = []
     monkeypatch.setattr(main_module.PwrTray, 'singleton',
                         tray_stub(log, old), raising=False)
-    monkeypatch.setattr(main_module, 'prt', lambda *args, **kwargs: None)
-    # main.open_log() defers the spawn policy to spawn_detached(), which is
-    # what keeps the viewer alive across an applet restart.
+    # open_log() now lives in the action layer, so that is where its narration
+    # is silenced -- and spawn_detached() is still the only launcher.
+    monkeypatch.setattr(actions_module, 'prt', lambda *args, **kwargs: None)
     monkeypatch.setattr(utils, 'spawn_detached', launched.append)
     monkeypatch.setattr(utils, 'less_follow_name_supported', lambda: True)
 
@@ -259,6 +260,7 @@ def test_open_log_launches_the_viewer(monkeypatch, tmp_path):
 
 
 def test_open_log_reports_when_no_terminal_exists(monkeypatch, tmp_path):
+    import pwr_tray.Actions as actions_module
     import pwr_tray.main as main_module
 
     log = tmp_path / 'debug.log'
@@ -269,7 +271,7 @@ def test_open_log_reports_when_no_terminal_exists(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module.PwrTray, 'singleton',
                         tray_stub(log, tmp_path / OLD_NAME, log_viewer=''),
                         raising=False)
-    monkeypatch.setattr(main_module, 'prt',
+    monkeypatch.setattr(actions_module, 'prt',
                         lambda *args, **kwargs: messages.append(
                             ' '.join(str(arg) for arg in args)))
     monkeypatch.setattr(utils, 'spawn_detached', launched.append)

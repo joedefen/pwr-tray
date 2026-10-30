@@ -95,6 +95,41 @@ if not _available('psutil'):
 
 
 @pytest.fixture(autouse=True)
+def _never_run_real_power_commands(monkeypatch):
+    """Tripwire: no automated test may touch the machine's power state.
+
+    The action layer is the only code that starts lockers, blanks monitors or
+    calls ``systemctl suspend/poweroff/reboot``.  Replace its ``subprocess``
+    with one that refuses to run anything, so a test that forgets to install
+    its own recorder fails instead of locking the session or shutting the
+    machine down.  Tests that deliberately exercise the action layer install a
+    recorder over this (see ``tests/test_actions.py``).
+
+    Real power-state verification stays a manual step by design.
+    """
+    import subprocess as real_subprocess
+
+    try:
+        from pwr_tray import Actions as actions_module
+    except ImportError:        # pragma: no cover - package always importable
+        yield
+        return
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError(
+            'test attempted to run a real command through pwr_tray.Actions;'
+            ' install a fake subprocess first')
+
+    monkeypatch.setattr(actions_module, 'subprocess', types.SimpleNamespace(
+        run=refuse,
+        Popen=refuse,
+        SubprocessError=real_subprocess.SubprocessError,
+        TimeoutExpired=real_subprocess.TimeoutExpired,
+        CalledProcessError=real_subprocess.CalledProcessError))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
     """Point HOME at an empty directory and restore the cwd afterwards."""
     home = tmp_path / 'home'

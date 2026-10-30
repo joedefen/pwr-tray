@@ -2,7 +2,8 @@ name: CI
 
 # Three gates, each cheap enough to run on every push and pull request:
 #   lint    -- in-repo ruff configuration (pyproject.toml), no user config
-#   test    -- pytest on every supported Python, dependency-light via conftest
+#   test    -- pytest on every supported Python, dependency-light via conftest,
+#              with branch coverage measured and a floor enforced (F7)
 #   package -- build sdist+wheel, inspect them, install the wheel and run the
 #              installed console script against its packaged resources
 
@@ -65,7 +66,7 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest
+          python -m pip install pytest pytest-cov
 
       - name: Byte-compile every module
         run: python -m compileall -q pwr_tray
@@ -83,8 +84,13 @@ jobs:
               print(f'{name:12} {"installed" if found else "stubbed by conftest"}')
           PY
 
-      - name: Run tests
-        run: python -m pytest -v
+      # The coverage floor is not passed here on purpose: pytest-cov reads
+      # `[tool.coverage.report] fail_under` from pyproject.toml, so the number
+      # a developer gets locally and the number CI enforces are the same one.
+      # `term-missing` is what makes the log answer "which arms of the action
+      # layer has nobody written a test for", not just "how many tests ran".
+      - name: Run tests with coverage
+        run: python -m pytest -v --cov=pwr_tray --cov-report=term-missing
 
   package:
     name: packaging smoke test

@@ -12,7 +12,6 @@ This code is designed to control power matters from the tray.
 import atexit
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -27,13 +26,10 @@ from PyQt5.QtGui import QCursor, QIcon
 from PyQt5.QtWidgets import QAction, QApplication, QMenu, QSystemTrayIcon  #, QMessageBox
 from ruamel.yaml import YAML
 
-from pwr_tray import Utils, __version__, service
-from pwr_tray.Errors import (
-    DesktopDetectionError,
-    MissingCommandsError,
-    MissingResourcesError,
-    PwrTrayError,
-)
+from pwr_tray import Desktop, Utils, __version__, service
+from pwr_tray.Actions import Actions
+from pwr_tray.Errors import MissingCommandsError, PwrTrayError
+from pwr_tray.IdleStateMachine import IdleStateMachine
 from pwr_tray.IniTool import IniTool
 from pwr_tray.PowerEvents import PowerEvents
 from pwr_tray.SwayIdleMgr import SwayIdleManager
@@ -100,149 +96,16 @@ class PwrTray:
                           ] )
     singleton = None
 
-    @staticmethod
-    def load_de_config(config_dir):
-        """Load DE commands YAML config.
-        - Always copies default commands.yaml to config dir (so user sees latest)
-        - If my-commands.yaml exists in config dir, loads that instead
-        """
-        yaml = YAML()
-        Utils.copy_to_folder('commands.yaml', config_dir)
-        user_yaml = os.path.join(config_dir, 'my-commands.yaml')
-        if not os.path.exists(user_yaml):
-            user_yaml = os.path.join(config_dir, 'commands.yaml')
-        prt(f'loading DE config: {user_yaml}')
-        with open(user_yaml, encoding='utf-8') as f:
-            return dict(yaml.load(f))
-
-    @staticmethod
-    def must_haves_for(de_json, compound_name):
-        """Return the sorted commands a compound desktop name needs.
-
-        The three config layers accumulate: defaults, session type, desktop.
-        """
-        _, _, stype = compound_name.rpartition('-')
-        session_types = de_json.get('session_types', {})
-        desktops = de_json.get('desktops', {})
-        must = (de_json.get('defaults', {}).get('must_haves', [])
-                + session_types.get(stype, {}).get('must_haves', [])
-                + desktops.get(compound_name, {}).get('must_haves', []))
-        return sorted(set(must))
-
-    @staticmethod
-    def missing_commands(de_config):
-        """Return the must_haves of `de_config` that are not on $PATH."""
-        return sorted(cmd for cmd in set(de_config.get('must_haves', []))
-                      if shutil.which(cmd) is None)
-
-    @staticmethod
-    def build_variables(de_json, de_config):
-        """Merge the desktop's commands over the defaults, then expand {{...}}.
-
-        Split out of ``__init__`` so the action layer can be tested against the
-        commands a desktop really gets, read from ``commands.yaml``, instead of
-        against a fixture that can drift from it (audit finding F4).
-        """
-        variables = dict(de_json['defaults'])
-        for key in set(variables) - {'must_haves'}:
-            if key in de_config:
-                variables[key] = de_config[key]
-        for key, value in list(variables.items()):
-            if isinstance(value, str) and '{{' in value:
-                variables[key] = re.sub(
-                    r'\{\{(\w+)\}\}',
-                    lambda match: variables.get(match.group(1), match.group(0)),
-                    value)
-        return variables
-
-    @staticmethod
-    def detect_de(de_json, force_de=None, log=prt):
-        """Detect the current DE from environment using JSON config rules.
-        Merges three layers: defaults -> session_type (x11/wayland) -> desktop.
-        Returns merged config dict.  Use force_de to skip detection.
-
-        Raises DesktopDetectionError when nothing matches: an assert would be
-        stripped by python -O, leaving the app running with empty commands.
-
-        `log` is the narration sink: the applet passes prt(), while the
-        ``--svc-*`` verbs pass a no-op so their stdout stays machine-readable.
-        """
-        env = {key: os.environ.get(key, '')
-               for key in ('XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP',
-                           'DESKTOP_SESSION', 'XDG_SESSION_TYPE')}
-        lowered = {key: value.lower() for key, value in env.items()}
-        session_type = lowered['XDG_SESSION_TYPE']
-        desktop_str = ' '.join(lowered[key] for key in
-                               ('XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP',
-                                'DESKTOP_SESSION'))
-
-        log(f'ENV: XDG_CURRENT_DESKTOP={env["XDG_CURRENT_DESKTOP"]!r}'
-            f' XDG_SESSION_DESKTOP={env["XDG_SESSION_DESKTOP"]!r}'
-            f' DESKTOP_SESSION={env["DESKTOP_SESSION"]!r}'
-            f' XDG_SESSION_TYPE={env["XDG_SESSION_TYPE"]!r}')
-
-        session_types = de_json.get('session_types', {})
-        desktops = de_json.get('desktops', {})
-        known = list(desktops)
-
-        def _merge(compound_name, entry):
-            _, _, stype = compound_name.rpartition('-')
-            scfg = session_types.get(stype, {})
-            merged = dict(scfg)
-            merged.update(entry)
-            merged['name'] = compound_name
-            merged['session_type'] = stype
-            merged['must_haves'] = PwrTray.must_haves_for(de_json,
-                                                          compound_name)
-            return merged
-
-        # --de override: skip detection
-        if force_de:
-            if force_de not in desktops:
-                raise DesktopDetectionError(
-                    f'--de {force_de!r} is not a known desktop',
-                    known_desktops=known, env=env)
-            log(f'ENV: forced {force_de!r}')
-            return _merge(force_de, desktops[force_de])
-
-        # Desktop keys are compound: "kde-wayland", "i3-x11", etc.
-        for compound_name, entry in desktops.items():
-            detect, _, stype = compound_name.rpartition('-')
-            if detect in desktop_str and stype == session_type:
-                log(f'ENV: matched {compound_name!r}')
-                return _merge(compound_name, entry)
-
-        raise DesktopDetectionError(
-            'no desktop environment matched the current session',
-            known_desktops=known, env=env)
-
-    @staticmethod
-    def ensure_resources(folder, resources):
-        """Return absolute paths for `resources`, installing them if needed.
-
-        Paths are always built from `folder`; a bare resource name would
-        otherwise resolve against whatever directory the applet was started
-        from.  A resource that is still absent after the copy is a startup
-        error -- a short icon list used to surface much later as an
-        IndexError from show_icon().
-        """
-        paths = []
-        missing = []
-        for resource in resources:
-            path = os.path.join(folder, resource)
-            if not os.path.isfile(path):
-                try:
-                    Utils.copy_to_folder(resource, folder)
-                except OSError as exc:
-                    prt(f'WARN: cannot copy {resource!r} to {folder!r}: {exc}')
-            if os.path.isfile(path):
-                paths.append(path)
-            else:
-                prt(f'WARN: cannot find {path!r}')
-                missing.append(resource)
-        if missing:
-            raise MissingResourcesError(missing, folder)
-        return paths
+    # Desktop detection and resource installation are pure functions over
+    # commands.yaml, $PATH and the config folder; their implementation lives in
+    # Desktop.py.  These aliases keep the applet's long-standing static entry
+    # points (used by --list-des, the --svc-* verbs and the tests) working.
+    load_de_config = staticmethod(Desktop.load_de_config)
+    must_haves_for = staticmethod(Desktop.must_haves_for)
+    missing_commands = staticmethod(Desktop.missing_commands)
+    build_variables = staticmethod(Desktop.build_variables)
+    detect_de = staticmethod(Desktop.detect_de)
+    ensure_resources = staticmethod(Desktop.ensure_resources)
 
     def __init__(self, ini_tool, quick=False, force_de=None):
         PwrTray.singleton = self
@@ -254,6 +117,11 @@ class PwrTray:
 #       prt("System tray is available. Continuing...")
 
         self.ini_tool = ini_tool
+        # The two extracted concerns.  They are handed the applet rather than
+        # reaching for PwrTray.singleton, so they are usable -- and testable --
+        # on their own.  The class keeps thin entry points for both.
+        self.actions = Actions(self)
+        self.idle_state = IdleStateMachine(self)
         self.battery = SimpleNamespace(present=None,
                        plugged=True, percent=100, selector='Settings')
         self.reconfig()
@@ -578,24 +446,9 @@ class PwrTray:
 
 
 
-    def _get_down_state(self):
-        return 'PowerDown' if self.get_params().power_down else 'Suspend'
-
     def update_running_idle_s(self):
-        """ Update the running idle seconds (called after each regular timeout) """
-        cmd = self.variables['get_idle_ms']
-        scale = 1
-        if not cmd:
-            cmd = self.variables.get('get_idle_s', '')
-            scale = 1000
-        if cmd:
-            try:
-                xidle = int(subprocess.check_output(cmd.split()).strip())
-                xidle_ms = xidle * scale
-                xidle_ms *= 2 if self.quick else 1  # time warp
-                self.running_idle_s = round(xidle_ms/1000, 3)
-            except (OSError, subprocess.SubprocessError, ValueError) as e:
-                prt(f'WARN: idle time command failed: {e}')
+        """Update the running idle seconds (owned by the idle state machine)."""
+        self.idle_state.update_running_idle_s()
 
     def DB(self):  # pylint: disable=invalid-name  # historic name
         """ is debug on? """
@@ -803,11 +656,8 @@ class PwrTray:
         self.run_command('reset_idle')
 
     def set_state(self, name):
-        """ Set the state of the applet """
-        prt(f'set_state: {name},{self.running_idle_s}s',
-                f'was: {self.state.name},{self.state.when}s')
-        self.state.name =  name
-        self.state.when = self.running_idle_s
+        """Set the state of the applet (owned by the idle state machine)."""
+        self.idle_state.set_state(name)
 
     def on_timeout(self):
         """Run the cheap state machine; expensive checks only on events."""
@@ -849,49 +699,9 @@ class PwrTray:
             prt('re-built menu')
 
         if self.loop >= self.loop_sample:
-            self.update_running_idle_s()
-            # "Locking Soon" is an idle-time transition with no D-Bus signal.
-            self.show_icon(inhibited=self.was_inhibited or '')
-            lock_secs = self.get_lock_min_list()[0]*60
-            down_secs = self.get_sleep_min_list()[0]*60 + lock_secs
-            blank_secs = 5 if self.quick else 20
-
-            emit = f'idle_s={self.running_idle_s} state={self.state.name},{self.state.when}s'
-            emode = self.get_effective_mode()
-            if emode in ('LockOnly', 'SleepAfterLock'):
-                emit += f' @{self.get_lock_min_list()[0]}m'
-            if emode in ('SleepAfterLock', ):
-                emit += f'+{self.get_sleep_min_list()[0]}m'
-            if self.battery.selector != 'Settings':
-                emit += f' {self.battery.selector}'
-            prt(emit)
-
-            if emode in ('Presentation',) or self.was_inhibited:
-                if self.idle_manager:
-                    self.reset_xidle_ms() # idle_manager handles timeouts
-                elif self.running_idle_s > min(50, lock_secs*0.40):
-                    self.reset_xidle_ms() # we don't know when
-
-            elif (self.running_idle_s >= down_secs and emode not in ('LockOnly',)
-                    and self.state.name in ('Awake', 'Locked', 'Blanked')):
-                if self._get_down_state() == 'PowerDown':
-                    self.poweroff(None)
-                else:
-                    self.suspend(None)
-
-            elif (self.running_idle_s >= lock_secs and emode not in ('Presentation',)
-                    and self.state.name in ('Awake', 'Dim')):
-                self.lock_screen(None)
-
-            elif (self.running_idle_s >= self.state.when + blank_secs
-                    and self.get_params().turn_off_monitors
-                    and emode not in ('Presentation',)
-                    and self.state.name in ('Locked',)):
-                self.blank_primitive()
-
-            elif self.running_idle_s < lock_secs and self.state.name not in ('Awake', ):
-                self.set_state('Awake')
-
+            # The branch ladder (lock / blank / sleep / reset / awake) is the
+            # idle state machine; this method only schedules it.
+            self.idle_state.tick()
             self.loop = 0
 
         if self.poll_100ms:
@@ -1090,220 +900,78 @@ class PwrTray:
     def dummy(_):
         """TBD"""
 
+    # -- user actions ------------------------------------------------------
+    # The command sequences and process spawning live in Actions.py.  These
+    # thin entry points keep the menu wiring and the historical static call
+    # surface (PwrTray.suspend(None), ...) intact; the class no longer owns
+    # the action layer.
+
     @staticmethod
     def run_command(key):
-        """Run this desktop's command for `key` through the shell.
-
-        The value in commands.yaml is a command *line*, not an argv: it relies
-        on `~` expansion, on quotes and on `;` sequences --
-        `sleep 1.0; exec xset dpms force off`, `swaymsg "output * dpms off"`.
-        A shell is therefore the only correct reading.
-
-        The previous "a shell is not needed here" test could never match a real
-        command -- its pattern matched only the empty string -- so every
-        command already went through /bin/sh; the dead branch is gone rather
-        than left in place as decoration.
-        """
-        this = PwrTray.singleton
-        command = this.variables.get(key, None)
-
-        if command:
-            prt(f'+ {command}')
-            result = subprocess.run(command, check=False, shell=True)
-            if result.returncode != 0:
-                prt(f'   NOTE: returncode={result.returncode}')
+        Actions(PwrTray.singleton).run_command(key)
 
     @staticmethod
     def quit_self(_):
-        """TBD"""
-        prt('+', 'quitting applet...')
-        this = PwrTray.singleton
-        if this:
-            this.tray_icon.hide()
-        sys.exit()
+        Actions(PwrTray.singleton).quit_self()
 
     @staticmethod
     def restart_self(_):
-        """Replace this process with a fresh instance of the applet.
-
-        The replacement is launched as ``python -m pwr_tray.main`` so that
-        PyKill recognises it via command_names().  The single-instance lock is
-        released first: os._exit() skips atexit handlers, and the replacement
-        must be able to take the lock as soon as it starts.
-
-        The package root goes on PYTHONPATH rather than into ``cwd=``: the
-        replacement inherits whatever directory the user is in and must still
-        be able to import the module when running from a source checkout.
-        """
-        prt('+', 'restarting applet...')
-        this = PwrTray.singleton
-        if this:
-            this.tray_icon.hide()
-            # os._exit() below skips atexit, which is where the monitors are
-            # usually reaped; without this each restart orphans dbus-monitor.
-            events = getattr(this, 'events', None)
-            if events is not None:
-                events.stop()
-        PwrTray.save_picks()
-        package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env = dict(os.environ)
-        env['PYTHONPATH'] = os.pathsep.join(
-            [package_root] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
-        # --replace is never inherited: a restart releases the lock first, so
-        # the replacement has nothing to take over, and it must not keep a
-        # destructive flag should the lock change hands in between.
-        inherited = [arg for arg in sys.argv[1:] if arg != '--replace']
-        args = [sys.executable, '-m', 'pwr_tray.main', *inherited]
-        Utils.SingleInstance.release_current()
-        subprocess.Popen(args, env=env)
-        os._exit(0)
+        Actions(PwrTray.singleton).restart_self()
 
     @staticmethod
     def edit_config(_):
-        this = PwrTray.singleton
-        if this.get_params().gui_editor:
-            try:
-                ini_path = this.ini_tool.ini_path
-                arguments = this.get_params().gui_editor.split()
-                arguments.append(ini_path)
-                prt('+', 'running:', arguments)
-                subprocess.run(arguments, check=True)
-            except (OSError, subprocess.SubprocessError) as e:
-                prt(f"Edit Config ERR: {e}")
+        Actions(PwrTray.singleton).edit_config()
 
     @staticmethod
     def open_log(_):
-        """Page debug.log (plus the rotated copy) in a terminal window.
-
-        Launched with Popen rather than run(): the viewer stays open for as
-        long as the user keeps it open, and blocking the Qt event loop that
-        long would freeze the tray, the idle polling and every other action.
-        spawn_detached() puts the viewer in its own session -- and, under
-        systemd, its own transient scope -- so a stop or restart of the applet
-        does not take the log window down with it.
-        """
-        this = PwrTray.singleton
-        try:
-            log_path = this.ini_tool.log_path
-            old_path = getattr(this.ini_tool, 'log_old_path', None)
-            preferred = getattr(this.get_params(), 'log_viewer', '')
-        except AttributeError as e:
-            prt(f'Open Log ERR: {e}')
-            return
-
-        arguments = Utils.log_viewer_argv(log_path, old_path, preferred)
-        if not arguments:
-            prt('Open Log ERR: no terminal emulator found'
-                ' (set log_viewer in config.ini)')
-            return
-
-        prt('+', 'running:', arguments)
-        try:
-            Utils.spawn_detached(arguments)
-        except (OSError, subprocess.SubprocessError) as e:
-            prt(f'Open Log ERR: {e}')
+        Actions(PwrTray.singleton).open_log()
 
     @staticmethod
     def suspend(_):
-        this = PwrTray.singleton
-        this.set_state('Asleep')
-        this.reset_xidle_ms()
-
-        locker_cmd = this.variables.get('locker')
-
-        # Logic: Only manually lock if we aren't in a 'Full' DE that handles it.
-        # Most tiling WMs (niri, sway, i3) need the manual kick.
-        is_full_de = any(name in this.de_config['name'] for name in ['kde', 'xfce', 'cinnamon'])
-
-        if locker_cmd and not is_full_de:
-            prt(f'+ {locker_cmd} (async spawn)')
-            subprocess.Popen(locker_cmd, shell=True)
-            # Give the locker a tiny head-start to grab the screen
-            time.sleep(0.2)
-
-        # This is the "Point of No Return"
-        PwrTray.run_command('suspend')
-        prt('suspend: resumed')
+        Actions(PwrTray.singleton).suspend()
 
     @staticmethod
     def poweroff(_):
-        """TBD"""
-        PwrTray.run_command('poweroff')
+        Actions(PwrTray.singleton).poweroff()
 
     @staticmethod
     def reboot(_):
-        """TBD"""
-        PwrTray.run_command('reboot')
+        Actions(PwrTray.singleton).reboot()
 
     @staticmethod
     def lock_screen(_):
-        this = PwrTray.singleton
-        PwrTray.run_command('locker')
-        this.update_running_idle_s()
-        this.set_state('Locked')
+        Actions(PwrTray.singleton).lock_screen()
 
     def blank_primitive(self, lock_screen=False):
-        """TBD"""
-        cmd = self.variables['monitors_off']
-        if cmd and self.get_params().turn_off_monitors:
-            if lock_screen:
-                # self.lock_screen(None, before='sleep 1.5; ')
-                self.lock_screen(None)
-            prt('+', cmd)
-            result = subprocess.run(cmd, shell=True, check=False)
-            if result.returncode != 0:
-                prt(f'   NOTE: returncode={result.returncode}')
-            self.set_state('Blanked')
-
-        else:
-            prt('NOTE: blanking screen unsupported')
+        Actions(self).blank_primitive(lock_screen=lock_screen)
 
     @staticmethod
     def blank_quick(_):
-        this = PwrTray.singleton
-        this.blank_primitive(lock_screen=True)
+        Actions(PwrTray.singleton).blank_quick()
 
     @staticmethod
     def reload_wm(_):
-        PwrTray.run_command('reload_wm')
+        Actions(PwrTray.singleton).reload_wm()
 
     @staticmethod
     def restart_wm(_):
-        PwrTray.run_command('restart_wm')
+        Actions(PwrTray.singleton).restart_wm()
 
     @staticmethod
     def exit_wm(_):
-        PwrTray.run_command('logoff')
+        Actions(PwrTray.singleton).exit_wm()
 
     @staticmethod
     def enable_presentation_mode(_):
-        """TBD"""
-        this = PwrTray.singleton
-        this.mode = 'Presentation'
-        this.was_output = 'Changed Mode'
-        prt('+', f'{this.mode=}')
-        this.save_picks()
-        this.idle_manager_start()
+        Actions(PwrTray.singleton).enable_presentation_mode()
 
     @staticmethod
     def enable_nosleep_mode(_):
-        """TBD"""
-        this = PwrTray.singleton
-        this.mode = 'LockOnly'
-        this.was_output = 'Changed Mode'
-        prt('+', f'{this.mode=}')
-        this.save_picks()
-        this.idle_manager_start()
+        Actions(PwrTray.singleton).enable_nosleep_mode()
 
     @staticmethod
     def enable_normal_mode(_):
-        """TBD"""
-        this = PwrTray.singleton
-        this.mode = 'SleepAfterLock'
-        this.was_output = 'Changed Mode'
-        prt('+', f'{this.mode=}')
-        this.save_picks()
-        this.idle_manager_start()
+        Actions(PwrTray.singleton).enable_normal_mode()
 
     @staticmethod
     def goodbye(message=''):

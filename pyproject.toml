@@ -36,7 +36,10 @@
 #   .venv/bin/python -m pip install -e '.[dev]'
 #   .venv/bin/python -m ruff check .
 #   .venv/bin/python -m compileall -q pwr_tray
-#   .venv/bin/python -m pytest -q          # a few hundred tests, about a second
+#   .venv/bin/python -m pytest -q --cov=pwr_tray --cov-report=term-missing
+#
+# That last line is the test gate CI runs: it is not only a count of tests but
+# a floor on the code they reach (see [tool.coverage.report] below).
 #
 # Tests never touch ~/.config: conftest.py redirects HOME to a temporary
 # directory and stubs PyQt5/ruamel.yaml/psutil when they are absent, so the
@@ -102,6 +105,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
+    # pytest-cov reads `fail_under` from the coverage configuration below, so
+    # the CI command does not have to carry a second copy of the number.
     "pytest-cov>=5",
     "ruff>=0.6",
     "build>=1.2",
@@ -124,12 +129,34 @@ include = ["pwr_tray/resources/", "tests/", "conftest.py"]
 testpaths = ["tests"]
 addopts = "-ra"
 
+# Coverage is measured as a gate, not as a habit
+# ----------------------------------------------
+# A test count says how many assertions ran, not which lines did.  These
+# settings make `python -m pytest --cov=pwr_tray` fail below a floor, and that
+# is the command CI runs on every supported Python.  pytest-cov >= 5 reads
+# `[tool.coverage.report] fail_under` itself, so the floor has exactly one home
+# and CI cannot enforce a different number than a developer does.
 [tool.coverage.run]
+# Branch coverage, because the misses that matter in this codebase are the
+# arms of an `if` nobody takes (the state machine, the per-desktop action
+# table), not only statements nobody executes.
 branch = true
 source = ["pwr_tray"]
 
 [tool.coverage.report]
+# Measured 76.3% when the gate was introduced: 415 tests, on 3.11 and 3.13, and
+# identical with the real PyQt5/psutil/ruamel.yaml and with conftest's stubs,
+# so the number does not depend on whether the runner has a desktop stack.
+#
+# The floor is deliberately just under the measured value: it is a ratchet
+# against new code arriving without a test, not a target to optimise.  Raise it
+# when the number rises; do not lower it to turn a red build green.
+fail_under = 75
+# CI logs are read to find the arms nobody wrote a test for, so print the
+# missing line numbers -- and hide the files that have none.
+show_missing = true
 skip_covered = true
+precision = 1
 
 [tool.ruff]
 # Keep the lint gate identical on every machine: no global/user config can

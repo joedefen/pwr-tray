@@ -83,13 +83,41 @@ cat /proc/$pid/maps | grep -m1 pwr_tray  # or: readlink /proc/$pid/exe
 ```
 .venv/bin/python -m ruff check .
 .venv/bin/python -m compileall -q pwr_tray
-.venv/bin/python -m pytest -q                 # a few hundred tests, ~1 s
-.venv/bin/python -m pytest -q --cov=pwr_tray   # optional coverage
+.venv/bin/python -m pytest -q --cov=pwr_tray --cov-report=term-missing
 ```
+
+The last command is the gate, not an optional extra: it fails when the total
+branch coverage drops below `[tool.coverage.report] fail_under` in
+`pyproject.toml`, and CI runs exactly this command on every supported Python.
+The floor lives in `pyproject.toml` only -- pytest-cov reads `fail_under`
+itself -- so there is no second copy to drift.
+
+At the time of writing: **76.3% total** (485 statements and 98 partial branches
+missed, 2208 statements and 752 branches measured). The report is dull where the
+tests are dense and pointed where they are not:
+
+| Module | Cover |
+| --- | ---: |
+| `Errors.py` | 90.7% |
+| `IniTool.py` | 93.5% |
+| `service.py` | 92.8% |
+| `Utils.py` | 73.7% |
+| `PowerEvents.py` | 71.4% |
+| `main.py` | 66.5% |
+| `SwayIdleMgr.py` | 63.6% |
+
+Nearly all of the misses are in `main.py` and are structural, not forgotten:
+`PwrTray.__init__`'s menu construction, the `QTimer`/event-loop wiring, and
+`swayidle` supervision need a live session. The action layer that *can* be
+tested is pinned in `tests/test_actions.py`; `term-missing` is how you find the
+desktop branch that has no expectation yet, which is the one thing a test count
+cannot tell you.
 
 `tests/conftest.py` redirects `HOME` to a temporary directory and stubs
 PyQt5/ruamel.yaml/psutil when they are absent, so the suite runs in a bare
 container as well as on a desktop and never touches your real `~/.config`.
+The stubs do not move the coverage number: the suite measures the same 76.3%
+with the real libraries and with the stubs.
 
 Service integrations worth knowing, because they are policy rather than code:
 

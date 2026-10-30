@@ -24,7 +24,7 @@ import types
 
 import pytest
 
-import pwr_tray.main as main_module
+import pwr_tray.Actions as actions_module
 from pwr_tray.main import PwrTray
 from pwr_tray.Utils import resource_text
 
@@ -115,17 +115,24 @@ class _Recorder:
         return _Completed()
 
 
-@pytest.fixture(name='rec')
+@pytest.fixture(name='rec', autouse=True)
 def recorder_fixture(monkeypatch):
-    """Replace `subprocess` inside main.py only, and stop it sleeping."""
+    """Record every process the action layer would start.
+
+    ``autouse=True`` is deliberate: the action layer owns real ``subprocess``
+    calls, so a test that forgets to request this fixture must still be unable
+    to lock the session, blank the monitors or power the machine off.  The
+    recorder is installed on the module that performs the calls, not on
+    ``main``.
+    """
     recorder = _Recorder()
-    monkeypatch.setattr(main_module, 'subprocess', types.SimpleNamespace(
+    monkeypatch.setattr(actions_module, 'subprocess', types.SimpleNamespace(
         run=recorder.run,
         Popen=recorder.Popen,
         SubprocessError=real_subprocess.SubprocessError,
         TimeoutExpired=real_subprocess.TimeoutExpired,
         CalledProcessError=real_subprocess.CalledProcessError))
-    monkeypatch.setattr(main_module.time, 'sleep', lambda _seconds: None)
+    monkeypatch.setattr(actions_module.time, 'sleep', lambda _seconds: None)
     return recorder
 
 
@@ -348,12 +355,12 @@ def test_run_command_ignores_a_key_the_desktop_leaves_empty(tray, rec):
 
 def test_run_command_reports_a_nonzero_status(tray, rec, monkeypatch):
     logged = []
-    monkeypatch.setattr(main_module, 'prt',
+    monkeypatch.setattr(actions_module, 'prt',
                         lambda *args, **_kwargs: logged.append(' '.join(
                             str(arg) for arg in args)))
     tray = tray('sway-wayland')
     tray.variables['probe'] = 'swaymsg reload'
-    monkeypatch.setattr(main_module.subprocess, 'run',
+    monkeypatch.setattr(actions_module.subprocess, 'run',
                         lambda *_a, **_k: _Completed(returncode=3))
 
     PwrTray.run_command('probe')
