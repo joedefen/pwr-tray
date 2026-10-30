@@ -12,9 +12,9 @@
 
 The v1 audit reported 16 findings (3 × P0, 7 × P1, 6 × P2). **All 15 findings that were actionable in-repo are now fixed**, each in a commit named after the finding, and each independently re-verified below rather than accepted on the strength of the commit message.
 
-The project is now in a materially different category from v1: it lints clean, compiles clean, has a 139-test suite that runs in under a second, has real CI (lint + matrix test + wheel packaging assertion), has lost two of its three runtime dependencies, and no longer ships an unrunnable wheel or uses `assert` for user-facing errors.
+The project is now in a materially different category from v1: it lints clean, compiles clean, has a 166-test suite that runs in under a second, has real CI (lint + matrix test + wheel packaging assertion), has lost two of its three runtime dependencies, and no longer ships an unrunnable wheel or uses `assert` for user-facing errors.
 
-What remains is a short list of *new* issues created by the rewrite (mostly concurrency semantics and stale docs) plus three test-coverage gaps that happen to sit exactly on the former P0s.
+What remains is a short list of *new* issues created by the rewrite (mostly concurrency semantics and stale docs).  The three test-coverage gaps that sat exactly on the former P0s were the sharpest item in the first draft of this section and are now closed (R2).
 
 ---
 
@@ -54,7 +54,7 @@ $ python3 -m compileall -q pwr_tray
 COMPILE_OK
 
 $ python3 -m pytest -q
-139 passed in 0.65s
+166 passed in 0.73s
 ```
 
 Behavioural probes, run with `HOME`/`XDG_CONFIG_HOME` pointed at a throwaway directory so the live `~/.config/pwr-tray` was never touched:
@@ -79,15 +79,19 @@ These are new, introduced by (or exposed by) the rewrite. Nothing here is a P0.
 
 **Re-verified.** `tests/test_single_instance.py` covers the refusal, the guarded takeover, a recycled/foreign pid and the main()-level exit-3-without-signalling path; an out-of-process probe (real `flock` held by a child whose argv is `pwr_tray/main.py`) confirmed a plain start refuses with the holder alive, while `--replace` terminates it (exit `-15`) and takes the lock; a holder whose argv does not name `pwr-tray` is left alone. README options table, the `setsid` restart line and the systemd caveats were updated to match.
 
-### R2 — P1 — The three former P0 behaviours have no regression test
+### R2 — P1 — The three former P0 behaviours had no regression test — **Fixed**
 
-The fixes for v1 #1/#2/#3 are verified by reading the code and by the author's manual testing, but the suite does not lock them down:
+The fixes for v1 #1/#2/#3 were verified by reading the code and by the author's manual testing, but the suite did not lock them down: `check_inhibited()` was monkeypatched away in [`../tests/test_power_events.py`](../tests/test_power_events.py), [`SwayIdleManager.build_cmd()`](../pwr_tray/SwayIdleMgr.py:58) had no test at all, and nothing exercised the `_get_down_state() == 'PowerDown'` branch ([`../pwr_tray/main.py:746`](../pwr_tray/main.py:746)).  The suite stayed green with all three reverted.
 
-* `check_inhibited()` is *monkeypatched away* in [`../tests/test_power_events.py:172`](../tests/test_power_events.py:172), so the `playerctl` → `inhibited='player'` path ([`../pwr_tray/main.py:612`](../pwr_tray/main.py:612)) is never executed.
-* There is no test for [`SwayIdleManager.build_cmd()`](../pwr_tray/SwayIdleMgr.py:58), which is where the media-inhibit decision is actually consumed ([`../pwr_tray/SwayIdleMgr.py:65`](../pwr_tray/SwayIdleMgr.py:65)).
-* There is no test for the `_get_down_state() == 'PowerDown'` → `poweroff()` branch ([`../pwr_tray/main.py:746`](../pwr_tray/main.py:746)).
+**Fix.** [`../tests/test_media_inhibit.py`](../tests/test_media_inhibit.py) drives the real [`check_inhibited()`](../pwr_tray/main.py:573) and [`build_cmd()`](../pwr_tray/SwayIdleMgr.py:58) against a fake `subprocess` and a bare `PwrTray`:
 
-These are cheap to cover (pure functions and a fake `subprocess`), and they are precisely the three bugs that motivated the branch. As it stands the suite would stay green if all three were reverted.
+* `playerctl status == playing` becomes `inhibited == 'player'` — asserted through `was_inhibited`, the PlayingNow icon (index 4 of `svg_info.bases`), the swayidle restart and `poll_100ms` ([`../pwr_tray/main.py:616`](../pwr_tray/main.py:616));
+* a real logind `block` row keeps priority over the player (StopSign, index 7), an `xfce4-power-man` / `org_kde_powerde` power-key row does not, and disabling `playerctl` in the menu stops the query entirely;
+* [`SwayIdleManager.build_cmd()`](../pwr_tray/SwayIdleMgr.py:58) emits **no** `timeout` clauses (and no `after-resume`) while `was_inhibited == 'player'`, and restores `timeout 900 'swaylock'` / `timeout 1200 'systemctl suspend'` when playback stops — including the "did the command change" return value that decides whether swayidle is replaced.
+
+[`../tests/test_power_events.py`](../tests/test_power_events.py) gains a harness that crosses the once-per-sample branch with `power_down` True and False, asserting `poweroff()` and `suspend()` respectively through [`_get_down_state()`](../pwr_tray/main.py:525).
+
+**Re-verified by mutation.** Reverting the three fixes (`inhibited = inhibited`, `media_playing = False`, `_get_down_state()` returning a fixed `'Suspend'`) fails six of the new tests; nothing else in the tree changed.  `ruff check .` and `pytest -q` (166 passed) are clean.
 
 ### R3 — P2 — Per-tier defaults are unreachable once a section is absent
 
@@ -131,7 +135,7 @@ Three `ruff`-invisible leftovers; each is a one-line deletion.
 * **One UI across nine desktops.** i3/X11, sway, Hyprland, niri, KDE (X11 + Wayland), XFCE, Cinnamon, MATE, LXQt via a declarative [`commands.yaml`](../pwr_tray/commands.yaml) plus `--de` overrides and `--list-des`. This remains the single strongest argument for using it over a compositor-native script.
 * **Error reporting is now actionable.** [`../pwr_tray/Errors.py:31`](../pwr_tray/Errors.py:31) and friends produce messages naming the missing command, the install hint, and the `--list-des`/`--de NAME` escape hatch, instead of an `AssertionError` that disappears under `-O`.
 * **Console capture survives log redirection.** [`../pwr_tray/Utils.py:50`](../pwr_tray/Utils.py:50) keeps a duplicate of fd 2 so errors reach the terminal that launched the applet, not just the journal.
-* **The test suite is honest.** Autouse isolated-`HOME` fixture, permissive stubs so the suite runs without PyQt5, and regression tests that cite their audit finding in the docstring ([`../tests/test_restore_picks.py:1`](../tests/test_restore_picks.py:1)).
+* **The test suite is honest.** Autouse isolated-`HOME` fixture, permissive stubs so the suite runs without PyQt5, and regression tests that cite their audit finding in the docstring ([`../tests/test_restore_picks.py:1`](../tests/test_restore_picks.py:1)).  The three behaviours the whole rewrite existed to fix — media inhibit, restored timeouts, `power_down` — are now pinned by tests that fail if the fix is reverted ([`../tests/test_media_inhibit.py:1`](../tests/test_media_inhibit.py:1), [`../tests/test_power_events.py:239`](../tests/test_power_events.py:239)).
 * **CI asserts the artefact, not just the tests.** [`../.github/workflows/tests.yml:1`](../.github/workflows/tests.yml:1) installs the built wheel into a clean venv and exercises both `--version` and `--list-des`, which is exactly the check that would have caught v1 #6.
 
 Current shape:
@@ -141,7 +145,7 @@ Current shape:
 | `pwr_tray/` Python lines | 1,007 (`main.py`) | 1,380 (`main.py`) + 849 across 6 modules |
 | Runtime dependencies | 3 (`psutil`, `pydbus`, `ruamel.yaml`) + PyQt5 | 3 (`psutil`, `PyQt5`, `ruamel.yaml`) |
 | `ruff` | not configured | clean, 11 rule families |
-| Tests | 0 | 139 in 14 files, 0.65 s |
+| Tests | 0 | 166 in 15 files, 0.73 s |
 | CI | none | lint + 3.11/3.12/3.13 test + wheel packaging assertion |
 | `requires-python` | unreleased / unstated | `>=3.11` |
 
@@ -167,7 +171,7 @@ What has *not* changed is the market. 2 stars, 1 watcher, 0 issues, 21 releases 
 ## 7. Recommended next steps (in order)
 
 1. ~~**R1** — move `lock.acquire()` ahead of `PyKill().kill_loop()`, make the kill the *takeover* branch, and add `--replace` for the intentional case.~~ **Done** (see §4, R1).
-2. **R2** — three small tests: `check_inhibited()` returning `'player'`; `SwayIdleManager.build_cmd()` omitting lock/sleep when `was_inhibited == 'player'`; `on_timeout()` calling `poweroff()` when `_get_down_state()` is `'PowerDown'`. Without these the audit's own P0s are one revert away.
+2. ~~**R2** — three small tests: `check_inhibited()` returning `'player'`; `SwayIdleManager.build_cmd()` omitting lock/sleep when `was_inhibited == 'player'`; `on_timeout()` calling `poweroff()` when `_get_down_state()` is `'PowerDown'`. Without these the audit's own P0s are one revert away.~~ **Done** (see §4, R2).
 3. **R4** — correct [`../README.md:156`](../README.md:156) and [`../README.md:239`](../README.md:239) to match the new behaviour, and say plainly which supervisor should own the process when a systemd unit is used.
 4. **R3** — decide whether per-tier defaults exist; make [`../pwr_tray/IniTool.py:51`](../pwr_tray/IniTool.py:51) authoritative or delete the per-tier entries.
 5. **R5** — fold resume detection into `PowerEvents`' existing system-bus notifier and delete the third child process.

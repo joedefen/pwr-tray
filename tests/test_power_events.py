@@ -1,13 +1,16 @@
 """Event sources replace the old once-per-tick polling (AUDIT.md finding 10).
 
-Two things are pinned here:
+Three things are pinned here:
 
 - a signal only marks the matching input dirty when it is actually relevant
-  (a metadata change in a player must not look like a play/pause change), and
-- ``on_timeout()`` runs the expensive queries only when something is dirty.
+  (a metadata change in a player must not look like a play/pause change),
+- ``on_timeout()`` runs the expensive queries only when something is dirty, and
+- once the slow branch is due, ``power_down`` really selects ``poweroff()``
+  (v1 #3: the comparison was against the wrong string, so it always
+  suspended -- an audit finding that had no test until R2).
 
-The second test builds a bare ``PwrTray`` (no ``__init__``) because the point
-is the gating decision, not Qt or D-Bus.
+The tests build a bare ``PwrTray`` (no ``__init__``) because the point is the
+gating/decision logic, not Qt or D-Bus.
 """
 
 from types import SimpleNamespace
@@ -231,6 +234,46 @@ def test_missing_config_watch_falls_back_to_polling():
     tray.on_timeout()
 
     assert 'reconfig' in calls
+
+
+# -- down state -------------------------------------------------------------
+
+def _bare_due_tray(power_down):
+    """The harness above with the tick due for its once-per-sample branch."""
+    tray, calls = _bare_tray()
+    tray.loop = tray.loop_sample - 1     # this tick reaches loop_sample
+    tray.running_idle_s = 3600.0
+    tray.state = SimpleNamespace(name='Awake', when=0)
+    tray.get_effective_mode = lambda: 'SleepAfterLock'
+    tray.get_lock_min_list = lambda selector=None: [15, 30]
+    tray.get_sleep_min_list = lambda selector=None: [5, 30]
+    params = SimpleNamespace(power_down=power_down, turn_off_monitors=False)
+    tray.get_params = lambda selector=None: params
+    tray.update_running_idle_s = lambda: None
+    tray.reset_xidle_ms = lambda: calls.append('reset')
+    tray.poweroff = lambda _: calls.append('poweroff')
+    tray.suspend = lambda _: calls.append('suspend')
+    tray.lock_screen = lambda _: calls.append('lock')
+    tray.blank_primitive = lambda: calls.append('blank')
+    tray.set_state = lambda name: calls.append(('state', name))
+    return tray, calls
+
+
+def test_power_down_preference_calls_poweroff():
+    """v1 #3: power_down = True suspended instead of powering off."""
+    tray, calls = _bare_due_tray(power_down=True)
+
+    tray.on_timeout()
+
+    assert calls == ['resume', 'poweroff']
+
+
+def test_power_down_unset_still_suspends():
+    tray, calls = _bare_due_tray(power_down=False)
+
+    tray.on_timeout()
+
+    assert calls == ['resume', 'suspend']
 
 
 # -- coalescing -------------------------------------------------------------
