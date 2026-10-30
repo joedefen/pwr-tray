@@ -168,7 +168,6 @@ def _bare_tray(bus_ok=True, config_ok=True):
     tray.battery = SimpleNamespace(selector='Settings', percent=90,
                                    plugged=True, present=True)
     tray.DB = lambda: False
-    tray._check_resume = lambda: calls.append('resume')
     tray.reconfig = lambda: calls.append('reconfig')
     tray.update_battery_status = lambda: calls.append('battery')
 
@@ -187,7 +186,7 @@ def test_quiet_tick_spawns_no_queries():
 
     tray.on_timeout()
 
-    assert calls == ['resume']
+    assert calls == []
     assert tray._refresh_pending is False
 
 
@@ -197,7 +196,7 @@ def test_dirty_inhibitors_are_queried_once():
 
     tray.on_timeout()
 
-    assert calls == ['resume', 'inhibited', ('menu', ['row'])]
+    assert calls == ['inhibited', ('menu', ['row'])]
     assert tray._inhibit_rows == ['row']
 
 
@@ -207,7 +206,7 @@ def test_dirty_battery_is_queried_once():
 
     tray.on_timeout()
 
-    assert calls == ['resume', 'battery']
+    assert calls == ['battery']
 
 
 def test_dirty_config_is_reread_once():
@@ -216,7 +215,7 @@ def test_dirty_config_is_reread_once():
 
     tray.on_timeout()
 
-    assert calls == ['resume', 'reconfig']
+    assert calls == ['reconfig']
 
 
 def test_missing_event_bus_falls_back_to_polling():
@@ -265,7 +264,7 @@ def test_power_down_preference_calls_poweroff():
 
     tray.on_timeout()
 
-    assert calls == ['resume', 'poweroff']
+    assert calls == ['poweroff']
 
 
 def test_power_down_unset_still_suspends():
@@ -273,7 +272,7 @@ def test_power_down_unset_still_suspends():
 
     tray.on_timeout()
 
-    assert calls == ['resume', 'suspend']
+    assert calls == ['suspend']
 
 
 # -- coalescing -------------------------------------------------------------
@@ -299,6 +298,16 @@ def test_playback_event_marks_inhibitors_dirty():
     tray._on_playback_event()
 
     assert tray._inhibit_dirty is True
+    assert tray.timer.intervals == [100]
+
+
+def test_resume_event_forces_the_slow_branch():
+    """PrepareForSleep(false) is handled by the event source, not a poll."""
+    tray, _ = _bare_tray()
+
+    tray._on_resume_event()
+
+    assert tray.poll_100ms is True
     assert tray.timer.intervals == [100]
 
 

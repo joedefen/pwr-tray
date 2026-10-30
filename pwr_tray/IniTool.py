@@ -76,7 +76,6 @@ class IniTool:
         self.picks_path =  os.path.join(self.folder, "picks.json")
         self.config = configparser.ConfigParser()
         self.last_mod_time = None
-        self.section_params = {'Settings': {}, 'HiBattery': {}, 'LoBattery': {}, }
         self.params_by_selector = {}
         self._config_problem = ''
         if not paths_only:

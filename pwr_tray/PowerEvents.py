@@ -6,17 +6,17 @@ The applet used to spawn ``systemd-inhibit`` and ``playerctl`` on every
 two-second tick (roughly 43,000 processes per day), call
 ``psutil.sensors_battery()`` and stat ``config.ini`` on the same schedule.
 logind, UPower and the MPRIS players already publish those changes as D-Bus
-signals -- the applet has been consuming ``PrepareForSleep`` that way for a
-while -- so this module watches the same signal stream and calls back only
-when something actually changed.  The caller then re-runs the (still
+signals, so this module watches that signal stream and calls back only when
+something actually changed.  The caller then re-runs the (still
 subprocess-based) query once.
 
 Two long-lived ``dbus-monitor`` children replace the per-tick spawns: one on
-the system bus (logind inhibitors + UPower battery) and one on the session bus
-(MPRIS playback).  Their pipes are read with ``QSocketNotifier``, so there is
-no read polling either.  ``config.ini`` is watched with
-``QFileSystemWatcher``, both as a file and through its directory (editors that
-save by rename would otherwise remove the file watch).
+the system bus (logind inhibitors, UPower battery and ``PrepareForSleep``
+resume detection) and one on the session bus (MPRIS playback).  Their pipes
+are read with ``QSocketNotifier``, so there is no read polling either.
+``config.ini`` is watched with ``QFileSystemWatcher``, both as a file and
+through its directory (editors that save by rename would otherwise remove the
+file watch).
 
 If neither Qt nor ``dbus-monitor`` is available, ``start()`` reports that and
 the applet falls back to the old polling, so behaviour is never worse.
@@ -43,6 +43,13 @@ PROPERTIES_CHANGED = (
     "type='signal',interface='org.freedesktop.DBus.Properties',"
     "member='PropertiesChanged'")
 
+# logind announces suspend (true) and resume (false) on this signal.  The
+# applet only needs the resume half, to re-read state that went stale while
+# the machine slept.
+PREPARE_FOR_SLEEP = (
+    "type='signal',interface='org.freedesktop.login1.Manager',"
+    "member='PrepareForSleep'")
+
 
 class PowerEvents:
     """Watch the signals the applet used to poll for.
@@ -64,11 +71,13 @@ class PowerEvents:
     INHIBITOR_PROPERTIES = ('BlockInhibited', 'DelayInhibited')
 
     def __init__(self, on_inhibitors=None, on_battery=None,
-                 on_playback=None, on_config=None, on_source_lost=None):
+                 on_playback=None, on_config=None, on_resume=None,
+                 on_source_lost=None):
         self.on_inhibitors = on_inhibitors or (lambda: None)
         self.on_battery = on_battery or (lambda: None)
         self.on_playback = on_playback or (lambda: None)
         self.on_config = on_config or (lambda: None)
+        self.on_resume = on_resume or (lambda: None)
         self.on_source_lost = on_source_lost or (lambda: None)
 
         self.watcher = None
@@ -118,7 +127,13 @@ class PowerEvents:
     def _start_monitor(self, key, bus_flag):
         if not _is_class(QSocketNotifier):
             return False
-        args = ['dbus-monitor', bus_flag, PROPERTIES_CHANGED]
+        # dbus-monitor ORs multiple match rules given as separate arguments.
+        # The system bus therefore carries both the property watches and the
+        # resume signal, which used to need a third child of its own.
+        rules = [PROPERTIES_CHANGED]
+        if key == 'system':
+            rules.append(PREPARE_FOR_SLEEP)
+        args = ['dbus-monitor', bus_flag, *rules]
         proc = None
         try:
             proc = subprocess.Popen(args, stdout=subprocess.PIPE,
@@ -198,6 +213,16 @@ class PowerEvents:
         if not context:
             return
 
+        if context == 'login1_sleep':
+            # ``boolean true`` means suspend is imminent; ``false`` is resume.
+            value = line.strip()
+            if value not in ('boolean true', 'boolean false'):
+                return
+            self._context[key] = ''
+            if value == 'boolean false':
+                self.on_resume()
+            return
+
         if context == 'login1':
             matched = self._mentions(line, self.INHIBITOR_PROPERTIES)
             notify = self.on_inhibitors
@@ -230,6 +255,8 @@ class PowerEvents:
         end = header.find(';', start)
         path = header[start + 5:end if end >= 0 else len(header)]
         if path.startswith(cls.LOGIN1_PATH):
+            if 'member=PrepareForSleep' in header:
+                return 'login1_sleep'
             return 'login1'
         if path.startswith(cls.UPOWER_DEVICE_PREFIX):
             return 'upower_device'

@@ -1,74 +1,122 @@
-"""The dbus-monitor child must never outlive the applet it was started for.
+"""Resume detection is part of the system-bus event source (AUDIT.md R5).
 
-A leaked dbus-monitor per restart (AUDIT.md finding 8) is invisible in the UI
-but shows up as a growing pile of processes.  These tests pin the two exit
-paths that matter: the normal one (atexit-registered stopper) and
-``restart_self()``, which leaves through ``os._exit()`` and therefore has to
-stop the monitor itself.
+The applet used to run a third ``dbus-monitor`` child just for
+``PrepareForSleep`` and read its pipe with a non-blocking ``os.read`` on every
+tick.  That signal now rides on ``PowerEvents``' existing system-bus monitor,
+so these tests pin two things:
+
+- the system-monitor command actually asks dbus-monitor for the signal, and
+- only ``PrepareForSleep(false)`` -- resume, not suspend -- is reported.
+
+``restart_self()`` leaves through ``os._exit()`` and therefore still has to
+stop the event source itself, which is pinned here too.
 """
 
-import subprocess
-import sys
-
 import pwr_tray.main as main_module
-from pwr_tray.main import PwrTray
+import pwr_tray.PowerEvents as events_module
+from pwr_tray.PowerEvents import PowerEvents
 
 
-def _bare_tray(proc):
-    """A PwrTray without __init__: only what the resume monitor touches."""
-    tray = object.__new__(PwrTray)
-    tray._resume_proc = proc
-    tray._resume_buf = b''
-    return tray
+def _header(member='PrepareForSleep'):
+    return ('signal time=1 sender=:1.2 -> destination=(null destination) '
+            'serial=2 path=/org/freedesktop/login1; '
+            'interface=org.freedesktop.login1.Manager; '
+            f'member={member}; signature=b')
 
 
-def _spy_process():
-    """A real child process that will not exit on its own."""
-    return subprocess.Popen(
-        [sys.executable, '-c', 'import time; time.sleep(60)'],
-        stdout=subprocess.PIPE)
+def _watcher():
+    calls = []
+    watcher = PowerEvents(on_resume=lambda: calls.append('resume'))
+    watcher._pending['system'] = b''
+    watcher._context['system'] = ''
+    return watcher, calls
 
 
-def test_stop_resume_monitor_terminates_and_reaps():
-    proc = _spy_process()
-    tray = _bare_tray(proc)
+def test_prepare_for_sleep_false_reports_a_resume():
+    watcher, calls = _watcher()
 
-    tray._stop_resume_monitor()
+    watcher._scan_line('system', _header())
+    watcher._scan_line('system', '   boolean false')
 
-    assert proc.poll() is not None, 'dbus-monitor child left running'
-    assert tray._resume_proc is None
-
-
-def test_stop_resume_monitor_is_idempotent():
-    proc = _spy_process()
-    tray = _bare_tray(proc)
-
-    tray._stop_resume_monitor()
-    tray._stop_resume_monitor()       # atexit may fire after an explicit stop
-
-    assert proc.poll() is not None
+    assert calls == ['resume']
 
 
-def test_stop_resume_monitor_handles_absent_child():
-    tray = _bare_tray(None)
-    tray._stop_resume_monitor()       # must not raise
+def test_prepare_for_sleep_true_is_not_a_resume():
+    """``true`` means suspend is starting; nothing has to be re-read yet."""
+    watcher, calls = _watcher()
+
+    watcher._scan_line('system', _header())
+    watcher._scan_line('system', '   boolean true')
+
+    assert calls == []
 
 
-def test_check_resume_reaps_a_dead_monitor():
-    """dbus-monitor dies (e.g. system bus restart): drop it, stop reading."""
-    proc = subprocess.Popen([sys.executable, '-c', 'pass'],
-                            stdout=subprocess.PIPE)
-    proc.wait()
-    tray = _bare_tray(proc)
+def test_inhibitor_and_resume_signals_share_the_system_monitor():
+    """One system-bus child now carries both match rules."""
+    spawned = []
 
-    tray._check_resume()
+    class FakeSignal:
+        def connect(self, _callback):
+            pass
 
-    assert tray._resume_proc is None
-    assert proc.stdout.closed
+    class FakeNotifier:
+        Read = 1
+
+        def __init__(self, _fd, _mode):
+            self.activated = FakeSignal()
+
+        def setEnabled(self, _enabled):
+            pass
+
+    class FakeStdout:
+        @staticmethod
+        def fileno():
+            return 0
+
+        @staticmethod
+        def close():
+            pass
+
+    class FakeProc:
+        stdout = FakeStdout()
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            pass
+
+        @staticmethod
+        def kill():
+            pass
+
+    def fake_popen(args, **_kwargs):
+        spawned.append(args)
+        return FakeProc()
+
+    original_notifier = events_module.QSocketNotifier
+    original_set_blocking = events_module.os.set_blocking
+    original_popen = events_module.subprocess.Popen
+    events_module.QSocketNotifier = FakeNotifier
+    events_module.os.set_blocking = lambda _fd, _blocking: None
+    events_module.subprocess.Popen = fake_popen
+    try:
+        watcher = PowerEvents()
+        assert watcher._start_monitor('system', '--system')
+        watcher.stop()
+    finally:
+        events_module.QSocketNotifier = original_notifier
+        events_module.os.set_blocking = original_set_blocking
+        events_module.subprocess.Popen = original_popen
+
+    assert events_module.PREPARE_FOR_SLEEP in spawned[0]
+    assert events_module.PROPERTIES_CHANGED in spawned[0]
 
 
-def test_restart_self_stops_monitor_before_spawning(monkeypatch):
-    """os._exit() skips atexit, so restart_self must stop the child itself."""
+def test_restart_self_stops_event_source_before_spawning(monkeypatch):
+    """os._exit() skips atexit, so restart_self must stop the children itself."""
     calls = []
 
     class FakeTrayIcon:
@@ -76,11 +124,14 @@ def test_restart_self_stops_monitor_before_spawning(monkeypatch):
         def hide():
             calls.append('hide')
 
+    class FakeEvents:
+        @staticmethod
+        def stop():
+            calls.append('stop-events')
+
     class FakeThis:
         tray_icon = FakeTrayIcon()
-
-        def _stop_resume_monitor(self):
-            calls.append('stop-monitor')
+        events = FakeEvents()
 
     monkeypatch.setattr(main_module.PwrTray, 'singleton', FakeThis())
     monkeypatch.setattr(main_module.PwrTray, 'save_picks',
@@ -94,6 +145,6 @@ def test_restart_self_stops_monitor_before_spawning(monkeypatch):
 
     main_module.PwrTray.restart_self(None)
 
-    assert 'stop-monitor' in calls
-    assert calls.index('stop-monitor') < calls.index('spawn')
+    assert 'stop-events' in calls
+    assert calls.index('stop-events') < calls.index('spawn')
     assert calls[-1] == 'exit-0'

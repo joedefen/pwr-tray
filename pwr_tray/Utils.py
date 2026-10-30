@@ -14,7 +14,6 @@ import re
 import shutil
 import signal
 import stat
-import subprocess
 import sys
 import time
 from datetime import datetime
@@ -169,15 +168,6 @@ def prt(*args, **kwargs):
     print(*args, **kwargs)
     string = f'{s.getvalue()} {where()}'
     print(string, flush=True)
-
-def x_restart_self():
-    """ TBD """
-    # Retrieve the current script name and arguments
-    script_name = sys.argv[0]
-    script_args = sys.argv[1:]
-
-    # Use subprocess to run the script with the same arguments
-    subprocess.run([sys.executable, script_name, *script_args], check=True)
 
 
 _PYTHON_RE = re.compile(r'^python[0-9.]*$')

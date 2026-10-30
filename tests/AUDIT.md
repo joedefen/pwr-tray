@@ -54,7 +54,7 @@ $ python3 -m compileall -q pwr_tray
 COMPILE_OK
 
 $ python3 -m pytest -q
-170 passed in 0.76s
+171 passed in 0.75s
 ```
 
 Behavioural probes, run with `HOME`/`XDG_CONFIG_HOME` pointed at a throwaway directory so the live `~/.config/pwr-tray` was never touched:
@@ -113,22 +113,28 @@ Documentation that contradicts the implementation is worse than no documentation
 
 **Re-verified.** [`test_readme_matches_the_applet_on_chdir_and_single_instance()`](../tests/test_repo_hygiene.py:37) pins both halves: the two phrases must stay out of the README, and `pwr_tray/` must contain no `os.chdir`. The replacement claims were checked against [`update_config()`](../pwr_tray/IniTool.py:191), [`_watch_config()`](../pwr_tray/PowerEvents.py:244) and [`acquire_lock_or_take_over()`](../pwr_tray/main.py:1279).
 
-### R5 — P3 — Resume detection is a third `dbus-monitor` child, still polled per tick
+### R5 — P3 — Resume detection is a third `dbus-monitor` child, still polled per tick — **Fixed**
 
-[`../pwr_tray/main.py:1106`](../pwr_tray/main.py:1106) spawns its own `dbus-monitor` for `PrepareForSleep`, and [`../pwr_tray/main.py:1142`](../pwr_tray/main.py:1142) reads it with a non-blocking `os.read` on **every** tick ([`../pwr_tray/main.py:698`](../pwr_tray/main.py:698), unconditional, outside the dirty-flag gating). `PowerEvents` already owns a system-bus monitor with a `QSocketNotifier` and already parses `login1`. Folding resume detection into that notifier would remove a process and the last per-tick syscall. Low risk, low urgency — `os.read` on an empty pipe is cheap.
+[`../pwr_tray/main.py:1106`](../pwr_tray/main.py:1106) spawned its own `dbus-monitor` for `PrepareForSleep`, and [`../pwr_tray/main.py:1142`](../pwr_tray/main.py:1142) read it with a non-blocking `os.read` on **every** tick ([`../pwr_tray/main.py:698`](../pwr_tray/main.py:698), unconditional, outside the dirty-flag gating). `PowerEvents` already owned a system-bus monitor with a `QSocketNotifier` and already parsed `login1`.
 
-### R6 — P3 — Small CLI blemishes
+**Fix.** The system-bus `dbus-monitor` now takes a second match rule, [`PREPARE_FOR_SLEEP`](../pwr_tray/PowerEvents.py:49); dbus-monitor ORs multiple expressions given as separate arguments. [`_context_for()`](../pwr_tray/PowerEvents.py:251) classifies a `member=PrepareForSleep` header as `login1_sleep`, and [`_scan_line()`](../pwr_tray/PowerEvents.py:202) calls the new `on_resume` callback only for the `boolean false` (resume) half. The third child, the per-tick `os.read`, and `_start/_stop/_check_resume` are gone; [`PwrTray._on_resume_event()`](../pwr_tray/main.py:378) sets `poll_100ms` and schedules the same 100 ms fast poll as the other events. `restart_self()` now only has to stop `PowerEvents`.
 
-* [`../pwr_tray/main.py:1291`](../pwr_tray/main.py:1291): `--help` shows `-q, --quick ... (1m lock + 1m sleep` — the closing paren is missing.
-* `--version` prints `main.py 1.0.13` when invoked as `python -m pwr_tray.main` because it formats `%(prog)s`. Harmless, but the console script and the module path disagree.
+**Re-verified.** [`../tests/test_resume_monitor.py`](../tests/test_resume_monitor.py) pins both halves of the signal, asserts the system-monitor command carries both match rules, and checks `restart_self()` stops the event source before spawning; [`test_resume_event_forces_the_slow_branch()`](../tests/test_power_events.py:305) covers the applet callback. `ruff check .` and `pytest -q` (171 passed) are clean.
 
-### R7 — P3 — Dead code left behind by the rewrite
+### R6 — P3 — Small CLI blemishes — **Fixed**
 
-* [`../pwr_tray/main.py:215`](../pwr_tray/main.py:215): `self.here_dir` is assigned and never read.
-* [`../pwr_tray/Utils.py:173`](../pwr_tray/Utils.py:173): `x_restart_self()` is unused (superseded by `PwrTray.restart_self`).
-* [`../pwr_tray/IniTool.py:79`](../pwr_tray/IniTool.py:79): `self.section_params` is unused.
+* [`../pwr_tray/main.py:1291`](../pwr_tray/main.py:1291): `--help` showed `-q, --quick ... (1m lock + 1m sleep` — the closing paren was missing. Now `quick mode (1m lock + 1m sleep)`.
+* `--version` printed `main.py 1.0.13` when invoked as `python -m pwr_tray.main` because it formatted `%(prog)s`. The parser now fixes `prog='pwr-tray'` and the version string names `pwr-tray` explicitly, so both entry points agree.
 
-Three `ruff`-invisible leftovers; each is a one-line deletion.
+**Re-verified.** `.venv/bin/python -m pwr_tray.main --version` prints `pwr-tray 1.0.13`; `--help` shows the closed paren.
+
+### R7 — P3 — Dead code left behind by the rewrite — **Fixed**
+
+* [`../pwr_tray/main.py:215`](../pwr_tray/main.py:215): `self.here_dir` was assigned and never read. Deleted.
+* [`../pwr_tray/Utils.py:173`](../pwr_tray/Utils.py:173): `x_restart_self()` was unused (superseded by `PwrTray.restart_self`). Deleted, along with its `subprocess` import.
+* [`../pwr_tray/IniTool.py:79`](../pwr_tray/IniTool.py:79): `self.section_params` was unused. Deleted.
+
+Three `ruff`-invisible leftovers, each a one-line deletion; the `contextlib` import in [`../pwr_tray/main.py`](../pwr_tray/main.py) that only the deleted resume stopper used went with them.
 
 ### R8 — P2 — `PwrTray.__init__` crashed on start-up: `ensure_resources()` called with one argument — **Fixed**
 
@@ -154,7 +160,7 @@ Current shape:
 | `pwr_tray/` Python lines | 1,007 (`main.py`) | 1,380 (`main.py`) + 849 across 6 modules |
 | Runtime dependencies | 3 (`psutil`, `pydbus`, `ruamel.yaml`) + PyQt5 | 3 (`psutil`, `PyQt5`, `ruamel.yaml`) |
 | `ruff` | not configured | clean, 11 rule families |
-| Tests | 0 | 170 in 15 files, 0.76 s |
+| Tests | 0 | 171 in 15 files, 0.75 s |
 | CI | none | lint + 3.11/3.12/3.13 test + wheel packaging assertion |
 | `requires-python` | unreleased / unstated | `>=3.11` |
 
@@ -183,8 +189,8 @@ What has *not* changed is the market. 2 stars, 1 watcher, 0 issues, 21 releases 
 2. ~~**R2** — three small tests: `check_inhibited()` returning `'player'`; `SwayIdleManager.build_cmd()` omitting lock/sleep when `was_inhibited == 'player'`; `on_timeout()` calling `poweroff()` when `_get_down_state()` is `'PowerDown'`. Without these the audit's own P0s are one revert away.~~ **Done** (see §4, R2).
 3. **R4** — correct [`../README.md:156`](../README.md:156) and [`../README.md:239`](../README.md:239) to match the new behaviour, and say plainly which supervisor should own the process when a systemd unit is used.
 4. ~~**R3** — decide whether per-tier defaults exist; make [`../pwr_tray/IniTool.py:51`](../pwr_tray/IniTool.py:51) authoritative or delete the per-tier entries.~~ **Done** — the per-tier table is authoritative when a key is absent from both `[Settings]` and the tier (see §4, R3).
-5. **R5** — fold resume detection into `PowerEvents`' existing system-bus notifier and delete the third child process.
-6. **R6/R7** — close the paren, fix `%(prog)s`, delete the three dead attributes/methods.
+5. ~~**R5** — fold resume detection into `PowerEvents`' existing system-bus notifier and delete the third child process.~~ **Done** (see §4, R5).
+6. ~~**R6/R7** — close the paren, fix `%(prog)s`, delete the three dead attributes/methods.~~ **Done** (see §4, R6/R7).
 
 ---
 

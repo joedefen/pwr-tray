@@ -10,7 +10,6 @@ This code is designed to control power matters from the tray.
 # pylint: disable=too-many-branches,too-many-public-methods,too-many-locals
 
 import atexit
-import contextlib
 import json
 import os
 import re
@@ -212,7 +211,6 @@ class PwrTray:
         self.was_play_state = ''
         self.was_selector = None
         self.was_output = ''
-        self.here_dir = os.path.dirname(os.path.abspath(__file__))
         self.svgs = [f'{base}-v{self.svg_info.version}.svg'
                      for base in self.svg_info.bases]
         # Resources live in the config folder; ensure_resources() needs that
@@ -316,8 +314,6 @@ class PwrTray:
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         if self.idle_manager:
             self.idle_manager_start()
-        self._resume_proc = self._start_resume_monitor()
-        self._resume_buf = b''
 
         self.timer = QTimer()
         self.timer.setInterval(100) # 100 is initial ... gets recomputed
@@ -342,6 +338,7 @@ class PwrTray:
             on_battery=self._on_battery_event,
             on_playback=self._on_playback_event,
             on_config=self._on_config_event,
+            on_resume=self._on_resume_event,
             on_source_lost=self._on_event_source_lost)
         self.events.start(config_path)
         self._events_bus_ok = self.events.bus_ok
@@ -376,6 +373,16 @@ class PwrTray:
         # Playback state feeds check_inhibited(), so the icon and the swayidle
         # command have to be rebuilt when a player starts or stops.
         self._inhibit_dirty = True
+        self._schedule_fast_poll()
+
+    def _on_resume_event(self):
+        """logind reported the resume half of PrepareForSleep.
+
+        State read before the machine slept (battery, inhibitors, idle time)
+        is stale, so force the slow branch of the next tick.
+        """
+        prt('resume detected')
+        self.poll_100ms = True
         self._schedule_fast_poll()
 
     def _on_config_event(self):
@@ -698,7 +705,6 @@ class PwrTray:
         if not self._events_config_ok:
             self._config_dirty = True
 
-        self._check_resume()
         if self._config_dirty:
             self._config_dirty = False
             self.reconfig()
@@ -972,7 +978,6 @@ class PwrTray:
             this.tray_icon.hide()
             # os._exit() below skips atexit, which is where the monitors are
             # usually reaped; without this each restart orphans dbus-monitor.
-            this._stop_resume_monitor()
             events = getattr(this, 'events', None)
             if events is not None:
                 events.stop()
@@ -1105,69 +1110,6 @@ class PwrTray:
         this.save_picks()
         this.idle_manager_start()
 
-    def _start_resume_monitor(self):
-        """Start dbus-monitor subprocess for resume detection (non-blocking)."""
-        try:
-            proc = subprocess.Popen(
-                ['dbus-monitor', '--system',
-                 ("type='signal',interface='org.freedesktop.login1.Manager',"
-                  "member='PrepareForSleep'")],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            os.set_blocking(proc.stdout.fileno(), False)
-            prt('resume monitor: started')
-            # Any orderly exit (atexit, SIGTERM handler, app.exec_() return)
-            # must not leave dbus-monitor running.  restart_self() leaves via
-            # os._exit() -- which skips atexit -- and calls the stopper itself.
-            atexit.register(self._stop_resume_monitor)
-            return proc
-        except FileNotFoundError:
-            prt('WARN: dbus-monitor not found; resume detection disabled')
-            return None
-
-    def _stop_resume_monitor(self):
-        """Terminate and reap the dbus-monitor child.  Safe to call twice."""
-        proc, self._resume_proc = getattr(self, '_resume_proc', None), None
-        if proc is None:
-            return
-        try:
-            if proc.poll() is None:
-                proc.terminate()      # dbus-monitor exits promptly on SIGTERM
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    prt('WARN: dbus-monitor ignored SIGTERM; killing it')
-                    proc.kill()
-                    proc.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if proc.stdout is not None:
-            with contextlib.suppress(OSError):
-                proc.stdout.close()
-        prt('resume monitor: stopped')
-
-    def _check_resume(self):
-        """Poll dbus-monitor for resume signal (called from on_timeout)."""
-        if not self._resume_proc:
-            return
-        if self._resume_proc.poll() is not None:
-            prt('WARN: dbus-monitor exited; resume detection disabled')
-            self._stop_resume_monitor()
-            return
-        try:
-            chunk = os.read(self._resume_proc.stdout.fileno(), 4096)
-            if chunk:
-                self._resume_buf += chunk
-                if b'boolean false' in self._resume_buf:
-                    prt('resume detected')
-                    self._resume_buf = b''
-                    self.poll_100ms = True  # trigger immediate re-poll
-                # Prevent unbounded growth; keep tail for partial matches
-                elif len(self._resume_buf) > 1024:
-                    self._resume_buf = self._resume_buf[-512:]
-        except BlockingIOError:
-            pass
-        except OSError:
-            pass
     @staticmethod
     def goodbye(message=''):
         prt(f'ENDED {message}')
@@ -1308,9 +1250,9 @@ def main():
     import argparse
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog='pwr-tray')
     parser.add_argument('-V', '--version', action='version',
-            version=f'%(prog)s {__version__}',
+            version=f'pwr-tray {__version__}',
             help='show version and exit')
     parser.add_argument('-D', '--debug', action='store_true',
             help='override debug_mode from .ini initially')
@@ -1321,7 +1263,7 @@ def main():
     parser.add_argument('-e', '--edit-config', action='store_true',
             help='exec ${EDITOR:-vim} on config.ini file')
     parser.add_argument('-q', '--quick', action='store_true',
-            help='quick mode (1m lock + 1m sleep')
+            help='quick mode (1m lock + 1m sleep)')
     parser.add_argument('--de', metavar='NAME',
             help='force desktop (e.g. i3-x11, sway-wayland, niri-wayland,'
                  ' kde-wayland)')
