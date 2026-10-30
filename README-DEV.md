@@ -151,8 +151,11 @@ checklist it would execute; `./bless test` rehearses the upload on TestPyPI;
    install line, which needs `python -m pip cache purge` first -- pip remembers
    an index it has already read -- and `--extra-index-url
    https://pypi.org/simple/`, because TestPyPI carries none of the
-   dependencies.  `TWINE_TESTPYPI_PASSWORD` is the TestPyPI token; a TestPyPI
-   token is not a PyPI token, so both can be exported at once.
+   dependencies.  The credential is the TestPyPI one -- either
+   `TWINE_TESTPYPI_PASSWORD` or the `~/.pypirc` section whose `repository` is
+   `https://test.pypi.org/legacy/` -- because a TestPyPI token is not a PyPI
+   token, and bless hands twine exactly the token for the index it is writing
+   to.
 4. `./bless publish` -- fast-forward `main` and `dev` to one commit, tag
    `vX.Y.Z`, upload the two named files to PyPI, verify the index, and push.
 
@@ -161,8 +164,15 @@ targets, and before anything is built.  If the version in
 `pwr_tray/__init__.py` is already published the command refuses and prints
 every release that index has, because an upload cannot be replaced.  A 404
 counts as "nothing published yet", which is what either index answers before a
-project's first upload.  For `publish`, `TWINE_PASSWORD` must be set;
-`TWINE_USERNAME` defaults to `__token__`.
+project's first upload.
+
+Credentials are resolved per index: the environment variable wins
+(`TWINE_PASSWORD` for PyPI, `TWINE_TESTPYPI_PASSWORD` for TestPyPI), otherwise
+the `~/.pypirc` section whose `repository` matches that index's upload URL
+(`https://upload.pypi.org/legacy/`, `https://test.pypi.org/legacy/`) supplies
+the token.  Names of the sections do not matter; `TWINE_USERNAME` defaults to
+`__token__`.  If neither source has a credential, bless refuses before twine
+starts and shows both ways of providing one.
 
 ### Reusing `bless` in another project
 

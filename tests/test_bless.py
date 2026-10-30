@@ -142,12 +142,15 @@ def test_publish_reaches_the_irreversible_stages_in_order(monkeypatch):
 
 def test_upload_refuses_without_a_token_before_starting_twine(monkeypatch):
     monkeypatch.delenv('TWINE_PASSWORD', raising=False)
+    monkeypatch.setattr(bless, '_pypirc_credentials', lambda *a, **k: None)
     monkeypatch.setattr(bless, 'run',
                         lambda *a, **k: pytest.fail('twine must not start'))
 
     with pytest.raises(bless.BlessError) as caught:
         bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', VERSION)
     assert 'TWINE_PASSWORD' in str(caught.value)
+    # The refusal says where a credential may come from, in both ways.
+    assert '~/.pypirc' in str(caught.value)
 
 
 # --- the TestPyPI rehearsal -------------------------------------------------
@@ -220,6 +223,7 @@ def test_each_target_gets_its_own_url_and_token(monkeypatch):
 
 def test_the_rehearsal_needs_its_own_testpypi_token(monkeypatch):
     monkeypatch.delenv(bless.TESTPYPI['token'], raising=False)
+    monkeypatch.setattr(bless, '_pypirc_credentials', lambda *a, **k: None)
     monkeypatch.setattr(bless, 'run',
                         lambda *a, **k: pytest.fail('twine must not start'))
 
@@ -227,6 +231,83 @@ def test_the_rehearsal_needs_its_own_testpypi_token(monkeypatch):
         bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', f'{VERSION}.99.0',
                      bless.TESTPYPI)
     assert bless.TESTPYPI['token'] in str(caught.value)
+
+
+PYPIRC = """\
+[distutils]
+index-servers =
+    pypi
+    testpypi
+
+[pypi]
+repository = https://upload.pypi.org/legacy/
+username = __token__
+password = pypi-real
+
+[testpypi]
+repository = https://test.pypi.org/legacy/
+username = __token__
+password = pypi-rehearsal
+"""
+
+
+def test_a_pypirc_section_is_found_by_its_repository_url(tmp_path):
+    path = tmp_path / '.pypirc'
+    path.write_text(PYPIRC, encoding='utf-8')
+
+    # The section has a name, but the URL is what decides: this is why the file
+    # a user already keeps for twine works without renaming anything.
+    assert bless._pypirc_credentials(bless.PYPI, path) == ('__token__', 'pypi-real')
+    assert bless._pypirc_credentials(bless.TESTPYPI, path) == (
+        '__token__', 'pypi-rehearsal')
+
+
+def test_a_pypirc_for_another_index_is_not_a_credential(tmp_path):
+    path = tmp_path / '.pypirc'
+    path.write_text(PYPIRC.replace('https://test.pypi.org/legacy/',
+                                   'https://example.invalid/legacy/'),
+                    encoding='utf-8')
+
+    assert bless._pypirc_credentials(bless.TESTPYPI, path) is None
+    assert bless._pypirc_credentials(bless.TESTPYPI, tmp_path / 'absent') is None
+
+
+def test_the_rehearsal_never_spends_the_pypi_token(monkeypatch):
+    """Both can be configured at once; only one of them may reach TestPyPI."""
+    monkeypatch.setenv('TWINE_PASSWORD', 'pypi-token-from-the-shell')
+    monkeypatch.delenv(bless.TESTPYPI['token'], raising=False)
+    monkeypatch.setattr(bless, '_pypirc_credentials',
+                        lambda *a, **k: ('__token__', 'pypi-rehearsal'))
+    seen = []
+
+    def fake_run(command, **kwargs):
+        seen.append((command, kwargs.get('env') or {}))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(bless, 'run', fake_run)
+    bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', f'{VERSION}.99.0',
+                 bless.TESTPYPI)
+
+    command, environment = seen[0]
+    assert bless.TESTPYPI_UPLOAD in command
+    assert environment['TWINE_PASSWORD'] == 'pypi-rehearsal'
+    assert environment['TWINE_USERNAME'] == '__token__'
+
+
+def test_the_environment_token_wins_over_the_file(monkeypatch):
+    monkeypatch.setenv(bless.TESTPYPI['token'], 'from-the-shell')
+    monkeypatch.setattr(bless, '_pypirc_credentials',
+                        lambda *a, **k: ('__token__', 'from-the-file'))
+    seen = []
+
+    def fake_run(command, **kwargs):
+        seen.append(kwargs.get('env') or {})
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(bless, 'run', fake_run)
+    bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', VERSION, bless.TESTPYPI)
+
+    assert seen[0]['TWINE_PASSWORD'] == 'from-the-shell'
 
 
 def test_the_throwaway_version_is_written_into_a_copy(tmp_path):

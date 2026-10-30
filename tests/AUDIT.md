@@ -282,8 +282,11 @@ dry run unless given `test` or `publish`.
 * `./bless test` rehearses the upload on TestPyPI. The working version is never
   spent on it: a throwaway `X.Y.Z.99.N` is built from a *copy* of the tree, `N`
   being one past whatever TestPyPI already holds for that base (0 the first
-  time), and uploaded under its own token variable
-  (`TWINE_TESTPYPI_PASSWORD`), with no tag and no push. It then prints the
+  time), and uploaded with the TestPyPI credential — `TWINE_TESTPYPI_PASSWORD`,
+  or the `~/.pypirc` section whose `repository` is
+  `https://test.pypi.org/legacy/` — with no tag and no push. The credential is
+  resolved per index and handed to twine as a single `TWINE_PASSWORD`, so a
+  PyPI token in the environment cannot reach TestPyPI. It then prints the
   install line — `pip cache purge` first, because pip remembers an index it has
   already read, and `--extra-index-url https://pypi.org/simple/` because
   TestPyPI carries no dependencies.

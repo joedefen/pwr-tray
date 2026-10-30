@@ -23,6 +23,12 @@ targets, and runs before anything is built or uploaded.  It refuses when the
 version is already there, printing every published version in the refusal,
 because an upload cannot be replaced.
 
+The credential is looked up per target: `TWINE_PASSWORD` for PyPI,
+`TWINE_TESTPYPI_PASSWORD` for TestPyPI, each overruling a `~/.pypirc` section
+whose `repository` is that index's upload URL.  Whichever source answers, twine
+is handed that one token as `TWINE_PASSWORD`, so a PyPI token is never spent on
+TestPyPI just because both happen to be configured on the same machine.
+
 Why no CI publish job: the upload is irreversible and the owner runs it from
 the tree, so the safety has to be visible and local.  CI stays a gate.  See
 plans/pypi-release-plan.md for the reasoning (R1/R2) and for the branch model.
@@ -73,6 +79,7 @@ uploads to PyPI, verifies and pushes.
 from __future__ import annotations
 
 import argparse
+import configparser
 import contextlib
 import hashlib
 import importlib.util
@@ -202,13 +209,17 @@ def read_version(root: Path = ROOT, module: str = MODULE) -> str:
 
 
 # The two destinations.  `upload` is None for PyPI because that is twine's own
-# default, and `token` is an environment variable name: a TestPyPI token is not
-# a PyPI token, so both can be exported at once without either hiding the other.
+# default end point; `pypirc` is the repository URL a ~/.pypirc section has to
+# name before its credential is used for this index; `token` is the environment
+# variable that wins over the file.  A TestPyPI token is not a PyPI token, so
+# the two are kept apart rather than merged.
 PYPI_URL = f'https://pypi.org/pypi/{NAME}/json'
 TESTPYPI_URL = f'https://test.pypi.org/pypi/{NAME}/json'
 PYPI = {'name': 'PyPI', 'index': PYPI_URL, 'upload': None,
+        'pypirc': 'https://upload.pypi.org/legacy/',
         'token': 'TWINE_PASSWORD'}
 TESTPYPI = {'name': 'TestPyPI', 'index': TESTPYPI_URL, 'upload': TESTPYPI_UPLOAD,
+            'pypirc': TESTPYPI_UPLOAD,
             'token': 'TWINE_TESTPYPI_PASSWORD'}
 
 
@@ -613,19 +624,59 @@ def untag(version: str) -> None:
         git('tag', '-d', f'v{version}')
 
 
+def _pypirc_credentials(target: dict,
+                        path: Path | None = None) -> tuple[str, str] | None:
+    """The username and password `~/.pypirc` holds for `target`, if any.
+
+    twine only consults that file for a section *name*, and bless uploads by
+    URL, so the lookup happens here: a section counts when its `repository` is
+    this index's upload URL.  A missing or unreadable file simply answers None.
+    """
+    path = Path.home() / '.pypirc' if path is None else path
+    if not path.is_file():
+        return None
+    config = configparser.RawConfigParser()
+    try:
+        config.read(path)
+    except (OSError, configparser.Error):
+        return None
+    wanted = target['pypirc'].rstrip('/')
+    for section in config.sections():
+        if config[section].get('repository', '').rstrip('/') != wanted:
+            continue
+        password = config[section].get('password')
+        if password:
+            return config[section].get('username') or '__token__', password
+    return None
+
+
 def upload(wheel: Path, sdist: Path, version: str, target: dict = PYPI) -> None:
-    """Send the two named files to `target`; twine reads its token from the env."""
+    """Send the two named files to `target` with that index's own credential."""
     where, token = target['name'], target['token']
-    if not os.environ.get(token):
-        raise BlessError(
-            f'{token} is not set (TWINE_USERNAME defaults to __token__), and a '
-            f'{where} token is not a token for the other index')
     env = dict(os.environ)
     env.setdefault('TWINE_USERNAME', '__token__')
+    if env.get(token):
+        env['TWINE_PASSWORD'] = env[token]
+        source = f'the {token} environment variable'
+    else:
+        found = _pypirc_credentials(target)
+        if found is None:
+            raise BlessError(
+                f'{token} is not set and ~/.pypirc has no section whose '
+                f'repository is {target["pypirc"]}, so there is no credential '
+                f'for {where}.\nA {where} token is not a token for the other '
+                'index.  Either export it:\n'
+                f'  export {token}=pypi-...\n'
+                'or add a section to ~/.pypirc:\n'
+                f'  [{where.lower()}]\n'
+                f'  repository = {target["pypirc"]}\n'
+                '  username = __token__\n  password = pypi-...')
+        env['TWINE_USERNAME'], env['TWINE_PASSWORD'] = found
+        source = f'the ~/.pypirc section for {where}'
     command = [sys.executable, '-m', 'twine', 'upload']
     if target['upload']:
         command += ['--repository-url', target['upload']]
-    say('upload', f'{wheel.name} and {sdist.name} to {where}')
+    say('upload', f'{wheel.name} and {sdist.name} to {where} using {source}')
     result = run([*command, str(wheel), str(sdist)], env=env)
     if result.returncode != 0:
         if target['upload']:

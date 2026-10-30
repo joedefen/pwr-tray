@@ -175,7 +175,7 @@ It is deliberately not a release:
 
 | Property | Why |
 |---|---|
-| It uploads to `test.pypi.org` only, with its own token variable (`TWINE_TESTPYPI_PASSWORD`) | R2: the real upload stays a separate, deliberate act, and a TestPyPI token can never be spent on PyPI |
+| It uploads to `test.pypi.org` only, with its own credential (`TWINE_TESTPYPI_PASSWORD`, or the `~/.pypirc` section whose `repository` is `https://test.pypi.org/legacy/`) | R2: the real upload stays a separate, deliberate act, and a TestPyPI token can never be spent on PyPI |
 | It uploads `X.Y.Z.99.N`, not `X.Y.Z` | the version the tree is holding is never consumed; a broken rehearsal costs a suffix, not a release |
 | `N` is one past the highest suffix that base already has on TestPyPI, 0 the first time | uploads are immutable, so a rehearsal has to be repeatable without a bump |
 | The build comes from a copy of the tree with `__version__` rewritten | the working tree stays clean and honest; nothing is committed that was only true for a rehearsal |
@@ -259,10 +259,18 @@ meet (flat layout, `__version__` in the package, an inspector, a console script
 that answers `--version`).
 
 The two destinations are two small dictionaries (`PYPI`, `TESTPYPI`) holding
-the JSON endpoint, the upload URL and the name of the environment variable the
-token is read from. `upload()` and `verify_index()` take one of them, so no
-stage grows a `testpypi=True` flag and the real path cannot pick up a test
-default by accident.
+the JSON endpoint, the upload URL, the repository URL a `~/.pypirc` section has
+to name, and the environment variable the token is read from. `upload()` and
+`verify_index()` take one of them, so no stage grows a `testpypi=True` flag and
+the real path cannot pick up a test default by accident.
+
+`_pypirc_credentials()` reads `~/.pypirc` itself, because bless uploads by URL
+and twine only consults that file for a section name; a section counts when its
+`repository` is the index's upload URL. `upload()` then writes the resolved
+token into a *copy* of the environment as `TWINE_PASSWORD`, which is what keeps
+a PyPI token out of a TestPyPI upload when both are configured on one machine
+-- the earlier draft relied on twine picking up whichever variable happened to
+be set, and `TWINE_PASSWORD` would have won in the rehearsal.
 
 `check_index()` takes the parsed JSON as an optional argument so its refusal is
 testable without a network. It runs immediately after `preflight()` in every
