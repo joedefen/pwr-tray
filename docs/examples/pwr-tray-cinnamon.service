@@ -14,6 +14,9 @@ ConditionEnvironment=XDG_CURRENT_DESKTOP=X-Cinnamon
 PartOf=graphical-session.target
 After=graphical-session.target
 BindsTo=graphical-session.target
+# Give up on a genuine crash loop instead of respawning forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Requires=dbus.socket
 After=dbus.socket
 
@@ -30,6 +33,11 @@ ExecStartPre=/bin/sleep 1
 ExecStart=%h/.local/bin/pwr-tray -o --de cinnamon-x11
 Restart=always
 RestartSec=5
+# Exit codes 2 and 3 are permanent: 3 means another pwr-tray holds the lock,
+# 2 means the applet could not be constructed (unknown desktop, missing
+# resource, or a required command missing from PATH).  Restarting those only
+# repeats the same failure every 5 seconds, so let the unit fail instead.
+RestartPreventExitStatus=2 3
 StandardOutput=append:%h/.local/log/pwr-tray.log
 StandardError=append:%h/.local/log/pwr-tray.err.log
 

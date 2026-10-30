@@ -198,6 +198,8 @@ ConditionEnvironment=XDG_CURRENT_DESKTOP=sway
 PartOf=graphical-session.target
 After=graphical-session.target
 BindsTo=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Requires=dbus.socket
 After=dbus.socket
 
@@ -213,6 +215,7 @@ ExecStartPre=/bin/sleep 1
 ExecStart=%h/.local/bin/pwr-tray -o --de sway-wayland
 Restart=always
 RestartSec=5
+RestartPreventExitStatus=2 3
 StandardOutput=append:%h/.local/log/pwr-tray.log
 StandardError=append:%h/.local/log/pwr-tray.err.log
 
@@ -239,7 +242,7 @@ WantedBy=graphical-session.target
 
 * A `systemd --user` service is **not tied to a DE/WM**. With `WantedBy=graphical-session.target` it starts in *any* graphical session on your account, so on a machine where you switch between DEs it will also launch under the others (and, with `--de` forced, then act on the wrong session). To limit it, bind it to a WM-specific target or add a condition line such as `ConditionEnvironment=XDG_CURRENT_DESKTOP=sway`.
 * `systemd --user` does not inherit your session environment, so the variables above are set explicitly.
-* Do **not** enable the service *and* a DE/WM autostart for the same session. A second launch exits with "another pwr-tray is already running" instead of starting a duplicate, but with `Restart=always` systemd will keep respawning it into that same refusal (a restart loop, not a second icon). Pick one supervisor per session.
+* Do **not** enable the service *and* a DE/WM autostart for the same session. A second launch exits with "another pwr-tray is already running" instead of starting a duplicate. The units pass `RestartPreventExitStatus=2 3`, so that refusal (exit 3) and a failed startup (exit 2: unknown desktop, missing resource, or a required command absent from `PATH`) are reported as a unit failure rather than retried; only transient exits are restarted, and `StartLimitIntervalSec`/`StartLimitBurst` stop a crash loop after five attempts in a minute. Pick one supervisor per session.
 * `--replace` is for an intentional hand-over (`setsid pwr-tray --replace` from a terminal). Do **not** put it in a unit's `ExecStart`: two supervisors that both pass it would keep terminating each other's instance.
 * Keep the standard `PATH` entries -- `pwr-tray` calls `systemctl`, `loginctl`, `swayidle`, `swaymsg`, and friends from `/usr/bin`.
 

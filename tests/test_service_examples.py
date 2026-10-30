@@ -14,6 +14,12 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = sorted((ROOT / 'docs' / 'examples').glob('*.service'))
 COMMANDS_YAML = ROOT / 'pwr_tray' / 'resources' / 'commands.yaml'
+MAIN = ROOT / 'pwr_tray' / 'main.py'
+
+# The two exits that mean "this will fail the same way forever": 3 when
+# another instance holds the single-instance lock, 2 when the applet could
+# not be constructed at all.
+PERMANENT_EXIT_STATUSES = {'2', '3'}
 
 
 def parse_unit(path):
@@ -40,6 +46,15 @@ def parse_unit(path):
 
 def values(sections, section, key):
     return [value for found, value in sections.get(section, []) if found == key]
+
+
+def seconds(value):
+    """Parse a plain systemd time span such as ``60``, ``60s`` or ``1min``."""
+    match = re.fullmatch(
+        r'(\d+)(s|sec|second|seconds|m|min|minute|minutes)?', value.strip())
+    assert match, value
+    unit = match.group(2) or 's'
+    return int(match.group(1)) * (60 if unit.startswith('m') else 1)
 
 
 def desktop_keys():
@@ -86,6 +101,35 @@ def test_unit_has_required_directives(path):
     assert values(sections, 'Service', 'Restart') == ['always']
     assert values(sections, 'Service', 'ExecStart')
     assert values(sections, 'Install', 'WantedBy')
+
+
+@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
+def test_permanent_exit_statuses_are_not_restarted(path):
+    """A lock refusal (3) or a failed construction (2) must not respawn."""
+    sections = parse_unit(path)
+    prevent = values(sections, 'Service', 'RestartPreventExitStatus')
+    assert len(prevent) == 1
+    assert set(prevent[0].split()) >= PERMANENT_EXIT_STATUSES, prevent[0]
+
+
+@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
+def test_restart_rate_limit_can_actually_trip(path):
+    """RestartSec must not outpace the limiter, or the loop is endless."""
+    sections = parse_unit(path)
+    restart_sec = seconds(values(sections, 'Service', 'RestartSec')[0])
+    burst = int(values(sections, 'Unit', 'StartLimitBurst')[0])
+    interval = seconds(values(sections, 'Unit', 'StartLimitIntervalSec')[0])
+
+    assert restart_sec > 0
+    assert burst >= 2
+    # `burst` restarts spaced `RestartSec` apart have to fit in the window,
+    # otherwise systemd never reaches the burst and restarts forever.
+    assert restart_sec * burst <= interval
+
+
+def test_prevented_codes_match_the_exits_the_applet_uses():
+    exits = set(re.findall(r'sys\.exit\((\d+)\)', MAIN.read_text(encoding='utf-8')))
+    assert exits >= PERMANENT_EXIT_STATUSES, sorted(exits)
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)

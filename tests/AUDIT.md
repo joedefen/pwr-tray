@@ -12,19 +12,21 @@ This document describes the code as it stands. Nothing here is a changelog.
 ## 1. Verdict
 
 Sound, deliberately engineered, and small enough to keep sound. The suite is real
-(171 tests, 0.73 s) and the lint gate is clean; the architecture separates event
+(206 tests, 0.81 s) and the lint gate is clean; the architecture separates event
 detection from policy and both from presentation. Nothing found is a
 use-it-and-lose-data bug.
 
-What is genuinely unfinished falls into three groups:
+What is genuinely unfinished falls into two groups:
 
 1. **The published artifact is behind the repository and describes the wrong
    toolkit** ([F1](#f1--the-published-artifact-is-stale-and-misdescribes-the-package-p1)).
-2. **The shipped systemd units retry permanent failures forever**
-   ([F2](#f2--the-shipped-units-retry-permanent-failures-indefinitely-p1)).
-3. **Inhibition is decided by parsing human-readable command output and
+2. **Inhibition is decided by parsing human-readable command output and
    ignoring exit status**
    ([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1)).
+
+One P1 has since been closed: the shipped units retried permanent failures
+forever ([F2](#f2--the-shipped-units-retried-permanent-failures-indefinitely-p1--resolved));
+they now refuse to restart those exits and carry an explicit start limit.
 
 The rest is structural: one very large class
 ([F6](#f6--one-1115-line-class-holds-every-concern-p2)), an untested action layer
@@ -121,7 +123,7 @@ separately in `picks.json`
 
 ### 2.5 Tests, packaging, CI
 
-* 15 test modules, 171 tests, shared isolation in
+* 15 test modules, 206 tests, shared isolation in
   [`conftest.py`](../conftest.py:97): `HOME` is redirected to a temporary
   directory for every test, and modules that cannot be imported on the runner
   are replaced by permissive stubs.
@@ -151,7 +153,7 @@ $ python3 -m compileall -q pwr_tray conftest.py tests
 rc=0
 
 $ python3 -m pytest -q
-171 passed in 0.73s
+206 passed in 0.81s
 
 $ python -m pwr_tray.main --version
 pwr-tray 1.0.13
@@ -190,26 +192,35 @@ There is no release automation in CI: the packaging job builds and inspects
 distributions ([`.github/workflows/tests.yml:90`](../.github/workflows/tests.yml:90))
 but never uploads or verifies against the index.
 
-### F2 — The shipped units retry permanent failures indefinitely (P1)
+### F2 — The shipped units retried permanent failures indefinitely (P1) — resolved
 
-All ten example units use `Restart=always` with `RestartSec=5` and no
+All ten example units formerly used `Restart=always` with `RestartSec=5` and no
 `RestartPreventExitStatus` — e.g.
-[`pwr-tray-niri.service:30`](../docs/examples/pwr-tray-niri.service:30).
+[`pwr-tray-niri.service:30`](../docs/examples/pwr-tray-niri.service:30). That had
+two consequences.
 
 Two exit codes are permanent, not transient:
 
 * **3** — another instance holds the lock
-  ([main.py:1320](../pwr_tray/main.py:1320));
+  ([main.py:1353](../pwr_tray/main.py:1353));
 * **2** — the applet could not be constructed at all: unresolved desktop,
   missing resources, or a required command absent from `PATH`
-  ([main.py:1344](../pwr_tray/main.py:1344)).
+  ([main.py:1377](../pwr_tray/main.py:1377)).
 
-With `RestartSec=5` the unit restarts at half systemd's default rate-limit window
-(`StartLimitIntervalSec=10s`, `StartLimitBurst=5`), so the limiter is never
-tripped: two supervisors on one session, or a unit enabled on a desktop whose
-commands are missing, produce a silent 5-second loop forever. The README
-documents the duplicate-supervisor case as "a restart loop, not a second icon",
-so the behaviour is known — the units do not encode the policy that avoids it.
+And with `RestartSec=5` the unit restarted at half systemd's default rate-limit
+window (`StartLimitIntervalSec=10s`, `StartLimitBurst=5`), so the limiter was
+never tripped: two supervisors on one session, or a unit enabled on a desktop
+whose commands are missing, produced a silent 5-second loop forever.
+
+Every unit now carries `RestartPreventExitStatus=2 3`, so those cases surface as
+a failed unit with the applet's message in the unit log instead of a loop, and
+an explicit `StartLimitIntervalSec=60`/`StartLimitBurst=5` pair lets the limiter
+stop a genuine crash loop after five attempts in a minute. Both properties are
+asserted for every unit in
+[`tests/test_service_examples.py`](../tests/test_service_examples.py:91), which
+also checks the prevented codes against the exits
+[`main()`](../pwr_tray/main.py:1248) actually uses, so the units cannot silently
+diverge from the code again.
 
 ### F3 — Inhibition is decided by parsing a table and ignoring exit status (P1)
 
@@ -294,7 +305,7 @@ class, not between modules.
 ### F7 — There is no coverage measurement (P3)
 
 `[project.optional-dependencies]` lists `pytest` and `ruff`; CI runs both and no
-coverage tool, so "171 tests" is a count, not a statement about which lines run.
+coverage tool, so "206 tests" is a count, not a statement about which lines run.
 The monkeypatched action layer in [F4](#f4--the-action-layer-is-not-exercised-p2)
 is exactly the kind of gap a coverage report surfaces immediately.
 
@@ -331,7 +342,7 @@ session manager, tray host, and idle daemon cannot be asserted in CI.
   failures reach the terminal that launched the applet.
 * **Packaging discipline.** Wheel contents, metadata, and the installed console
   script are asserted in CI, not assumed; the sdist carries the resources.
-* **Test isolation and speed.** 171 tests in 0.73 s with `HOME` redirected, so
+* **Test isolation and speed.** 206 tests in 0.81 s with `HOME` redirected, so
   the suite cannot read or write a developer's real configuration.
 
 ---
@@ -362,7 +373,7 @@ Powerdevil configuration is the lower-risk choice; as a portable, inspectable
 policy layer with a tray, this is the more capable one.
 
 **Bottom line:** worth keeping and worth finishing — the remaining work is
-distribution hygiene (F1, F2), one defensive parse (F3), and test/ops polish
+distribution hygiene (F1), one defensive parse (F3), and test/ops polish
 (F4–F7), not redesign.
 
 ---
@@ -371,9 +382,10 @@ distribution hygiene (F1, F2), one defensive parse (F3), and test/ops polish
 
 1. **F1** — tag and publish 1.0.13, then add a CI release job that uploads the
    artifacts it already validates, so the index cannot drift from the tree again.
-2. **F2** — add `RestartPreventExitStatus=2 3` (and, for the deliberate
-   hand-over case, an explicit `StartLimitBurst`) to all ten units; assert the
-   directive in [`tests/test_service_examples.py`](../tests/test_service_examples.py:1).
+2. **F2 — done.** `RestartPreventExitStatus=2 3` and
+   `StartLimitIntervalSec=60`/`StartLimitBurst=5` are on all ten units, and
+   [`tests/test_service_examples.py`](../tests/test_service_examples.py:1)
+   asserts both.
 3. **F3** — log a warning when `systemd-inhibit`/`playerctl` exits non-zero or
    its output does not parse, and pin one real output sample per supported
    systemd version in a test. A D-Bus read of `BlockInhibited` is the durable
