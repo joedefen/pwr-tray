@@ -1,204 +1,401 @@
-# pwr-tray — Project Audit (re-baselined)
+# pwr-tray — audit
 
-**Baseline:** `v1.0.13` @ [`d6a05b8`](https://github.com/lagerfeuer/pwr-tray/commit/d6a05b8)
-**Supersedes:** the v1 audit taken at `v1.0.12` @ `b1b9735`
-**Date:** 2026-10-30
-**Scope:** every file under [`pwr_tray/`](../pwr_tray/), packaging (`pyproject.toml`), tests/CI, docs, and the shipped systemd units.
-**Method:** review of the current working tree, `git log` archaeology against the v1 audit, `ruff`, `compileall`, the pytest suite, and out-of-tree probes exercising `IniTool` and the CLI in a throwaway `$HOME`.
+**Package:** `pwr_tray` **1.0.13**
+**Tree audited:** working tree at `dd0011f`, 2026-10-30
+**Scope:** the whole repository — application modules, tests, packaging, CI, shipped docs/systemd units.
+**Question asked:** is this sound, and does it have value relative to the alternatives?
 
----
-
-## 1. Headline
-
-The v1 audit reported 16 findings (3 × P0, 7 × P1, 6 × P2). **All 15 findings that were actionable in-repo are now fixed**, each in a commit named after the finding, and each independently re-verified below rather than accepted on the strength of the commit message.
-
-The project is now in a materially different category from v1: it lints clean, compiles clean, has a 170-test suite that runs in under a second, has real CI (lint + matrix test + wheel packaging assertion), has lost two of its three runtime dependencies, and no longer ships an unrunnable wheel or uses `assert` for user-facing errors.
-
-What remains is a short list of *new* issues created by the rewrite (mostly concurrency semantics and stale docs).  The three test-coverage gaps that sat exactly on the former P0s were the sharpest item in the first draft of this section and are now closed (R2).
+This document describes the code as it stands. Nothing here is a changelog.
 
 ---
 
-## 2. Status of every v1 finding
+## 1. Verdict
 
-| # | v1 sev | v1 finding | Status | Fix commit | Re-verified at |
-|---|---|---|---|---|---|
-| 1 | P0 | Media inhibit (`playerctl`) is a no-op — `play_state` read but never assigned/applied | **Fixed** | [`e07f6f7`](https://github.com/lagerfeuer/pwr-tray/commit/e07f6f7) | [`../pwr_tray/main.py:608`](../pwr_tray/main.py:608), [`../pwr_tray/main.py:612`](../pwr_tray/main.py:612) |
-| 2 | P0 | `restore_picks()` restores lock/sleep on the wrong axes — "sleep timeouts are not restored across restarts" | **Fixed** | [`bcf5a9b`](https://github.com/lagerfeuer/pwr-tray/commit/bcf5a9b) | [`../pwr_tray/main.py:497`](../pwr_tray/main.py:497) |
-| 3 | P0 | `power_down = True` never powers down (`_get_down_state()` compared to the wrong string) | **Fixed** | [`dd8dbe5`](https://github.com/lagerfeuer/pwr-tray/commit/dd8dbe5) | [`../pwr_tray/main.py:746`](../pwr_tray/main.py:746) |
-| 4 | P1 | `HiBattery` / `LoBattery` do not inherit the user's `[Settings]` values | **Fixed** | [`664e624`](https://github.com/lagerfeuer/pwr-tray/commit/664e624) | [`../pwr_tray/IniTool.py:234`](../pwr_tray/IniTool.py:234) + probe |
-| 5 | P1 | A malformed list value yields `None` instead of the default | **Fixed** | [`11dab1c`](https://github.com/lagerfeuer/pwr-tray/commit/11dab1c) | [`../pwr_tray/IniTool.py:19`](../pwr_tray/IniTool.py:19), [`../pwr_tray/IniTool.py:249`](../pwr_tray/IniTool.py:249) |
-| 6 | P1 | Non-importable module shipped in the wheel (`PrtUtil`/`YamlDump` imported but not in the sdist) | **Fixed** — both files deleted, `flit` include list is explicit | [`5e57007`](https://github.com/lagerfeuer/pwr-tray/commit/5e57007) | [`../pyproject.toml:45`](../pyproject.toml:45), [`../tests/test_package_imports.py:1`](../tests/test_package_imports.py:1) |
-| 7 | P1 | `assert` used as user-facing error handling (vanishes under `python -O`) | **Fixed** — replaced by `PwrTrayError` subclasses | [`48f7b40`](https://github.com/lagerfeuer/pwr-tray/commit/48f7b40) | [`../pwr_tray/Errors.py:18`](../pwr_tray/Errors.py:18), [`../pwr_tray/main.py:145`](../pwr_tray/main.py:145) |
-| 8 | P1 | Restarted instances escape the single-instance killer (argv matching too naive) | **Fixed** — `argv` normalisation + `flock` backstop | [`024048e`](https://github.com/lagerfeuer/pwr-tray/commit/024048e) | [`../pwr_tray/Utils.py:186`](../pwr_tray/Utils.py:186), [`../pwr_tray/Utils.py:289`](../pwr_tray/Utils.py:289) |
-| 9 | P1 | Orphaned `dbus-monitor` child per restart | **Fixed** — terminate + reap, `atexit` registered | [`b220ca5`](https://github.com/lagerfeuer/pwr-tray/commit/b220ca5) | [`../pwr_tray/main.py:1121`](../pwr_tray/main.py:1121), [`../pwr_tray/main.py:1115`](../pwr_tray/main.py:1115) |
-| 10 | P1 | Icon loading depends on a global `os.chdir` (breaks on any CWD change) | **Fixed** — absolute paths, no `chdir()` anywhere in the package | [`c269158`](https://github.com/lagerfeuer/pwr-tray/commit/c269158) | [`../pwr_tray/main.py:163`](../pwr_tray/main.py:163), [`../pwr_tray/main.py:220`](../pwr_tray/main.py:220) |
-| 11 | P2 | Polling architecture: fixed 2 s tick re-spawns `playerctl`, `loginctl`, battery reads | **Fixed** — event sources + dirty-flag gating | [`2569df5`](https://github.com/lagerfeuer/pwr-tray/commit/2569df5) | [`../pwr_tray/PowerEvents.py:47`](../pwr_tray/PowerEvents.py:47), [`../pwr_tray/main.py:693`](../pwr_tray/main.py:693) |
-| 12 | P2 | Module-level D-Bus dependency (`pydbus` imported at import time → app unimportable without it) | **Fixed** — `pydbus` dropped, `QtDBus` imported lazily | [`40c5c00`](https://github.com/lagerfeuer/pwr-tray/commit/40c5c00) | [`../pwr_tray/main.py:1169`](../pwr_tray/main.py:1169), [`../pyproject.toml:26`](../pyproject.toml:26) |
-| 13 | P2 | Metadata drift (description said GTK, unversioned `requires-python`, `importlib-metadata` for a 3.8 shim) | **Fixed** — PyQt5, `>=3.11`, shim gone | [`dab3341`](https://github.com/lagerfeuer/pwr-tray/commit/dab3341) | [`../pyproject.toml:11`](../pyproject.toml:11), [`../pyproject.toml:19`](../pyproject.toml:19) |
-| 14 | P2 | Config-path robustness (missing/!dirty `config.ini` could raise or silently mis-save) | **Fixed** — never raises, full-replace semantics, fallback | [`89201ae`](https://github.com/lagerfeuer/pwr-tray/commit/89201ae) | [`../pwr_tray/IniTool.py:191`](../pwr_tray/IniTool.py:191) |
-| 15 | P2 | Project hygiene: no `.gitignore` for caches, no tests, no CI, dead resource files (`SetA/B/C`) | **Fixed** — caches ignored, 14 test files, 3-job CI, dead files removed | [`d6a05b8`](https://github.com/lagerfeuer/pwr-tray/commit/d6a05b8) | [`../.github/workflows/tests.yml:1`](../.github/workflows/tests.yml:1), [`../.gitignore:1`](../.gitignore:1) |
+Sound, deliberately engineered, and small enough to keep sound. The suite is real
+(171 tests, 0.73 s) and the lint gate is clean; the architecture separates event
+detection from policy and both from presentation. Nothing found is a
+use-it-and-lose-data bug.
 
-Nothing from v1 was deferred, and nothing regressed visibly.
+What is genuinely unfinished falls into three groups:
+
+1. **The published artifact is behind the repository and describes the wrong
+   toolkit** ([F1](#f1--the-published-artifact-is-stale-and-misdescribes-the-package-p1)).
+2. **The shipped systemd units retry permanent failures forever**
+   ([F2](#f2--the-shipped-units-retry-permanent-failures-indefinitely-p1)).
+3. **Inhibition is decided by parsing human-readable command output and
+   ignoring exit status**
+   ([F3](#f3--inhibition-is-decided-by-parsing-a-table-and-ignoring-exit-status-p1)).
+
+The rest is structural: one very large class
+([F6](#f6--one-1115-line-class-holds-every-concern-p2)), an untested action layer
+([F4](#f4--the-action-layer-is-not-exercised-p2)), a log that was never rotated
+([F5](#f5--debuglog-is-never-rotated-p2), since capped), and no coverage
+measurement ([F7](#f7--there-is-no-coverage-measurement-p3)).
 
 ---
 
-## 3. Verification transcript
+## 2. What the program is and how a run works
 
-Gates (all run in the working tree before this document was written):
+A PyQt5 tray applet that owns idle policy (lock, then optionally sleep/power off),
+shows why the machine is inhibited, and can inhibit locking/sleeping on request.
+Policy is per battery tier; behaviour is per desktop, chosen from a YAML table.
+
+### 2.1 Modules
+
+| File | Lines | Responsibility |
+| --- | ---: | --- |
+| [`pwr_tray/main.py`](../pwr_tray/main.py:1) | 1,361 | `PwrTray` class (state machine, menu, icons, actions), DE detection, tray waiting, lock takeover, `main()` |
+| [`pwr_tray/PowerEvents.py`](../pwr_tray/PowerEvents.py:54) | 296 | Event sources: two long-lived `dbus-monitor` children (system bus, session bus) plus a config-file watcher |
+| [`pwr_tray/IniTool.py`](../pwr_tray/IniTool.py:49) | 336 | `config.ini` parsing, tier inheritance, defaults, list parsing, change detection |
+| [`pwr_tray/Utils.py`](../pwr_tray/Utils.py:1) | 370 | Console capture, logging, process discovery/killing, `flock` single-instance lock |
+| [`pwr_tray/SwayIdleMgr.py`](../pwr_tray/SwayIdleMgr.py:19) | 123 | Builds and supervises the `swayidle` command line on Wayland |
+| [`pwr_tray/Errors.py`](../pwr_tray/Errors.py:1) | 98 | Three user-facing exceptions with actionable messages |
+| `pwr_tray/resources/` | — | `commands.yaml` plus 9 SVG/PNG icons, installed at first run |
+
+### 2.2 Startup sequence
+
+[`main()`](../pwr_tray/main.py:1248) parses arguments, short-circuits the
+non-GUI flags (`--list-des`, `--edit-config`, `--follow-log`), then:
+
+1. constructs [`IniTool`](../pwr_tray/IniTool.py:49), which creates
+   `~/.config/pwr-tray/config.ini` and copies the resources if missing;
+2. registers the log path and calls
+   [`Utils.capture_console()`](../pwr_tray/Utils.py:49) *before* the first
+   `prt()`, because `prt()` may redirect fd 2 into `debug.log` and would
+   otherwise swallow startup errors;
+3. takes the `flock` through
+   [`acquire_lock_or_take_over()`](../pwr_tray/main.py:1221) and registers
+   `atexit` handlers for the lock and for
+   [`PwrTray.goodbye`](../pwr_tray/main.py:1114);
+4. waits up to a bounded time for a StatusNotifierWatcher via
+   [`wait_for_tray()`](../pwr_tray/main.py:1150) — no watcher is a warning, not
+   an error;
+5. builds [`PwrTray`](../pwr_tray/main.py:189), where DE detection
+   ([`detect_de`](../pwr_tray/main.py:104)) and resource/command checks can fail
+   with a typed error, reported to both the log and the console and exiting 2;
+6. enters the Qt event loop.
+
+The lock is taken **before** anything destructive and is the only path to killing
+another instance, which is opt-in via `--replace` and re-validates the recorded
+pid's command line before signalling it
+([`PyKill.kill_pid`](../pwr_tray/Utils.py:264)).
+
+### 2.3 Runtime model
+
+* **Timer:** one 100 ms `QTimer`
+  ([`main.py:318`](../pwr_tray/main.py:318)) whose interval is recomputed each
+  tick; `poll_100ms` forces the fast cadence after something changed.
+* **Cheap tick:** [`on_timeout()`](../pwr_tray/main.py:690) only acts on dirty
+  flags — `_inhibit_dirty`, `_battery_dirty`, `_config_dirty`. When an event
+  source is unavailable for an input, that input is marked dirty every tick, so
+  the same code degrades to the old polling behaviour per input rather than
+  globally.
+* **Slow branch:** every `loop_sample` ticks (15; 1 under `--quick`), it reads
+  idle time and runs the state machine: `LockOnly`, `SleepAfterLock`,
+  `Presentation`, `NoSleep`, with `power_down` selecting
+  [`poweroff()`](../pwr_tray/main.py:1034) over
+  [`suspend()`](../pwr_tray/main.py:1012)
+  ([main.py:755](../pwr_tray/main.py:755)).
+* **Event sources:** [`PowerEvents`](../pwr_tray/PowerEvents.py:54) watches logind
+  inhibitor properties and `PrepareForSleep`, UPower AC/device changes, MPRIS
+  playback status, and the config file. Monitors are drained through
+  `QSocketNotifier`s, lines are classified by object path
+  ([`_context_for`](../pwr_tray/PowerEvents.py:250)), and the whole thing is
+  stopped idempotently on exit.
+* **Inhibition:** [`check_inhibited()`](../pwr_tray/main.py:580) reads
+  `systemd-inhibit --mode=block` and `playerctl status`; a real `block` inhibitor
+  wins over media playback, and the kind of inhibition decides the icon and
+  whether the `swayidle` command keeps its timeouts.
+
+### 2.4 Configuration
+
+`[Settings]` supplies values to `[HiBattery]`/`[LoBattery]`, and an explicit
+per-tier key overrides the inherited one
+([`_tier_base`](../pwr_tray/IniTool.py:220),
+[`_apply_section`](../pwr_tray/IniTool.py:234)). Lists are validated by
+[`to_array()`](../pwr_tray/IniTool.py:19); malformed input falls back to the
+default instead of raising, and the user-facing rotate state is persisted
+separately in `picks.json`
+([`save_picks`](../pwr_tray/main.py:432),
+[`restore_picks`](../pwr_tray/main.py:461)).
+
+### 2.5 Tests, packaging, CI
+
+* 15 test modules, 171 tests, shared isolation in
+  [`conftest.py`](../conftest.py:97): `HOME` is redirected to a temporary
+  directory for every test, and modules that cannot be imported on the runner
+  are replaced by permissive stubs.
+* Gate-level tests rather than smoke tests: config inheritance, degenerate
+  `config.ini` and `picks.json`, icon loading, DE detection failures, event-line
+  classification, dirty-flag coalescing, single-instance behaviour, tray waiting,
+  and the shipped unit files are all asserted.
+* Packaging is flit; `pyproject.toml` declares Python >= 3.11, three runtime
+  dependencies (`psutil`, `PyQt5`, `ruamel.yaml`), and the resources directory in
+  the sdist.
+* CI ([`.github/workflows/tests.yml`](../.github/workflows/tests.yml:1)) runs ruff,
+  `compileall`, and pytest on 3.11/3.12/3.13, then builds sdist+wheel, asserts the
+  wheel's metadata and contents, installs it into a clean virtualenv, and runs
+  `--version` and `--list-des` from the installed console script.
+
+---
+
+## 3. Evidence
+
+Run in this tree:
 
 ```
 $ ruff check .
 All checks passed!
 
-$ python3 -m compileall -q pwr_tray
-COMPILE_OK
+$ python3 -m compileall -q pwr_tray conftest.py tests
+rc=0
 
 $ python3 -m pytest -q
-171 passed in 0.75s
+171 passed in 0.73s
+
+$ python -m pwr_tray.main --version
+pwr-tray 1.0.13
+
+$ python -m pwr_tray.main --list-des
+desktops known to pwr-tray (from built-in commands.yaml):
+  cinnamon-x11      requires: cinnamon-session-quit [!] systemctl xprintidle xset
+  hyprland-wayland  requires: hyprctl [!] swayidle swaylock systemctl
+  ...
+  [!] = not found on $PATH (install it before using that desktop)
+force a desktop with: pwr-tray --de NAME
 ```
 
-Behavioural probes, run with `HOME`/`XDG_CONFIG_HOME` pointed at a throwaway directory so the live `~/.config/pwr-tray` was never touched:
-
-* **Inheritance (v1 #4).** With `[Settings] lock=[3,7] sleep=[9,11] editor=my-edit` and a `[HiBattery]` section that sets only `lock`:
-  `HiBattery lock=[4,5] sleep=[9,11] editor='my-edit'` — the unset keys now inherit instead of falling back to the built-in table.
-* **Malformed list (v1 #5).** `lock_min_list = not-json` → `[15, 30]` (the declared default), not `None`, and the applet stays usable.
-* **Per-tier default (R3).** With `[Settings]` containing only `gui_editor = my-edit`, `LoBattery` resolves to `power_down=True lock=[1, 1] sleep=[1, 1]`; adding `power_down = False` to `[Settings]` makes `LoBattery.power_down` `False` again, and the generated file (which contains a `[LoBattery]` section) still yields `True`.
-* **Deleted config (v1 #14).** `os.remove(config.ini)` then construct → the applet still comes up and rewrites a valid file.
-* **CLI.** `pwr-tray --version` → version string matching `pyproject.toml`; `pwr-tray --list-des` renders the full table including `sway-wayland`, `niri-wayland`, `kde-wayland`; `--help` exits 0.
+Static totals: 5,330 lines of Python across 7 modules, `conftest.py`, and 15 test
+modules. [`main.py`](../pwr_tray/main.py:1) holds 66 functions, 60 of them methods
+of [`PwrTray`](../pwr_tray/main.py:51).
 
 ---
 
-## 4. Residual findings in the current tree
+## 4. Findings
 
-These are new, introduced by (or exposed by) the rewrite. Nothing here is a P0.
+Severity: **P1** = will misbehave for a real user; **P2** = maintenance or
+diagnostic cost; **P3** = polish.
 
-### R1 — P1 — Kill-then-lock ordering turns "two icons" into "silently killed instance", and can restart-war under systemd — **Fixed**
+### F1 — The published artifact is stale and misdescribes the package (P1)
 
-[`../pwr_tray/main.py:1327`](../pwr_tray/main.py:1327) ran `PyKill().kill_loop('pwr-tray')` *before* the lock was acquired, so a second launch killed the incumbent instead of refusing. With `Restart=always` in the shipped units ([`../docs/examples/pwr-tray-niri.service:1`](../docs/examples/pwr-tray-niri.service:1) and the README examples), two supervisors that disagreed about who should run could ping-pong forever.
+`pyproject.toml` says `version = "1.0.13"` and
+"*A PyQt5 tray applet for power management on i3, sway, niri, Hyprland, and
+KDE*". The latest artifact on PyPI is **1.0.12**, whose summary still reads
+"*A GTK tray applet for power management for i3/sway/KDE*" — wrong toolkit, no
+niri, no Hyprland. Anyone installing from the index therefore receives a package
+whose own metadata misdescribes it, and whose code predates the current test
+suite. The repository is the source of truth and the index is not.
 
-**Fix.** The lock is now taken first, in [`acquire_lock_or_take_over()`](../pwr_tray/main.py:1277): a failed acquire is a refusal (`exit 3`, message naming the holder and `--replace`), and nothing is signalled. Killing is the *takeover* path and is opt-in via `--replace`; even then the recorded pid is signalled only if its command line still names `pwr-tray` ([`PyKill.kill_pid()`](../pwr_tray/Utils.py:275)), and `restart_self()` strips `--replace` from the arguments it passes on. The unconditional `kill_loop()`/`_kill_script()` pair is gone.
+There is no release automation in CI: the packaging job builds and inspects
+distributions ([`.github/workflows/tests.yml:90`](../.github/workflows/tests.yml:90))
+but never uploads or verifies against the index.
 
-**Re-verified.** `tests/test_single_instance.py` covers the refusal, the guarded takeover, a recycled/foreign pid and the main()-level exit-3-without-signalling path; an out-of-process probe (real `flock` held by a child whose argv is `pwr_tray/main.py`) confirmed a plain start refuses with the holder alive, while `--replace` terminates it (exit `-15`) and takes the lock; a holder whose argv does not name `pwr-tray` is left alone. README options table, the `setsid` restart line and the systemd caveats were updated to match.
+### F2 — The shipped units retry permanent failures indefinitely (P1)
 
-### R2 — P1 — The three former P0 behaviours had no regression test — **Fixed**
+All ten example units use `Restart=always` with `RestartSec=5` and no
+`RestartPreventExitStatus` — e.g.
+[`pwr-tray-niri.service:30`](../docs/examples/pwr-tray-niri.service:30).
 
-The fixes for v1 #1/#2/#3 were verified by reading the code and by the author's manual testing, but the suite did not lock them down: `check_inhibited()` was monkeypatched away in [`../tests/test_power_events.py`](../tests/test_power_events.py), [`SwayIdleManager.build_cmd()`](../pwr_tray/SwayIdleMgr.py:58) had no test at all, and nothing exercised the `_get_down_state() == 'PowerDown'` branch ([`../pwr_tray/main.py:746`](../pwr_tray/main.py:746)).  The suite stayed green with all three reverted.
+Two exit codes are permanent, not transient:
 
-**Fix.** [`../tests/test_media_inhibit.py`](../tests/test_media_inhibit.py) drives the real [`check_inhibited()`](../pwr_tray/main.py:573) and [`build_cmd()`](../pwr_tray/SwayIdleMgr.py:58) against a fake `subprocess` and a bare `PwrTray`:
+* **3** — another instance holds the lock
+  ([main.py:1320](../pwr_tray/main.py:1320));
+* **2** — the applet could not be constructed at all: unresolved desktop,
+  missing resources, or a required command absent from `PATH`
+  ([main.py:1344](../pwr_tray/main.py:1344)).
 
-* `playerctl status == playing` becomes `inhibited == 'player'` — asserted through `was_inhibited`, the PlayingNow icon (index 4 of `svg_info.bases`), the swayidle restart and `poll_100ms` ([`../pwr_tray/main.py:616`](../pwr_tray/main.py:616));
-* a real logind `block` row keeps priority over the player (StopSign, index 7), an `xfce4-power-man` / `org_kde_powerde` power-key row does not, and disabling `playerctl` in the menu stops the query entirely;
-* [`SwayIdleManager.build_cmd()`](../pwr_tray/SwayIdleMgr.py:58) emits **no** `timeout` clauses (and no `after-resume`) while `was_inhibited == 'player'`, and restores `timeout 900 'swaylock'` / `timeout 1200 'systemctl suspend'` when playback stops — including the "did the command change" return value that decides whether swayidle is replaced.
+With `RestartSec=5` the unit restarts at half systemd's default rate-limit window
+(`StartLimitIntervalSec=10s`, `StartLimitBurst=5`), so the limiter is never
+tripped: two supervisors on one session, or a unit enabled on a desktop whose
+commands are missing, produce a silent 5-second loop forever. The README
+documents the duplicate-supervisor case as "a restart loop, not a second icon",
+so the behaviour is known — the units do not encode the policy that avoids it.
 
-[`../tests/test_power_events.py`](../tests/test_power_events.py) gains a harness that crosses the once-per-sample branch with `power_down` True and False, asserting `poweroff()` and `suspend()` respectively through [`_get_down_state()`](../pwr_tray/main.py:525).
+### F3 — Inhibition is decided by parsing a table and ignoring exit status (P1)
 
-**Re-verified by mutation.** Reverting the three fixes (`inhibited = inhibited`, `media_playing = False`, `_get_down_state()` returning a fixed `'Suspend'`) fails six of the new tests; nothing else in the tree changed.  `ruff check .` and `pytest -q` (170 passed) are clean.
+[`check_inhibited()`](../pwr_tray/main.py:580) runs
+`systemd-inhibit --no-pager --mode=block` ([main.py:583](../pwr_tray/main.py:583))
+and decides from the **human-readable** listing: a line containing `block`,
+`count == 1` skipped when it belongs to `xfce4-power-man`, `org_kde_powerde`, or
+Niri's `handle-power-key`, and anything from row 2 onward counting as an
+inhibitor. `result.returncode` is never consulted (it is checked only in
+[`run_command`](../pwr_tray/main.py:940) and
+[`blank_primitive`](../pwr_tray/main.py:1050)), and the same is true of
+`playerctl status` ([main.py:615](../pwr_tray/main.py:615)).
 
-### R3 — P2 — Per-tier defaults were unreachable once a section was absent — **Fixed**
+Consequences if the output format, column layout, locale, or the tool's
+availability change: the parse degrades silently to "not inhibited", which fails
+open toward locking and suspending — including while media plays or while another
+application holds an inhibitor. The allow-list is also the only thing preventing
+a desktop's own power daemon from being read as a user inhibitor, and it is
+matched by substring against a translated field.
 
-[`../pwr_tray/IniTool.py:52`](../pwr_tray/IniTool.py:52) declares per-tier defaults (e.g. `LoBattery.power_down = True`), but the old parser made a tier inherit the *user's* `[Settings]` whenever it was present or absent — the correct fix for v1 #4, but it left two competing notions of "default": with only `[Settings]` in the file, `LoBattery.power_down` resolved to `False` even though the table said `True`, so the declaration was documentation that nothing honoured.
+The parsing is a deliberate trade (no D-Bus round trip, no extra binding), but it
+is unguarded: nothing logs when a call fails, and no test pins the expected
+format.
 
-**Fix.** "Inherit from `[Settings]`" now means the values the user actually *wrote* there. [`IniTool._apply_section()`](../pwr_tray/IniTool.py:235) returns the set of keys whose file value was accepted (a rejected value counts as absent), and [`IniTool._tier_base()`](../pwr_tray/IniTool.py:221) starts each tier from the parsed `[Settings]` and then substitutes the tier's own `self.defaults[selector]` entry for every key the user did not set. The precedence is therefore: tier value > written `[Settings]` value > tier default > built-in `[Settings]` default. v1 #4 is untouched, because any value the user wrote in `[Settings]` still reaches both tiers.
+### F4 — The action layer is not exercised (P2)
 
-**Re-verified.** Four new tests in [`../tests/test_config_inherit.py`](../tests/test_config_inherit.py) pin the cases that decide the rule: absent from both (tier default wins), explicitly written in `[Settings]` (user wins), invalid in `[Settings]` (counts as absent), and an empty tier section (its table still applies). With `_tier_base()` mutated back to a plain copy of `[Settings]`, four of the new tests fail while the two older inheritance tests stay green — so the new rule is pinned without weakening v1 #4. Probe: `[Settings]` containing only `gui_editor = my-edit` now yields `LoBattery power_down=True lock=[1, 1] sleep=[1, 1]`, while `[Settings] power_down = False` yields `LoBattery power_down=False`. `ruff check .` and `pytest -q` (170 passed) are clean.
+Policy decisions are tested; the commands they trigger are not. In
+[`tests/test_power_events.py:253`](../tests/test_power_events.py:253) `poweroff`,
+`lock_screen` and `blank_primitive` are replaced by recording lambdas; the same
+is true of `build_menu` ([`tests/test_power_events.py:180`](../tests/test_power_events.py:180)).
+Real command construction in [`suspend`](../pwr_tray/main.py:1012),
+[`poweroff`](../pwr_tray/main.py:1034),
+[`lock_screen`](../pwr_tray/main.py:1044),
+[`blank_primitive`](../pwr_tray/main.py:1050),
+[`run_command`](../pwr_tray/main.py:940) and
+[`edit_config`](../pwr_tray/main.py:999) has no test at all.
 
-### R4 — P2 — Two README statements are now false — **Fixed**
+This is where the desktop-specific knowledge lives — `swaylock` arguments, `swaymsg
+dpms off` vs `hyprctl dispatch dpms off` vs `niri msg action power-off-monitors`,
+`xset dpms force off`, `loginctl lock-session`, `systemctl suspend` — and it is
+verified only by running the applet. `swaymsg`/`hyprctl` failures are logged but
+not distinguished from success at the policy level.
 
-* [`../README.md:156`](../README.md:156): "`pwr-tray` changes directory to `~/.config/pwr-tray`" — the `chdir` was removed in `c269158`; paths are absolute now. Only stale comments ([`../pwr_tray/main.py:166`](../pwr_tray/main.py:166), [`../pwr_tray/main.py:963`](../pwr_tray/main.py:963)) reference the old behaviour.
-* [`../README.md:239`](../README.md:239): "or you will get two tray icons" — inaccurate after R1: the newer instance kills the older one instead of coexisting.
+### F5 — `debug.log` is never rotated (P2) — resolved
 
-Documentation that contradicts the implementation is worse than no documentation, because it is the only thing a new user reads before filing a bug.
+At the time of the audit [`IniTool.log_path`](../pwr_tray/IniTool.py:75) was the
+only reference: nothing truncated, rotated, or capped it, so a long-lived
+session with `debug_mode` on grew the file without bound.
 
-**Fix.** The false line is replaced by a statement the code does support: edits to `config.ini` are picked up while the applet runs (`QFileSystemWatcher` → `_config_dirty` → [`reconfig()`](../pwr_tray/main.py:419)), so no restart is needed. The systemd caveat now describes what a second launch actually does — exit with "another pwr-tray is already running", which under `Restart=always` becomes a restart loop rather than a second icon. The same pass removed implementation detail a user cannot act on: the `(status 3)` exit code, "holds the single-instance lock", "after confirming its command line is `pwr-tray`", the note that the example units are checked by the test suite, and `pgrep`/`pkill` from the `PATH` list. The three stale `chdir()` comments ([`../pwr_tray/main.py:166`](../pwr_tray/main.py:166), [`../pwr_tray/main.py:218`](../pwr_tray/main.py:218), [`../pwr_tray/main.py:963`](../pwr_tray/main.py:963)) were reworded to state the absolute-path rule without narrating the removed `chdir`.
+[`Utils.rotate_log()`](../pwr_tray/Utils.py:40) now caps the log at 2 MiB
+(`prt_kb = 2048`) and keeps exactly one rotated copy: when the file that `prt()`
+is appending to exceeds the cap, it is `os.replace()`d onto `debug.log.old`
+(any previous `.old` is discarded) and the reopen creates a fresh `debug.log`.
+The rotation only fires when stdout is not a tty, so a `-o/--stdout` run never
+rotates a file it is not writing. `-f/--follow-log` still works because
+`tail -F` reopens the log by name.
 
-**Re-verified.** [`test_readme_matches_the_applet_on_chdir_and_single_instance()`](../tests/test_repo_hygiene.py:37) pins both halves: the two phrases must stay out of the README, and `pwr_tray/` must contain no `os.chdir`. The replacement claims were checked against [`update_config()`](../pwr_tray/IniTool.py:191), [`_watch_config()`](../pwr_tray/PowerEvents.py:244) and [`acquire_lock_or_take_over()`](../pwr_tray/main.py:1279).
+The same log is now reachable from the tray: **📜 Open Applet Log** runs
+`less --follow-name +F debug.log [debug.log.old]` inside a terminal window
+(the applet has no tty of its own, so a terminal prefix is taken from the
+`log_viewer` setting or auto-detected).
 
-### R5 — P3 — Resume detection is a third `dbus-monitor` child, still polled per tick — **Fixed**
+What remains outside the applet's control: the shipped units append
+`StandardOutput`/`StandardError` to files that systemd does not rotate, so a
+deployment that redirects there still needs its own logrotate/logrotate-style
+handling.
 
-[`../pwr_tray/main.py:1106`](../pwr_tray/main.py:1106) spawned its own `dbus-monitor` for `PrepareForSleep`, and [`../pwr_tray/main.py:1142`](../pwr_tray/main.py:1142) read it with a non-blocking `os.read` on **every** tick ([`../pwr_tray/main.py:698`](../pwr_tray/main.py:698), unconditional, outside the dirty-flag gating). `PowerEvents` already owned a system-bus monitor with a `QSocketNotifier` and already parsed `login1`.
+### F6 — One 1,115-line class holds every concern (P2)
 
-**Fix.** The system-bus `dbus-monitor` now takes a second match rule, [`PREPARE_FOR_SLEEP`](../pwr_tray/PowerEvents.py:49); dbus-monitor ORs multiple expressions given as separate arguments. [`_context_for()`](../pwr_tray/PowerEvents.py:251) classifies a `member=PrepareForSleep` header as `login1_sleep`, and [`_scan_line()`](../pwr_tray/PowerEvents.py:202) calls the new `on_resume` callback only for the `boolean false` (resume) half. The third child, the per-tick `os.read`, and `_start/_stop/_check_resume` are gone; [`PwrTray._on_resume_event()`](../pwr_tray/main.py:378) sets `poll_100ms` and schedules the same 100 ms fast poll as the other events. `restart_self()` now only has to stop `PowerEvents`.
+[`PwrTray`](../pwr_tray/main.py:51) is 60 methods covering DE detection helpers,
+config access, icon selection, menu construction, inhibit evaluation, the idle
+state machine, `swayidle` lifecycle, and every user action. The tests cope by
+building instances without running `__init__`
+([`tests/test_power_events.py:151`](../tests/test_power_events.py:151) —
+`object.__new__(PwrTray)` plus hand-assigned attributes), which means the
+constructor's own wiring is only covered indirectly.
 
-**Re-verified.** [`../tests/test_resume_monitor.py`](../tests/test_resume_monitor.py) pins both halves of the signal, asserts the system-monitor command carries both match rules, and checks `restart_self()` stops the event source before spawning; [`test_resume_event_forces_the_slow_branch()`](../tests/test_power_events.py:305) covers the applet callback. `ruff check .` and `pytest -q` (171 passed) are clean.
+The seams that already exist (`PowerEvents`, `SwayIdleMgr`, `IniTool`,
+`Errors`) show the intended decomposition; the remaining coupling is inside the
+class, not between modules.
 
-### R6 — P3 — Small CLI blemishes — **Fixed**
+### F7 — There is no coverage measurement (P3)
 
-* [`../pwr_tray/main.py:1291`](../pwr_tray/main.py:1291): `--help` showed `-q, --quick ... (1m lock + 1m sleep` — the closing paren was missing. Now `quick mode (1m lock + 1m sleep)`.
-* `--version` printed `main.py 1.0.13` when invoked as `python -m pwr_tray.main` because it formatted `%(prog)s`. The parser now fixes `prog='pwr-tray'` and the version string names `pwr-tray` explicitly, so both entry points agree.
+`[project.optional-dependencies]` lists `pytest` and `ruff`; CI runs both and no
+coverage tool, so "171 tests" is a count, not a statement about which lines run.
+The monkeypatched action layer in [F4](#f4--the-action-layer-is-not-exercised-p2)
+is exactly the kind of gap a coverage report surfaces immediately.
 
-**Re-verified.** `.venv/bin/python -m pwr_tray.main --version` prints `pwr-tray 1.0.13`; `--help` shows the closed paren.
+### F8 — The units are syntax-checked, not field-tested (P3)
 
-### R7 — P3 — Dead code left behind by the rewrite — **Fixed**
-
-* [`../pwr_tray/main.py:215`](../pwr_tray/main.py:215): `self.here_dir` was assigned and never read. Deleted.
-* [`../pwr_tray/Utils.py:173`](../pwr_tray/Utils.py:173): `x_restart_self()` was unused (superseded by `PwrTray.restart_self`). Deleted, along with its `subprocess` import.
-* [`../pwr_tray/IniTool.py:79`](../pwr_tray/IniTool.py:79): `self.section_params` was unused. Deleted.
-
-Three `ruff`-invisible leftovers, each a one-line deletion; the `contextlib` import in [`../pwr_tray/main.py`](../pwr_tray/main.py) that only the deleted resume stopper used went with them.
-
-### R8 — P2 — `PwrTray.__init__` crashed on start-up: `ensure_resources()` called with one argument — **Fixed**
-
-[`../pwr_tray/main.py:223`](../pwr_tray/main.py:223) called `self.ensure_resources(self.svgs)` (and `ensure_resources(['lockpaper.png'])`), but the method is `ensure_resources(folder, resources)`. Every start therefore died with `TypeError: ensure_resources() missing 1 required positional argument: 'resources'` — after the lock had been taken and the tray wait completed, so the applet (and `./runner`) simply exited and nothing appeared in the tray. The suite missed it because the icon helpers are tested directly while `__init__` itself is never constructed under pytest.
-
-**Fix.** Both call sites pass `ini_tool.folder`, and [`../tests/test_icon_loading.py`](../tests/test_icon_loading.py) now parses `main.py` and asserts that every `ensure_resources()` call site passes exactly `(ini_tool.folder, resources)`.
+[`tests/test_service_examples.py`](../tests/test_service_examples.py:1) validates
+structure, required directives, and that each unit's `--de` key exists in
+`commands.yaml`. The README states plainly that the units have not been run on
+every desktop, and that is the honest position: unit correctness against a live
+session manager, tray host, and idle daemon cannot be asserted in CI.
 
 ---
 
-## 5. What is genuinely good (unchanged, now better supported)
+## 5. What is done well
 
-* **The UX model is the product.** A tri-state master mode (Normal / Presentation / NoSleep), per-tier battery profiles, the inhibitor count rendered *in the icon*, and the click-to-see-which-inhibitor behaviour are a coherent answer to "why is my laptop not sleeping", which is the question that actually generates support threads. Nothing else in the table below combines them.
-* **One UI across nine desktops.** i3/X11, sway, Hyprland, niri, KDE (X11 + Wayland), XFCE, Cinnamon, MATE, LXQt via a declarative [`commands.yaml`](../pwr_tray/commands.yaml) plus `--de` overrides and `--list-des`. This remains the single strongest argument for using it over a compositor-native script.
-* **Error reporting is now actionable.** [`../pwr_tray/Errors.py:31`](../pwr_tray/Errors.py:31) and friends produce messages naming the missing command, the install hint, and the `--list-des`/`--de NAME` escape hatch, instead of an `AssertionError` that disappears under `-O`.
-* **Console capture survives log redirection.** [`../pwr_tray/Utils.py:50`](../pwr_tray/Utils.py:50) keeps a duplicate of fd 2 so errors reach the terminal that launched the applet, not just the journal.
-* **The test suite is honest.** Autouse isolated-`HOME` fixture, permissive stubs so the suite runs without PyQt5, and regression tests that cite their audit finding in the docstring ([`../tests/test_restore_picks.py:1`](../tests/test_restore_picks.py:1)).  The three behaviours the whole rewrite existed to fix — media inhibit, restored timeouts, `power_down` — are now pinned by tests that fail if the fix is reverted ([`../tests/test_media_inhibit.py:1`](../tests/test_media_inhibit.py:1), [`../tests/test_power_events.py:239`](../tests/test_power_events.py:239)).
-* **CI asserts the artefact, not just the tests.** [`../.github/workflows/tests.yml:1`](../.github/workflows/tests.yml:1) installs the built wheel into a clean venv and exercises both `--version` and `--list-des`, which is exactly the check that would have caught v1 #6.
-
-Current shape:
-
-| Metric | v1.0.12 | v1.0.13 |
-|---|---|---|
-| `pwr_tray/` Python lines | 1,007 (`main.py`) | 1,380 (`main.py`) + 849 across 6 modules |
-| Runtime dependencies | 3 (`psutil`, `pydbus`, `ruamel.yaml`) + PyQt5 | 3 (`psutil`, `PyQt5`, `ruamel.yaml`) |
-| `ruff` | not configured | clean, 11 rule families |
-| Tests | 0 | 171 in 15 files, 0.75 s |
-| CI | none | lint + 3.11/3.12/3.13 test + wheel packaging assertion |
-| `requires-python` | unreleased / unstated | `>=3.11` |
-
----
-
-## 6. Value relative to alternatives
-
-| Need | pwr-tray | Nearest alternative | Verdict |
-|---|---|---|---|
-| See *why* sleep is inhibited | Icon + menu listing every logind inhibitor | `systemd-inhibit --list` (CLI), DE battery applets (opaque) | **pwr-tray wins** on legibility |
-| Stop autolock during video | Auto-detects `playerctl` playback | Hand-written `swayidle` rules, or `caffeine`-style toggles | **pwr-tray wins** on zero-config |
-| Battery-tier behaviour | Named tiers with per-tier lock/sleep lists and rotation | `tlp`, `auto-cpufreq` (power tuning, not session policy) | **pwr-tray wins** for session UX, loses on actual power tuning |
-| Suspend/hibernate integration | Yes, incl. `power_down` | `systemctl suspend` in a keybind | Roughly equal; pwr-tray adds confirmation UI |
-| One config across DEs | `commands.yaml` + `--de` | Compositor-specific scripts | **pwr-tray wins**, but this is the niche inside the niche |
-| Maintenance / bus factor | 1 author, 2 stars, 1 watcher, 0 open issues | `swayidle`, `swaylock`, `loginctl` (shipped by distros) | **Alternatives win** |
-
-**Honest verdict, unchanged in direction, improved in degree:** this is a well-built tool for a specific person — someone running two or more of i3/sway/Hyprland/niri/KDE who wants session-power policy to follow them and wants to see inhibitor state. For that person it has real value that the alternatives do not replicate; the v1 objection was never the idea, it was that the implementation could not be trusted. As of `v1.0.13` it can: the two silent-data-loss bugs, the dead feature flag, the broken wheel, and the `assert`-as-error-handling are all gone, and there is a test suite standing behind them.
-
-What has *not* changed is the market. 2 stars, 1 watcher, 0 issues, 21 releases means effectively zero external users — so the honest framing is: keep using it, and treat its value as personal leverage, not as a project others should adopt. The gap between "good tool" and "tool worth recommending" is now mostly R1 and R4: today the process-supervision story is subtly wrong and the README describes a version of the app that no longer exists.
+* **Single-instance guarantee.** `flock` first
+  ([`SingleInstance.acquire`](../pwr_tray/Utils.py:326)), an opt-in `--replace`
+  that re-verifies argv before signalling, and `atexit` release. The failure mode
+  is a clean exit 3 with the holder's pid, not a duplicate applet.
+* **Event-driven core with a per-input fallback.** `PowerEvents` removes the
+  per-tick `dbus-monitor` spawns, and `on_timeout()` re-enables polling for
+  exactly the input whose source died
+  ([main.py:700](../pwr_tray/main.py:700)) instead of abandoning the design
+  wholesale.
+* **Errors that name the fix.** [`Errors.py`](../pwr_tray/Errors.py:1) turns "no
+  desktop detected" into a message listing the known desktops and both escape
+  hatches, and `missing_commands()`
+  ([main.py:98](../pwr_tray/main.py:98)) names the absent binary plus how to list
+  requirements (`--list-des`, verified above).
+* **Config robustness.** Tier inheritance with explicit overrides, malformed
+  lists falling back rather than crashing, degenerate `config.ini`/`picks.json`
+  surviving, and lock/sleep picks restored on independent axes.
+* **Diagnostics ordering.** Console capture before log redirection means startup
+  failures reach the terminal that launched the applet.
+* **Packaging discipline.** Wheel contents, metadata, and the installed console
+  script are asserted in CI, not assumed; the sdist carries the resources.
+* **Test isolation and speed.** 171 tests in 0.73 s with `HOME` redirected, so
+  the suite cannot read or write a developer's real configuration.
 
 ---
 
-## 7. Recommended next steps (in order)
+## 6. Value relative to the alternatives
 
-1. ~~**R1** — move `lock.acquire()` ahead of `PyKill().kill_loop()`, make the kill the *takeover* branch, and add `--replace` for the intentional case.~~ **Done** (see §4, R1).
-2. ~~**R2** — three small tests: `check_inhibited()` returning `'player'`; `SwayIdleManager.build_cmd()` omitting lock/sleep when `was_inhibited == 'player'`; `on_timeout()` calling `poweroff()` when `_get_down_state()` is `'PowerDown'`. Without these the audit's own P0s are one revert away.~~ **Done** (see §4, R2).
-3. **R4** — correct [`../README.md:156`](../README.md:156) and [`../README.md:239`](../README.md:239) to match the new behaviour, and say plainly which supervisor should own the process when a systemd unit is used.
-4. ~~**R3** — decide whether per-tier defaults exist; make [`../pwr_tray/IniTool.py:51`](../pwr_tray/IniTool.py:51) authoritative or delete the per-tier entries.~~ **Done** — the per-tier table is authoritative when a key is absent from both `[Settings]` and the tier (see §4, R3).
-5. ~~**R5** — fold resume detection into `PowerEvents`' existing system-bus notifier and delete the third child process.~~ **Done** (see §4, R5).
-6. ~~**R6/R7** — close the paren, fix `%(prog)s`, delete the three dead attributes/methods.~~ **Done** (see §4, R6/R7).
+| Option | Covers | Gap it leaves |
+| --- | --- | --- |
+| `swayidle` / `hypridle` config | Lock + sleep timers on one compositor | No on-screen state, no inhibitor visibility, no per-battery-tier policy, no manual "keep awake" toggle |
+| DE power manager (Powerdevil, XFCE, Cinnamon, MATE, LXQt) | Native, integrated, vendor-maintained | Confined to its own DE; conflicts with `swayidle`-style tools; no uniform behaviour when you switch WMs |
+| `systemd-inhibit` wrappers / caffeine-style tools | One-shot "don't suspend now" | No scheduling, no sequencing of lock→sleep, no feedback about *who* is inhibiting |
+| Hand-rolled shell scripts | Exactly your policy | You own the state machine, the inhibit parsing, the tray, and the edge cases across DEs |
+
+`pwr-tray` occupies the niche the table cannot fill: **one policy engine and one
+tray UI across ten desktops**, with lock→sleep sequencing, per-battery-tier
+timers, visible inhibition, and a manual override — the same behaviour on i3,
+sway, niri, Hyprland, KDE, XFCE, Cinnamon, MATE, and LXQt.
+
+Its cost is one always-on Qt process, up to two `dbus-monitor` children, a Python
+3.11 + PyQt5 runtime, and desktop knowledge encoded in `commands.yaml` that has
+to be kept current.
+
+Adoption is effectively nil — 2 stars, 0 forks, 0 open issues on GitHub, and the
+index still serving 1.0.12. That does not diminish the engineering, but it means
+the value is **fit for one person's multi-desktop setup**, not an ecosystem
+role. As a general recommendation to a stranger, a single `hypridle` or
+Powerdevil configuration is the lower-risk choice; as a portable, inspectable
+policy layer with a tray, this is the more capable one.
+
+**Bottom line:** worth keeping and worth finishing — the remaining work is
+distribution hygiene (F1, F2), one defensive parse (F3), and test/ops polish
+(F4–F7), not redesign.
+
+---
+
+## 7. Suggested order of work
+
+1. **F1** — tag and publish 1.0.13, then add a CI release job that uploads the
+   artifacts it already validates, so the index cannot drift from the tree again.
+2. **F2** — add `RestartPreventExitStatus=2 3` (and, for the deliberate
+   hand-over case, an explicit `StartLimitBurst`) to all ten units; assert the
+   directive in [`tests/test_service_examples.py`](../tests/test_service_examples.py:1).
+3. **F3** — log a warning when `systemd-inhibit`/`playerctl` exits non-zero or
+   its output does not parse, and pin one real output sample per supported
+   systemd version in a test. A D-Bus read of `BlockInhibited` is the durable
+   fix if the parse ever bites.
+4. **F4** — one test per action that asserts the exact argv for platform (i3,
+   sway, Hyprland, niri, KDE, X11), which also documents the commands.
+5. **F7** — add `pytest-cov` and publish the number in CI.
+6. **F6** — if the class is touched again, extract the idle state machine and the
+   action layer; both are already well separated conceptually.
 
 ---
 
 ## Appendix — how this was checked
 
-* `git log --oneline -16` — confirmed fifteen fix commits (`e07f6f7`, `dd8dbe5`, `bcf5a9b`, `664e624`, `11dab1c`, `5e57007`, `48f7b40`, `024048e`, `b220ca5`, `c269158`, `2569df5`, `40c5c00`, `dab3341`, `89201ae`, `d6a05b8`) on top of the audited `b1b9735`.
-* `wc -l pwr_tray/*.py tests/test_*.py conftest.py` — 4,555 lines total; `main.py` 1,380.
-* `ruff check .`, `python3 -m compileall -q pwr_tray`, `python3 -m pytest -q`.
-* Isolated-`HOME` probes against `IniTool` for inheritance, malformed list values, and a deleted `config.ini`.
-* CLI smoke tests through an interpreter that has the runtime deps, with `PYTHONPATH` pointed at the source tree: `--version`, `--list-des`, `--help`. The applet itself was deliberately **not** launched, to avoid killing a live instance.
-* `grep` for the stale README claims and for every `chdir`/`here_dir`/`x_restart_self`/`section_params` reference.
+* Read all 7 application modules, `conftest.py`, all 15 test modules,
+  `pyproject.toml`, `.github/workflows/tests.yml`, all 10 units under
+  `docs/examples/`, and the README.
+* Ran `ruff check .`, `compileall`, and `pytest -q` in the tree (results in §3).
+* Ran the installed CLI (`--version`, `--list-des`) through the pipx virtualenv
+  with `PYTHONPATH` pointed at this tree; the applet itself was not launched, to
+  avoid terminating a live instance.
+* Queried the PyPI JSON API for the published version and summary (F1) and the
+  GitHub API for adoption figures (§6).
+* Findings F2–F7 were confirmed by reading the cited lines, not by inference from
+  the README.

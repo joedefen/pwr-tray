@@ -908,6 +908,10 @@ class PwrTray:
         add_item(label, self.toggle_playerctl)
         if self.get_params().gui_editor:
             add_item('🖹  Edit Applet Config', self.edit_config)
+        # Only offer the log viewer when something can actually show it: the
+        # applet has no tty of its own, so less needs a terminal emulator.
+        if Utils.terminal_argv([], getattr(self.get_params(), 'log_viewer', '')):
+            add_item('📜  Open Applet Log', self.open_log)
 
         add_item('☓ Quit this Applet', self.quit_self)
 
@@ -1007,6 +1011,35 @@ class PwrTray:
                 subprocess.run(arguments, check=True)
             except (OSError, subprocess.SubprocessError) as e:
                 prt(f"Edit Config ERR: {e}")
+
+    @staticmethod
+    def open_log(_):
+        """Page debug.log (plus the rotated copy) in a terminal window.
+
+        Launched with Popen rather than run(): the viewer stays open for as
+        long as the user keeps it open, and blocking the Qt event loop that
+        long would freeze the tray, the idle polling and every other action.
+        """
+        this = PwrTray.singleton
+        try:
+            log_path = this.ini_tool.log_path
+            old_path = getattr(this.ini_tool, 'log_old_path', None)
+            preferred = getattr(this.get_params(), 'log_viewer', '')
+        except AttributeError as e:
+            prt(f'Open Log ERR: {e}')
+            return
+
+        arguments = Utils.log_viewer_argv(log_path, old_path, preferred)
+        if not arguments:
+            prt('Open Log ERR: no terminal emulator found'
+                ' (set log_viewer in config.ini)')
+            return
+
+        prt('+', 'running:', arguments)
+        try:
+            subprocess.Popen(arguments)
+        except (OSError, subprocess.SubprocessError) as e:
+            prt(f'Open Log ERR: {e}')
 
     @staticmethod
     def suspend(_):

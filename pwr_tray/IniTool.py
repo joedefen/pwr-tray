@@ -13,7 +13,7 @@ import json
 import os
 from types import SimpleNamespace
 
-from pwr_tray.Utils import prt
+from pwr_tray.Utils import LOG_OLD_SUFFIX, prt
 
 
 def to_array(val_str):
@@ -58,6 +58,9 @@ class IniTool:
                 'sleep_min_list': '[5, 30]',
                 'lo_battery_pct': 10,
                 'gui_editor': 'geany',
+                # Command prefix used to show debug.log in a terminal window,
+                # e.g. 'xterm -e' or 'gnome-terminal --'; empty auto-detects.
+                'log_viewer': '',
 
             }, 'HiBattery': { #was OnBattery
                 'power_down': False,
@@ -73,6 +76,8 @@ class IniTool:
         self.folder = os.path.expanduser("~/.config/pwr-tray")
         self.ini_path =  os.path.join(self.folder, "config.ini")
         self.log_path =  os.path.join(self.folder, "debug.log")
+        # The single rotated copy kept by Utils.rotate_log().
+        self.log_old_path =  self.log_path + LOG_OLD_SUFFIX
         self.picks_path =  os.path.join(self.folder, "picks.json")
         self.config = configparser.ConfigParser()
         self.last_mod_time = None

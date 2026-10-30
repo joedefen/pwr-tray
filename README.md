@@ -78,7 +78,7 @@ Per-DE requirements:
 | `-D`, `--debug` | Enable debug mode (more frequent/elaborate logging); overrides the `debug_mode` config setting. |
 | `-q`, `--quick` | Quick mode: sets lock and sleep timeouts to 1 minute and runs double-time (timers expire in 30s wall clock). Useful for testing. |
 | `-e`, `--edit-config` | Open `~/.config/pwr-tray/config.ini` in `$EDITOR` (default: `vim`). |
-| `-f`, `--follow-log` | Tail the log file (`~/.config/pwr-tray/debug.log`). |
+| `-f`, `--follow-log` | Tail the log file (`~/.config/pwr-tray/debug.log`) from a terminal. |
 | `--de NAME` | Force desktop detection (e.g., `--de i3-x11`, `--de sway-wayland`, `--de kde-wayland`). Useful when env vars are unreliable. |
 | `--replace` | Replace the `pwr-tray` that is already running: terminate it and start in its place. Without this flag a second start refuses and exits. |
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
@@ -115,6 +115,7 @@ Next, you may see:
 
 Or act on the applet itself:
 - **🖹  Edit Applet Config** - edit the applet's .ini file.
+- **📜 Open Applet Log** - show `debug.log` (and the rotated `debug.log.old`, when present) in a terminal window, following the current log with `less +F`. It is offered only when a terminal emulator can be found; see `log_viewer` below.
 - **☓ Quit this Applet** -  exit applet.
 - **↺ Restart this Applet** - restart applet.
 
@@ -150,10 +151,13 @@ Here are the current 'Settings' defaults with explanation.
     sleep_min_list = [5, 30]            # sleep minutes choices (after lock)
     lo_battery_pct = 10                 # define "low battery" state
     gui_editor = geany                  # gui editor for .ini file
+    log_viewer =                        # terminal prefix for "Open Applet Log" (empty = auto-detect)
 ```
 **NOTES**:
 * If you have issues with monitors failing to sleep or the system cannot wake when the monitors are off, then disable the `turn_off_monitors` feature.
 * You can set `gui_editor = konsole -e vim`, for example, to use vim in a terminal window.  If you don't have `geany` installed, then be sure to change `gui_editor`.
+* `log_viewer` is the command prefix `pwr-tray` uses to start the log viewer inside a terminal window, e.g. `log_viewer = xterm -e` or `log_viewer = gnome-terminal --`. When empty it picks the first installed terminal it knows (x-terminal-emulator, gnome-terminal, konsole, kitty, alacritty, foot, xterm, xfce4-terminal, mate-terminal, lxterminal).
+* `debug.log` is capped at 2 MiB. When it grows past that, it is rotated: the current file becomes `debug.log.old`, any previous `debug.log.old` is discarded, and a fresh `debug.log` is started -- so there are never more than two log files.
 * Edits to `config.ini` are picked up while `pwr-tray` is running; there is no need to restart it.
 * Your picks of mode, timeouts, etc. are saved to disk when changed, and restored on the next start.
 * Items may be absent depending on the mode and battery state.

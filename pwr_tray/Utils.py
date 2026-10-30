@@ -11,9 +11,11 @@ import importlib.resources as pkg_resources
 import inspect
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -26,9 +28,37 @@ try:
 except ImportError:     # non-POSIX: SingleInstance degrades to a no-op
     fcntl = None
 
-prt_kb = 512
+prt_kb = 2048
 prt_path = ''
 prt_to_init = True
+
+# One generation of history: debug.log -> debug.log.old, and the .old that was
+# there before is discarded.  Two files are all we keep.
+LOG_OLD_SUFFIX = '.old'
+
+
+def rotate_log(path=None, max_bytes=None):
+    """Move the live log to `<path>.old`, discarding any previous .old.
+
+    Returns True when a rotation happened.  `os.replace()` gives the requested
+    order -- old is discarded, current becomes old -- in a single atomic rename,
+    so there is never a moment in which no log file exists, and the caller's
+    reopen creates the fresh current file.
+
+    The size of the log itself is measured, not of whatever stdout happens to
+    be: a tty (or a `-o/--stdout` run) must not rotate a file we are not writing.
+    """
+    path = prt_path if path is None else path
+    if not path:
+        return False
+    limit = (prt_kb * 1024) if max_bytes is None else max_bytes
+    try:
+        if os.path.getsize(path) <= limit:
+            return False
+        os.replace(path, f'{path}{LOG_OLD_SUFFIX}')
+        return True
+    except OSError:
+        return False
 
 def copy_to_folder(resource_name, dest):
     """ Get the path of a resource """
@@ -102,7 +132,9 @@ def prt(*args, **kwargs):
     """ Our custom print routine ...
      - use instead of print() to get time stamps.
      - unless stdout is a tty, say for debugging, ~/.config/pwr-tray/debug.log is used for stdout
-     - if we create a log file, its size is limited to 512K and then it is truncated
+     - if we create a log file, its size is limited to `prt_kb` (2M) and then it
+       is rotated: debug.log becomes debug.log.old and the previous .old is
+       discarded, so there are never more than two files.
      """
     def check_stdout(use_stdout=None):
         def is_tty():
@@ -150,8 +182,9 @@ def prt(*args, **kwargs):
                 or (prt_to_init and not is_tty() and not is_reg()))
             if should_reopen:
                 reopen()
-            if os.fstat(sys.stdout.fileno()).st_size > prt_kb*1024:
-                shutil.move(prt_path, f'{prt_path}1')
+            elif not is_tty() and rotate_log():
+                # What we were appending to just became debug.log.old;
+                # reopen() creates the new, empty current file.
                 reopen()
 
     to_stdout = None
@@ -168,6 +201,85 @@ def prt(*args, **kwargs):
     print(*args, **kwargs)
     string = f'{s.getvalue()} {where()}'
     print(string, flush=True)
+
+
+# Terminals that can be asked to run a command, with the flag each one uses.
+# 'string' means the flag takes the whole command line as one shell-quoted
+# argument (GLib terminals), 'argv' means it takes it as separate arguments.
+_TERMINALS = (
+    ('x-terminal-emulator', '-e', 'argv'),
+    ('gnome-terminal', '--', 'argv'),
+    ('konsole', '-e', 'argv'),
+    ('kitty', '-e', 'argv'),
+    ('alacritty', '-e', 'argv'),
+    ('foot', '-e', 'argv'),
+    ('xterm', '-e', 'argv'),
+    ('xfce4-terminal', '-e', 'string'),
+    ('mate-terminal', '-e', 'string'),
+    ('lxterminal', '-e', 'string'),
+)
+
+_less_follow_name = None
+
+
+def terminal_argv(command, preferred=''):
+    """Wrap `command` so it runs in a terminal window; [] if none can be found.
+
+    The applet normally has no tty -- prt() has redirected fds 1 and 2 into
+    debug.log -- so a full-screen program such as less cannot draw on what it
+    inherits.  It has to be started inside a terminal emulator.
+
+    `preferred` is the `log_viewer` setting: a command prefix such as
+    'xterm -maximized -e' or 'gnome-terminal --'.  When it is empty the first
+    installed terminal from _TERMINALS is used, with the flag it expects.
+    """
+    command = [str(part) for part in command]
+    if preferred.strip():
+        return shlex.split(preferred) + command
+    for name, flag, style in _TERMINALS:
+        exe = shutil.which(name)
+        if not exe:
+            continue
+        if style == 'string':
+            return [exe, flag, shlex.join(command)]
+        return [exe, flag, *command]
+    return []
+
+
+def less_follow_name_supported():
+    """True when the installed less knows --follow-name (less >= 451).
+
+    With it, less reopens the log by name after a rotation instead of holding
+    the renamed inode, which is what makes following debug.log survive our
+    debug.log -> debug.log.old rename.
+    """
+    global _less_follow_name
+    if _less_follow_name is None:
+        _less_follow_name = False
+        try:
+            result = subprocess.run(['less', '--help'], capture_output=True,
+                                    timeout=5, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return _less_follow_name
+        text = (result.stdout + result.stderr).decode('utf-8', 'replace')
+        _less_follow_name = '--follow-name' in text
+    return _less_follow_name
+
+
+def log_viewer_argv(log_path, old_path=None, preferred=''):
+    """argv that pages the applet log in a terminal window; [] if impossible.
+
+    The current log is named first, so `less +F` starts following the live
+    file; the rotated file (when it exists) follows and is reachable with `:n`.
+    """
+    command = ['less']
+    if less_follow_name_supported():
+        command.append('--follow-name')
+    command.append('+F')
+    command.append(log_path)
+    if old_path and os.path.exists(old_path):
+        command.append(old_path)
+    return terminal_argv(command, preferred)
 
 
 _PYTHON_RE = re.compile(r'^python[0-9.]*$')
