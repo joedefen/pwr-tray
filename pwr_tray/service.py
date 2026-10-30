@@ -7,7 +7,8 @@ directory), they are validated by ``tests/test_service_examples.py``, and
 ``--svc-install`` copies the one matching the current desktop to
 ``~/.config/systemd/user/pwr-tray.service`` and is the only verb that writes
 or enables it.  ``--svc-start`` and ``--svc-restart`` operate on a unit that
-is already installed.
+is already installed.  ``--show-svc-file`` prints the same rendered text
+without touching the machine, so a customized unit can start from it.
 
 The units never name an installation: they run ``%h/.local/bin/pwr-tray``, the
 one path every install method on the machine agrees on, so installing from an
@@ -713,6 +714,12 @@ def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
     if verb == 'status':
         return _report(desktop, env, echo, run)
 
+    # Dumping the unit needs neither a systemd user manager nor a launcher:
+    # it is the starter for a hand-installed (or hand-edited) unit, so it has
+    # to work exactly where an automatic install might not.
+    if verb == 'show-file':
+        return _show_file(desktop, env, echo)
+
     if not (systemd_available(env) if systemd is None else systemd):
         raise ServiceError(
             'no systemd user manager is reachable (is this a systemd system?);'
@@ -774,6 +781,18 @@ def _show(plan, echo):
         echo('about to:')
         for step in plan.steps:
             echo(f'  {step.describe}')
+
+
+def _show_file(desktop, env, echo):
+    """Print the unit ``--svc-install`` would write, then return OK.
+
+    This is a *starter*: edit it, then install it by hand (for example under
+    ``~/.config/systemd/user/``).  It is rendered for this machine's desktop
+    and display, so it is the same text an automatic install would produce.
+    """
+    for line in rendered_unit(desktop, env).splitlines():
+        echo(line)
+    return OK
 
 
 def _report(desktop, env, echo, run):

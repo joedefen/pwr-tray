@@ -630,6 +630,20 @@ def test_dispatch_rejects_an_unknown_verb(env):
         run_verb('reload', env, FakeSystemctl())
 
 
+def test_show_file_prints_the_unit_without_systemd_or_a_launcher(env, unit_path):
+    """The starter unit is a dump, not an install: nothing has to be running."""
+    remove_launcher(env)
+
+    output = []
+    assert run_verb('show-file', env, FakeSystemctl(), echo=output.append,
+                    systemd=False) == service.OK
+    text = '\n'.join(output)
+    assert f'ExecStart={LAUNCHER} --de {DESKTOP}' in text
+    assert 'Environment=WAYLAND_DISPLAY=wayland-0' in text
+    assert '[Install]' in text
+    assert not unit_path.exists()
+
+
 def cli_session(monkeypatch, tmp_path, argv):
     """Point the real CLI at a throw-away profile with no systemd manager.
 
@@ -680,3 +694,13 @@ def test_cli_rejects_two_verbs(monkeypatch, capsys):
         cli.main()
     assert excinfo.value.code == 2
     assert 'not allowed with' in capsys.readouterr().err
+
+
+def test_cli_show_svc_file_writes_the_unit_to_stdout(monkeypatch, tmp_path, capsys):
+    cli = cli_session(monkeypatch, tmp_path, ['--show-svc-file'])
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == service.OK
+    out = capsys.readouterr().out
+    assert f'ExecStart={LAUNCHER} --de {DESKTOP}' in out
+    assert '[Install]' in out

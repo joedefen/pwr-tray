@@ -1225,6 +1225,10 @@ def main():
     svc.add_argument('--svc-uninstall', dest='svc', action='store_const',
             const='uninstall',
             help='stop, disable and delete the unit (config and logs are kept)')
+    svc.add_argument('--show-svc-file', dest='svc', action='store_const',
+            const='show-file',
+            help='print the systemd unit for this desktop, then exit'
+                 ' (a starter for a hand-installed or customized unit)')
     opts = parser.parse_args()
 
     if opts.svc:
