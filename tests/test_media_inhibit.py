@@ -25,36 +25,50 @@ from pwr_tray.SwayIdleMgr import SwayIdleManager
 
 # -- fake subprocess --------------------------------------------------------
 
-# Realistic enough for the parser: a header row, then one blocked action.
-NO_INHIBITORS = 'No inhibitors listed. (--no-pager for a detailed list)\n'
-SYSTEMD_INHIBIT = (
-    'WHO UID USER PID  COMM     WHAT  WHY    MODE\n'
-    'joe 1000 joe 4242 firefox  idle  video  block\n'
+# What `busctl get-property ... BlockInhibited` prints: one line, one string.
+# '' (nothing blocked) and None (could not read) are different answers.
+NOTHING_BLOCKED = 's ""\n'
+SLEEP_BLOCKED = 's "sleep"\n'
+IDLE_BLOCKED = 's "idle"\n'
+SLEEP_AND_IDLE = 's "sleep:idle"\n'
+POWER_KEY_ONLY = 's "handle-power-key"\n'
+SHUTDOWN_BLOCKED = 's "shutdown"\n'
+LID_SWITCH_BLOCKED = 's "handle-lid-switch:shutdown"\n'
+
+# `systemd-inhibit --no-pager --no-legend --mode=block`: rows only, no header
+# and no "N inhibitors listed." footer.  The niri row is this project's real
+# output on the machine it was developed on: a compositor owning the power key,
+# which is an input event and not a request to stay awake.
+INHIBITOR_TABLE = (
+    'joe 1000 joe 4242 firefox sleep video block\n'
+    'niri 1000 joe 4951 niri handle-power-key Power key handling block\n'
 )
-
-
-def _power_key_row(comm, what):
-    """A single power-manager row: only the lid/power key is inhibited."""
-    return ('WHO UID USER PID  COMM WHAT WHY MODE\n'
-            f'joe 1000 joe 4242 {comm} {what} 1 block\n')
 
 
 class _Completed:
     """The subset of CompletedProcess that check_inhibited() reads."""
 
-    def __init__(self, stdout=''):
+    def __init__(self, stdout='', returncode=0, stderr=''):
         self.stdout = stdout
-        self.returncode = 0
+        self.stderr = stderr
+        self.returncode = returncode
 
 
-def _run_stub(commands, inhibit_output, play_state):
-    """A subprocess.run that records argv and answers the two queries made."""
+def _run_stub(commands, blocked, play_state='', table='', failures=None):
+    """A subprocess.run that answers the queries check_inhibited() makes.
+
+    `failures` maps an executable name to ``(returncode, stderr)`` so the
+    failure paths are driven without a broken machine.
+    """
     def run(argv, **_kwargs):
         commands.append(list(argv))
+        returncode, stderr = (failures or {}).get(argv[0], (0, ''))
+        if argv[0] == 'busctl':
+            return _Completed(blocked, returncode, stderr)
         if argv[0] == 'systemd-inhibit':
-            return _Completed(inhibit_output)
+            return _Completed(table, returncode, stderr)
         if argv[0] == 'playerctl':
-            return _Completed(f'{play_state}\n')
+            return _Completed(f'{play_state}\n', returncode, stderr)
         raise AssertionError(f'unexpected command {argv!r}')
     return run
 
@@ -87,6 +101,7 @@ def _tray(enable_playerctl=True, has_playerctl=True):
     tray.was_play_state = ''
     tray.was_inhibited = None
     tray.was_output = ''
+    tray._inhibit_warning = ''
     tray.poll_100ms = False
     tray.running_idle_s = 0.0
     tray.current_icon_num = -1
@@ -99,12 +114,13 @@ def _tray(enable_playerctl=True, has_playerctl=True):
     return tray
 
 
-def _check(monkeypatch, inhibit_output, play_state, **tray_kwargs):
+def _check(monkeypatch, blocked, play_state='', table='', failures=None,
+           **tray_kwargs):
     tray = _tray(**tray_kwargs)
     commands = []
     monkeypatch.setattr(
         'pwr_tray.main.subprocess.run',
-        _run_stub(commands, inhibit_output, play_state))
+        _run_stub(commands, blocked, play_state, table, failures))
     rows, updated = tray.check_inhibited()
     return SimpleNamespace(tray=tray, rows=rows, updated=updated,
                            commands=commands)
@@ -114,7 +130,7 @@ def _check(monkeypatch, inhibit_output, play_state, **tray_kwargs):
 
 def test_playing_media_sets_the_player_inhibit(monkeypatch):
     """v1 #1: the play state must reach was_inhibited, not just be read."""
-    result = _check(monkeypatch, NO_INHIBITORS, 'Playing')
+    result = _check(monkeypatch, NOTHING_BLOCKED, 'Playing')
 
     assert result.tray.was_inhibited == 'player'
     assert result.rows == []
@@ -127,59 +143,133 @@ def test_playing_media_sets_the_player_inhibit(monkeypatch):
     assert result.tray.poll_100ms is True
 
 
-def test_the_inhibit_query_is_the_one_the_parser_expects(monkeypatch):
-    result = _check(monkeypatch, NO_INHIBITORS, 'Playing')
+def test_the_verdict_comes_from_logind_not_from_the_table(monkeypatch):
+    """The table is a rendering; the verdict must not depend on it.
 
-    assert result.commands == [['systemd-inhibit', '--no-pager', '--mode=block'],
-                               ['playerctl', 'status']]
+    Here the table is empty and the answer is still right, which is the point
+    of asking a property instead of parsing a listing.
+    """
+    result = _check(monkeypatch, SLEEP_BLOCKED, 'Paused', table='')
+
+    assert result.tray.was_inhibited == 'systemd'
+    assert result.commands[0] == [
+        'busctl', 'get-property', 'org.freedesktop.login1',
+        '/org/freedesktop/login1', 'org.freedesktop.login1.Manager',
+        'BlockInhibited']
+
+
+def test_the_table_is_not_read_when_nothing_blocks(monkeypatch):
+    """Fewer processes than before: no listing when the answer is "nothing"."""
+    result = _check(monkeypatch, NOTHING_BLOCKED, 'Paused')
+
+    assert [cmd[0] for cmd in result.commands] == ['busctl', 'playerctl']
 
 
 def test_paused_media_does_not_inhibit(monkeypatch):
-    result = _check(monkeypatch, NO_INHIBITORS, 'Paused')
+    result = _check(monkeypatch, NOTHING_BLOCKED, 'Paused')
 
     assert result.tray.was_inhibited == ''      # cleared, not left as None
     assert result.tray.tray_icon.shown == [0]   # SettingSun, the normal icon
     assert result.tray.idle_starts == ['idle']
 
 
-def test_a_real_inhibitor_outranks_media_playback(monkeypatch):
-    """A logind inhibitor already has the StopSign icon; keep it."""
-    result = _check(monkeypatch, SYSTEMD_INHIBIT, 'Playing')
+@pytest.mark.parametrize('blocked', [SLEEP_BLOCKED, IDLE_BLOCKED,
+                                     SLEEP_AND_IDLE,
+                                     's "handle-power-key:sleep"\n'])
+def test_sleep_or_idle_blocked_is_an_inhibitor(monkeypatch, blocked):
+    result = _check(monkeypatch, blocked, 'Paused')
 
     assert result.tray.was_inhibited == 'systemd'
-    assert len(result.rows) == 2       # header + the blocking row
-    assert result.tray.tray_icon.shown == [7]
+    assert result.tray.tray_icon.shown == [7]   # StopSign
 
 
-@pytest.mark.parametrize('comm,what', [
-    ('xfce4-power-man', 'handle-power-key:handle-lid-switch'),
-    ('org_kde_powerde', 'handle-power-key'),
-    ('niri', 'handle-power-key:handle-suspend-key'),
-])
-def test_a_power_key_row_does_not_suppress_media_inhibit(monkeypatch, comm, what):
-    """xfce4/KDE/niri own only the lid or power key; they are not inhibitors."""
-    result = _check(monkeypatch, _power_key_row(comm, what), 'Playing')
+@pytest.mark.parametrize('blocked', [POWER_KEY_ONLY, SHUTDOWN_BLOCKED,
+                                     LID_SWITCH_BLOCKED])
+def test_an_input_event_is_not_an_inhibitor(monkeypatch, blocked):
+    """xfce4/KDE/niri own the power or lid key; that is not an inhibitor.
+
+    The old code needed a list of WHO strings, matched by substring against a
+    translated field, to know this.  The operation names say it directly.
+    """
+    result = _check(monkeypatch, blocked, 'Playing')
 
     assert result.rows == []
     assert result.tray.was_inhibited == 'player'
     assert result.tray.tray_icon.shown == [4]
 
 
+def test_a_real_inhibitor_outranks_media_playback(monkeypatch):
+    """A logind inhibitor already has the StopSign icon; keep it."""
+    result = _check(monkeypatch, SLEEP_BLOCKED, 'Playing',
+                    table=INHIBITOR_TABLE)
+
+    assert result.tray.was_inhibited == 'systemd'
+    assert result.tray.tray_icon.shown == [7]
+    assert result.rows[0] == 'blocked: sleep'
+    # The row that blocks sleep is shown; the power-key row is not.
+    assert any('firefox' in row for row in result.rows)
+    assert not any('niri' in row for row in result.rows)
+
+
+def test_an_unreadable_table_costs_rows_not_the_verdict(monkeypatch):
+    result = _check(monkeypatch, SLEEP_BLOCKED, 'Paused',
+                    failures={'systemd-inhibit': (1, 'no such file')})
+
+    assert result.tray.was_inhibited == 'systemd'
+    assert result.rows == ['blocked: sleep']
+
+
+def test_a_failed_query_warns_once_and_clears_the_inhibit(monkeypatch):
+    """Unknown is not inhibited -- but it is never silent.
+
+    The applet exists to lock the screen, so an unreadable inhibit state must
+    not switch locking off; it must also not go unmentioned in the log.
+    """
+    logged = []
+    monkeypatch.setattr('pwr_tray.main.prt',
+                        lambda *args, **_kwargs: logged.append(str(args[0])))
+    tray = _tray()
+    monkeypatch.setattr(
+        'pwr_tray.main.subprocess.run',
+        _run_stub([], '', failures={'busctl': (1, 'Failed to connect')}))
+
+    for _ in range(3):
+        assert tray.check_inhibited()[0] == []
+
+    assert tray.was_inhibited == ''
+    warnings = [line for line in logged if 'busctl' in line]
+    assert len(warnings) == 1       # once, not once per event
+    assert warnings[0].startswith('WARN')
+
+
+def test_an_unreadable_answer_is_unknown_not_empty(monkeypatch):
+    logged = []
+    monkeypatch.setattr('pwr_tray.main.prt',
+                        lambda *args, **_kwargs: logged.append(str(args[0])))
+    tray = _tray()
+    monkeypatch.setattr('pwr_tray.main.subprocess.run',
+                        _run_stub([], 'garbage\n'))
+
+    assert tray.check_inhibited()[0] == []
+    assert tray.was_inhibited == ''
+    assert any('unexpected' in line for line in logged)
+
+
 def test_playerctl_is_not_queried_when_the_feature_is_off(monkeypatch):
     """The menu toggle must actually stop the query and the inhibit."""
-    result = _check(monkeypatch, NO_INHIBITORS, 'Playing',
+    result = _check(monkeypatch, NOTHING_BLOCKED, 'Playing',
                     enable_playerctl=False)
 
-    assert [cmd[0] for cmd in result.commands] == ['systemd-inhibit']
+    assert [cmd[0] for cmd in result.commands] == ['busctl']
     assert result.tray.was_inhibited == ''
     assert result.tray.was_play_state == ''
 
 
 def test_without_playerctl_the_play_state_stays_empty(monkeypatch):
-    result = _check(monkeypatch, NO_INHIBITORS, 'Playing',
+    result = _check(monkeypatch, NOTHING_BLOCKED, 'Playing',
                     has_playerctl=False)
 
-    assert [cmd[0] for cmd in result.commands] == ['systemd-inhibit']
+    assert [cmd[0] for cmd in result.commands] == ['busctl']
     assert result.tray.was_inhibited == ''
 
 

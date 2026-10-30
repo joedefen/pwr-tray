@@ -105,10 +105,11 @@ pid's command line before signalling it
   `QSocketNotifier`s, lines are classified by object path
   ([`_context_for`](../pwr_tray/PowerEvents.py:250)), and the whole thing is
   stopped idempotently on exit.
-* **Inhibition:** [`check_inhibited()`](../pwr_tray/main.py:580) reads
-  `systemd-inhibit --mode=block` and `playerctl status`; a real `block` inhibitor
-  wins over media playback, and the kind of inhibition decides the icon and
-  whether the `swayidle` command keeps its timeouts.
+* **Inhibition:** [`check_inhibited()`](../pwr_tray/main.py:691) asks logind for
+  `BlockInhibited` (via `busctl`) and reads `playerctl status`; a blocked `sleep`
+  or `idle` wins over media playback, the `systemd-inhibit` listing supplies the
+  who/why rows, and the kind of inhibition decides the icon and whether the
+  `swayidle` command keeps its timeouts.
 
 ### 2.4 Configuration
 
@@ -227,28 +228,66 @@ The units also moved from `docs/examples/` into `pwr_tray/resources/systemd/`,
 so they ride along in the wheel and are installed by `pwr-tray --svc-install`
 instead of being copied by hand.
 
-### F3 — Inhibition is decided by parsing a table and ignoring exit status (P1)
+### F3 — Inhibition is decided by parsing a table and ignoring exit status (P1) — resolved
 
-[`check_inhibited()`](../pwr_tray/main.py:580) runs
-`systemd-inhibit --no-pager --mode=block` ([main.py:583](../pwr_tray/main.py:583))
-and decides from the **human-readable** listing: a line containing `block`,
-`count == 1` skipped when it belongs to `xfce4-power-man`, `org_kde_powerde`, or
-Niri's `handle-power-key`, and anything from row 2 onward counting as an
-inhibitor. `result.returncode` is never consulted (it is checked only in
-[`run_command`](../pwr_tray/main.py:940) and
-[`blank_primitive`](../pwr_tray/main.py:1050)), and the same is true of
-`playerctl status` ([main.py:615](../pwr_tray/main.py:615)).
+[`check_inhibited()`](../pwr_tray/main.py:691) used to run
+`systemd-inhibit --no-pager --mode=block` and decide from the
+**human-readable** listing: a line containing `block`, `count == 1` skipped
+when it belonged to `xfce4-power-man`, `org_kde_powerde`, or Niri's
+`handle-power-key`, and anything from row 2 onward counting as an inhibitor.
+`result.returncode` was never consulted, and neither was the status of the
+`playerctl status` call.
 
 Consequences if the output format, column layout, locale, or the tool's
-availability change: the parse degrades silently to "not inhibited", which fails
-open toward locking and suspending — including while media plays or while another
-application holds an inhibitor. The allow-list is also the only thing preventing
-a desktop's own power daemon from being read as a user inhibitor, and it is
-matched by substring against a translated field.
+availability changed: the parse degraded silently to "not inhibited", which
+fails open toward locking and suspending — including while media played or
+while another application held an inhibitor. The allow-list was also the only
+thing preventing a desktop's own power daemon from being read as a user
+inhibitor, and it matched by substring against a translated field.
 
-The parsing is a deliberate trade (no D-Bus round trip, no extra binding), but it
-is unguarded: nothing logs when a call fails, and no test pins the expected
-format.
+The deeper problem was the question, not the parse: *any* block inhibitor on
+*any* operation counted, so the exception list existed to undo that. logind
+already answers the question that matters, in a machine field —
+
+```
+$ busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+      org.freedesktop.login1.Manager BlockInhibited
+s "sleep:handle-power-key"
+```
+
+— and the verdict is now `blocked & GUARDED_OPERATIONS`, i.e. `sleep` or
+`idle`: the two operations this applet's own timeouts perform
+([`GUARDED_OPERATIONS`](../pwr_tray/main.py:63),
+[`parse_block_inhibited`](../pwr_tray/main.py:66),
+[`_logind_blocked`](../pwr_tray/main.py:628)). A compositor owning
+`handle-power-key` or `handle-lid-switch` is holding an input event, not asking
+the session to stay awake, so the per-desktop allow-list is gone rather than
+translated.
+
+`busctl` is used instead of a D-Bus binding because it ships with systemd,
+which the applet already requires, and because an exit status — unlike a parsed
+table — means what it says. The `systemd-inhibit` listing is still read when
+something *is* blocked, because the menu shows who and why; that is display
+only, and an unreadable listing costs rows, not the verdict
+([`_inhibitor_rows`](../pwr_tray/main.py:656)). The common case (nothing
+blocked) costs the same two queries as before.
+
+A failed or unreadable query is now "unknown", which counts as not inhibited —
+this applet exists to lock the screen, so an unreadable inhibit state must
+never switch locking off — and it is logged once per distinct failure instead of
+vanishing ([`_warn_inhibit_source`](../pwr_tray/main.py:621)). Media playback
+still inhibits on its own, independently of logind.
+
+Both answers are pinned by tests:
+[`test_sleep_or_idle_blocked_is_an_inhibitor`](../tests/test_media_inhibit.py:179)
+and
+[`test_an_input_event_is_not_an_inhibitor`](../tests/test_media_inhibit.py:188)
+cover the decision (including the real `handle-power-key` value this project was
+developed against),
+[`test_a_real_inhibitor_outranks_media_playback`](../tests/test_media_inhibit.py:201)
+covers the rows, and
+[`test_a_failed_query_warns_once_and_clears_the_inhibit`](../tests/test_media_inhibit.py:222)
+covers the failure path.
 
 ### F4 — The action layer is not exercised (P2)
 
@@ -401,8 +440,7 @@ Powerdevil configuration is the lower-risk choice; as a portable, inspectable
 policy layer with a tray, this is the more capable one.
 
 **Bottom line:** worth keeping and worth finishing — the remaining work is
-distribution hygiene (F1), one defensive parse (F3), and test/ops polish
-(F4–F7), not redesign.
+distribution hygiene (F1) and test/ops polish (F4–F7), not redesign.
 
 ---
 
@@ -416,10 +454,13 @@ distribution hygiene (F1), one defensive parse (F3), and test/ops polish
    asserts both. The units also moved into `pwr_tray/resources/systemd/` and are
    installed by `pwr-tray --svc-install`, so the policy reaches users instead of
    sitting in `docs/`.
-3. **F3** — log a warning when `systemd-inhibit`/`playerctl` exits non-zero or
-   its output does not parse, and pin one real output sample per supported
-   systemd version in a test. A D-Bus read of `BlockInhibited` is the durable
-   fix if the parse ever bites.
+3. **F3 — done.** The verdict now comes from logind's `BlockInhibited`
+   ([`_logind_blocked`](../pwr_tray/main.py:628)) and counts only `sleep` and
+   `idle`, so the per-desktop allow-list for `xfce4-power-man`,
+   `org_kde_powerdevil` and niri is gone and the `systemd-inhibit` listing is
+   display only. A failed or unreadable query is logged once and can never be
+   mistaken for "inhibited"; both the decision and the failure path are tested
+   in [`tests/test_media_inhibit.py`](../tests/test_media_inhibit.py:131).
 4. **F4** — one test per action that asserts the exact argv for platform (i3,
    sway, Hyprland, niri, KDE, X11), which also documents the commands.
 5. **F7** — add `pytest-cov` and publish the number in CI.

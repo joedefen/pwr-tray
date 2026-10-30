@@ -47,6 +47,42 @@ TRAY_WAIT_SECONDS = 20.0        # whole wait, reported while it happens
 TRAY_POLL_SECONDS = 0.5
 TRAY_REPORT_SECONDS = 5.0
 
+# logind answers "is anything keeping this session awake?" with a property, not
+# with a table: BlockInhibited is a colon-separated list of the operations that
+# are blocked ("" when nothing is).  It is a machine field, so it does not care
+# about column layout, locale or whether a listing tool exists.
+LOGIND_SERVICE = 'org.freedesktop.login1'
+LOGIND_PATH = '/org/freedesktop/login1'
+LOGIND_MANAGER = 'org.freedesktop.login1.Manager'
+BLOCK_INHIBITED = 'BlockInhibited'
+# The operations this applet's own timeouts perform.  handle-power-key and
+# handle-lid-switch say a compositor owns an input event, which is not a
+# request to stay awake; asking which operations are blocked, rather than which
+# rows a table happens to contain, is what removes the per-desktop exception
+# list for xfce4-power-manager, org_kde_powerdevil and niri.
+GUARDED_OPERATIONS = frozenset({'sleep', 'idle'})
+
+
+def parse_block_inhibited(output):
+    """Return the value of ``busctl get-property ... BlockInhibited``.
+
+    busctl prints one line: ``s "sleep:idle"``, or ``s ""`` when nothing is
+    blocked.  ``''`` and ``None`` are different answers -- the first means
+    logind says nothing is blocked, the second means the answer could not be
+    read -- and callers must never treat them alike.
+    """
+    lines = output.strip().splitlines()
+    text = lines[0].strip() if lines else ''
+    if not text.startswith('s "') or len(text) < 4 or not text.endswith('"'):
+        return None
+    return text[3:-1]
+
+
+def blocked_operations(value):
+    """Split a BlockInhibited value into operation names."""
+    return {token for token in value.split(':') if token}
+
+
 class PwrTray:
     """ pwr-tray main class.
     NOTES:
@@ -246,6 +282,9 @@ class PwrTray:
         self._battery_dirty = True
         self._inhibit_dirty = True
         self._inhibit_rows = []
+        # The last inhibit-source failure that was logged, so a broken busctl or
+        # a changed table is reported once instead of on every event.
+        self._inhibit_warning = ''
         self._refresh_pending = False
         self._events_bus_ok = False
         self._events_config_ok = False
@@ -579,36 +618,99 @@ class PwrTray:
             return True # changed
         return False # unchanged
 
-    def check_inhibited(self):
-        # Using run() is cleaner and safer than Popen/communicate manually
-        result = subprocess.run(
-            ['systemd-inhibit', '--no-pager', '--mode=block'],
-            capture_output=True, text=True, check=False
-        )
-        output = result.stdout
-        lines = output.splitlines()
+    def _warn_inhibit_source(self, message):
+        """Report a failed inhibit query once, not once per event."""
+        if message == self._inhibit_warning:
+            return
+        self._inhibit_warning = message
+        prt(f'WARN: {message}')
 
-        if self.DB() and 'No inhibitors' not in output:
-            prt('DB', 'systemd-inhibit:', output.strip())
-        rows = []
-        inhibited = ''
-        for count, line in enumerate(lines):
-            if count == 0:
-                rows.append(line.strip())
+    def _logind_blocked(self):
+        """Ask logind which operations are blocked; None means "could not ask".
+
+        busctl is used rather than a D-Bus binding: it ships with systemd,
+        which this applet already requires, and its exit status is meaningful.
+        The cost is one short-lived process per inhibitor change -- the caller
+        is event-driven, not polled.
+        """
+        argv = ['busctl', 'get-property', LOGIND_SERVICE, LOGIND_PATH,
+                LOGIND_MANAGER, BLOCK_INHIBITED]
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True,
+                                    check=False)
+        except OSError as exc:
+            self._warn_inhibit_source(f'cannot run busctl: {exc}')
+            return None
+        if result.returncode != 0:
+            self._warn_inhibit_source(
+                f'busctl get-property {BLOCK_INHIBITED} failed'
+                f' (rc={result.returncode}): {result.stderr.strip()}')
+            return None
+        value = parse_block_inhibited(result.stdout)
+        if value is None:
+            self._warn_inhibit_source(
+                f'unexpected {BLOCK_INHIBITED} answer: {result.stdout.strip()!r}')
+            return None
+        return blocked_operations(value)
+
+    def _inhibitor_rows(self, blocked):
+        """Who is blocking what, for the menu.  Display only.
+
+        ``--mode=block`` leaves delay inhibitors out on purpose: a session
+        manager postponing suspend while it locks the screen is not preventing
+        it.  Only rows blocking one of the operations behind the verdict are
+        kept, so a compositor holding the power key does not read as "keep this
+        session awake".  An unreadable table costs rows, never the verdict.
+        """
+        summary = f'blocked: {" ".join(sorted(blocked))}'
+        try:
+            result = subprocess.run(
+                ['systemd-inhibit', '--no-pager', '--no-legend',
+                 '--mode=block'],
+                capture_output=True, text=True, check=False)
+        except OSError as exc:
+            self._warn_inhibit_source(f'cannot run systemd-inhibit: {exc}')
+            return [summary]
+        if result.returncode != 0:
+            self._warn_inhibit_source(
+                f'systemd-inhibit failed (rc={result.returncode}):'
+                f' {result.stderr.strip()}')
+            return [summary]
+        rows = [summary]
+        for line in result.stdout.splitlines():
+            # WHO UID USER PID COMM WHAT WHY MODE -- WHAT is at index 5 as long
+            # as no name in the first five columns contains a space.  A row
+            # this cannot read is skipped, never guessed at: the verdict does
+            # not come from here.
+            parts = line.split()
+            if len(parts) < 6 or not blocked & set(parts[5].split(':')):
                 continue
-            if 'block' not in line:
-                continue
-            if count == 1:
-                if ('xfce4-power-man' not in line
-                        and 'org_kde_powerde' not in line
-                        and 'handle-power-key' not in line): # Ignore Niri's button hijacking
-                    inhibited = 'systemd'
-                    rows.append(line)
-            else:
-                inhibited = 'systemd'
-                rows.append(line)
-        if len(rows) == 1:
-            rows = []
+            rows.append(line.rstrip())
+        return rows
+
+    def check_inhibited(self):
+        """Decide whether something is holding the session awake.
+
+        The verdict comes from logind's BlockInhibited property, a machine
+        field, not from the systemd-inhibit table: column layout, locale and
+        whether the listing tool exists at all are properties of a rendering,
+        and a parse that degrades reads as "not inhibited" -- the dangerous
+        direction.  The table is still read when something *is* blocked,
+        because the menu shows who and why; see _inhibitor_rows().
+        """
+        blocked = self._logind_blocked()
+        if blocked is None:
+            # Unknown counts as "not inhibited": this applet exists to lock the
+            # screen, so an unreadable inhibit state must never switch locking
+            # off.  It is never silent -- _logind_blocked() logged it once.
+            inhibited, rows = '', []
+        else:
+            inhibited = 'systemd' if blocked & GUARDED_OPERATIONS else ''
+            rows = self._inhibitor_rows(blocked) if inhibited else []
+            if self.DB():
+                listed = ','.join(sorted(blocked)) or '(none)'
+                prt('DB', f'logind {BLOCK_INHIBITED}={listed}')
+
         play_state = ''
         if self.has_playerctl and self.enable_playerctl:
             # Event-driven: this query runs when logind or an MPRIS player
@@ -618,6 +720,12 @@ class PwrTray:
                 capture_output=True, text=True, check=False
             )
             play_state = child.stdout.strip().lower()
+            # Exit 1 with an empty stdout is "no player", which is normal;
+            # any other status is worth one line in the log.
+            if child.returncode not in (0, 1):
+                self._warn_inhibit_source(
+                    f'playerctl status failed (rc={child.returncode}):'
+                    f' {child.stderr.strip()}')
 
         # Media playback inhibits locking/sleeping, but an existing systemd
         # inhibitor keeps priority (it is already visible as the StopSign).
@@ -643,9 +751,13 @@ class PwrTray:
 
         self.was_effective_mode = emode
         self.was_selector = self.battery.selector
+        # The menu rebuild key is a tuple, so it can never compare equal to the
+        # 'Changed Mode' string the mode switches assign to was_output to force
+        # a rebuild.
         was_output = self.was_output
-        self.was_output = output
-        return rows, bool(was_output != output)
+        signature = (tuple(rows), frozenset(blocked or ()))
+        self.was_output = signature
+        return rows, bool(was_output != signature)
 
     def update_battery_status(self):
         if self.battery.present is False:

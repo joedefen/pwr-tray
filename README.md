@@ -22,7 +22,7 @@ With just a right-click and a left-click, you can do most operations such as cha
 
 ### Requirements
 * **Python** 3.11+ with **PyQt5** (5.15+) and **ruamel.yaml** (0.17+)
-* **systemd** (for `systemctl`, `loginctl`, `systemd-inhibit`; the `--svc-*` verbs also need a reachable `systemd --user` manager)
+* **systemd** (for `systemctl`, `loginctl`, `busctl` and `systemd-inhibit`; the `--svc-*` verbs also need a reachable `systemd --user` manager)
 * **pipx** (recommended for installation)
 
 Per-DE requirements:
@@ -147,7 +147,7 @@ Or act on the applet itself:
 - Running `pwr-tray --quick` reduces the lock and sleep timeout to 1 minute (although you can 'click' the current value to try others), and `--quick` runs double-time (so 1 minute timers expire in 30s per the wall clock).
 - You can run in various modes, but the default, `SleepAfterLock`, exercises the most code paths.
 - Then, ensure closing the lid, hitting the power button, etc., have the desired effects.
-- To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`
+- To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`. Only an inhibitor that blocks `sleep` or `idle` shows the StopSign icon; one that only holds the power or lid key (`handle-power-key`, `handle-lid-switch`) does not, because a compositor owning an input event is not asking the session to stay awake.
 - To test media inhibit: with `playerctl` installed, play media in any MPRIS-capable player; the `PlayingNow` icon appears and the lock/sleep timeouts are suspended until playback stops.
 - To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states. While it is synthetic, the menu entry is suffixed with `(TESTING)` so it cannot be mistaken for a real power state.
 
