@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "pwr_tray"
-version = "1.0.13"
+version = "2.0.0"
 description = "A PyQt5 tray applet for power management on i3, sway, niri, Hyprland, and KDE"
 authors = [
     { name = "Joe Defen", email = "joedef@google.com" }

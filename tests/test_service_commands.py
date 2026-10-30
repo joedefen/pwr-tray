@@ -25,9 +25,12 @@ SCRIPT = '/usr/local/bin/pwr-tray'
 class FakeSystemctl:
     """Records each systemctl call and answers the state queries."""
 
-    def __init__(self, enabled=False, active=False, fail=()):
+    QUERIES = ('is-enabled', 'is-active', 'is-failed')
+
+    def __init__(self, enabled=False, active=False, failed=False, fail=()):
         self.enabled = enabled
         self.active = active
+        self.failed = failed
         self.fail = set(fail)
         self.calls = []
 
@@ -42,25 +45,34 @@ class FakeSystemctl:
             return (0, 'enabled') if self.enabled else (1, 'disabled')
         if verb == 'is-active':
             return (0, 'active') if self.active else (3, 'inactive')
+        if verb == 'is-failed':
+            return (0, 'failed') if self.failed else (1, 'active')
         return 0, ''
 
     def verbs(self):
         return [argv[2] for argv in self.calls]
 
     def mutating(self):
-        """Calls that change state, i.e. everything but the two queries."""
-        return [argv for argv in self.calls if argv[2] not in ('is-enabled', 'is-active')]
+        """Calls that change state, i.e. everything but the state queries."""
+        return [argv for argv in self.calls if argv[2] not in self.QUERIES]
 
 
 @pytest.fixture
 def env(tmp_path):
     return {
+        'HOME': str(tmp_path),
         'XDG_CONFIG_HOME': str(tmp_path),
         'XDG_RUNTIME_DIR': '/run/user/1000',
         'WAYLAND_DISPLAY': 'wayland-0',
         'DISPLAY': ':0',
         'PATH': '/usr/local/bin:/usr/bin:/bin',
     }
+
+
+@pytest.fixture
+def log_dir(env):
+    """The directory the shipped units log into, which systemd will not create."""
+    return Path(env['HOME']) / '.local' / 'log'
 
 
 @pytest.fixture
@@ -225,6 +237,49 @@ def test_install_prints_each_step_once(env, unit_path):
     assert sum('reload the unit files' in line for line in output) == 1, output
 
 
+def test_install_creates_the_directory_the_unit_logs_into(env, unit_path, log_dir):
+    """systemd refuses to start a unit whose log directory is missing.
+
+    It fails every process with EXIT_STDOUT (209) before ExecStart= is reached,
+    so a unit that was installed but never started would fail forever.
+    """
+    assert not log_dir.exists()
+
+    output = []
+    assert run_verb('install', env, FakeSystemctl(), echo=output.append) == service.OK
+    assert log_dir.is_dir()
+    assert any(f'create {log_dir}' in line for line in output), output
+
+
+def test_install_does_not_recreate_an_existing_directory(env, unit_path, log_dir):
+    log_dir.mkdir(parents=True)
+
+    output = []
+    run_verb('install', env, FakeSystemctl(), echo=output.append)
+    assert not any(line.startswith('create ') for line in output), output
+
+
+def test_start_clears_a_failed_unit_before_starting(env, unit_path):
+    """After the start rate limiter trips, `start` alone is refused as too soon."""
+    run_verb('install', env, FakeSystemctl(enabled=True))
+
+    run = FakeSystemctl(enabled=True, failed=True)
+    assert run_verb('start', env, run) == service.OK
+    assert run.mutating() == [
+        ('systemctl', '--user', 'reset-failed', service.UNIT_NAME),
+        ('systemctl', '--user', 'start', service.UNIT_NAME),
+    ]
+
+
+def test_a_failed_start_says_where_to_look(env, unit_path):
+    """The one thing a failed start must not do is leave the user guessing."""
+    with pytest.raises(service.ServiceError) as excinfo:
+        run_verb('start', env, FakeSystemctl(fail=('start',)))
+    message = str(excinfo.value)
+    assert 'start pwr-tray.service failed' in message
+    assert 'systemctl --user status pwr-tray.service' in message
+
+
 def test_stop_leaves_the_unit_enabled(env, unit_path):
     run_verb('install', env, FakeSystemctl(enabled=True))
 
@@ -289,6 +344,34 @@ def test_status_codes_are_a_contract(env, unit_path):
     assert run_verb('status', env, FakeSystemctl(enabled=True)) == service.STATUS_INACTIVE == 1
     assert run_verb('status', env, FakeSystemctl(
         enabled=True, active=True)) == service.STATUS_ACTIVE == 0
+
+
+def test_status_reports_a_failed_unit(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+
+    output = []
+    assert run_verb('status', env, FakeSystemctl(enabled=True, failed=True),
+                    echo=output.append) == service.STATUS_INACTIVE
+    joined = '\n'.join(output)
+    assert 'failed' in joined
+    assert 'journalctl --user' in joined
+
+
+def test_only_file_targets_need_a_directory():
+    """journal, null and friends name no path, so nothing must be created."""
+    text = '[Service]\nStandardOutput=journal\nStandardError=null\n'
+    assert service.output_dirs(text, {'HOME': '/home/x'}) == []
+
+
+def test_unit_paths_expand_the_home_specifier():
+    text = 'StandardOutput=append:%h/.local/log/app.log\n'
+    assert service.output_dirs(text, {'HOME': '/home/x'}) == [Path('/home/x/.local/log')]
+
+
+def test_a_present_log_directory_is_not_missing():
+    text = 'StandardError=file:/var/log/pwr-tray.err\n'
+    assert Path('/var/log').is_dir()
+    assert service.missing_dirs(text, {}) == []
 
 
 def test_status_reports_an_out_of_date_unit(env, unit_path):

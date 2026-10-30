@@ -12,6 +12,12 @@ the ``pwr-tray`` executable actually lives, and which display the session is
 on -- so :func:`render` rewrites just those.  Everything else is copied byte
 for byte, which is what lets the tests keep asserting the shipped text.
 
+The units capture stdout/stderr into ``%h/.local/log``, and systemd will not
+create that directory: it fails every process with ``EXIT_STDOUT`` (209)
+before ``ExecStart=`` is reached.  :func:`missing_dirs` reads the paths back
+out of the unit so ``--svc-install`` can create them rather than leaving the
+user with a unit that cannot start.
+
 Nothing here shells out to systemctl on its own: the verbs are built as
 :class:`Step` lists by the ``plan_*()`` functions and performed by
 :func:`execute`, with the subprocess call injected.  That keeps the whole
@@ -48,6 +54,10 @@ SESSION_KEYS = ('WAYLAND_DISPLAY', 'DISPLAY')
 
 _DE_PATTERN = re.compile(r'--de[ =]([A-Za-z0-9-]+)')
 
+#: ``StandardOutput=append:/path`` and friends: systemd opens these itself.
+_OUTPUT_RE = re.compile(
+    r'^Standard(?:Output|Error)=(?:append|file|truncate):(\S+)$', re.MULTILINE)
+
 
 class ServiceError(PwrTrayError):
     """A ``--svc-*`` request that cannot be carried out as stated."""
@@ -57,15 +67,18 @@ class ServiceError(PwrTrayError):
 class Step:
     """One effect, in the order the verbs have to perform them.
 
-    Exactly one of ``argv`` (run a command), ``write`` (create/replace a file)
-    or ``remove`` (delete a file) is set; ``describe`` is what the user is
-    shown before anything happens.
+    Exactly one of ``argv`` (run a command), ``write`` (create/replace a file),
+    ``mkdir`` (create a directory) or ``remove`` (delete a file) is set;
+    ``describe`` is what the user is shown before anything happens, and
+    ``hint`` is appended to the error if the step turns out to fail.
     """
 
     describe: str
     argv: tuple = ()
     write: tuple = None
     remove: Path = None
+    mkdir: Path = None
+    hint: str = ''
 
 
 @dataclass
@@ -87,6 +100,7 @@ class Status:
     enabled: bool
     active: bool
     up_to_date: bool
+    failed: bool
 
 
 def _env(env=None):
@@ -229,10 +243,13 @@ def probe(rendered=None, env=None, run=run_command):
     """Return the current state of the installed unit."""
     path = installed_unit(env)
     installed = path.is_file()
-    enabled = active = False
+    enabled = active = failed = False
     if installed:
         enabled = run(systemctl('is-enabled', '--quiet', UNIT_NAME))[0] == 0
         active = run(systemctl('is-active', '--quiet', UNIT_NAME))[0] == 0
+        # A unit the start rate limiter gave up on stays failed until it is
+        # reset; `start` reports "attempted too often" until then.
+        failed = run(systemctl('is-failed', '--quiet', UNIT_NAME))[0] == 0
     up_to_date = False
     if installed and rendered is not None:
         try:
@@ -240,7 +257,7 @@ def probe(rendered=None, env=None, run=run_command):
         except OSError:
             up_to_date = False
     return Status(path=path, installed=installed, enabled=enabled,
-                  active=active, up_to_date=up_to_date)
+                  active=active, up_to_date=up_to_date, failed=failed)
 
 
 def changed_lines(current, wanted):
@@ -255,10 +272,42 @@ def changed_lines(current, wanted):
     return lines
 
 
-def plan_install(rendered, status, force=False, holder=None):
+def _expand(path, env):
+    """Expand the ``%h``/``%U`` specifiers systemd would expand in a path.
+
+    ``%%`` is left alone: no shipped unit uses it, and guessing wrong is worse
+    than reporting a directory that does not exist.
+    """
+    home = env.get('HOME') or str(Path.home())
+    return path.replace('%h', home).replace('%U', str(os.getuid()))
+
+
+def output_dirs(text, env=None):
+    """Return the directories a unit makes systemd open a log file inside.
+
+    Only directives that name a file are considered.  ``journal``, ``null``,
+    ``inherit`` and friends name no path, so they need no directory and are
+    skipped rather than guessed at.
+    """
+    env = _env(env)
+    folders = []
+    for match in _OUTPUT_RE.finditer(text):
+        path = Path(_expand(match.group(1), env))
+        if path.is_absolute() and path.parent not in folders:
+            folders.append(path.parent)
+    return folders
+
+
+def missing_dirs(text, env=None):
+    """Return the directories `text` needs that do not exist yet."""
+    return [folder for folder in output_dirs(text, env) if not folder.is_dir()]
+
+
+def plan_install(rendered, status, force=False, holder=None, env=None):
     """Write the unit if needed, reload, and enable it (without starting)."""
     plan = Plan()
     target = status.path
+    wrote = False
     if status.installed and status.up_to_date:
         plan.notes.append(f'{target} is already up to date')
     elif status.installed:
@@ -267,11 +316,20 @@ def plan_install(rendered, status, force=False, holder=None):
         except OSError:
             plan.details = []
         plan.steps.append(Step(f'write {target}', write=(target, rendered)))
-        plan.steps.append(Step('reload the unit files', argv=systemctl('daemon-reload')))
+        wrote = True
         plan.prompt = f'{target} exists and differs from the shipped unit; replace it?'
     else:
         plan.steps.append(Step(f'write {target}', write=(target, rendered)))
+        wrote = True
+    # systemd does not create the directories it is told to log into, it fails
+    # the unit with EXIT_STDOUT (209), so install time is when they must exist.
+    for folder in missing_dirs(rendered, env):
+        plan.steps.append(Step(f'create {folder}', mkdir=folder))
+    if wrote:
         plan.steps.append(Step('reload the unit files', argv=systemctl('daemon-reload')))
+    if status.failed:
+        plan.steps.append(Step(f'clear the failed state of {UNIT_NAME}',
+                               argv=systemctl('reset-failed', UNIT_NAME)))
     if not status.enabled:
         plan.steps.append(Step(f'enable {UNIT_NAME}', argv=systemctl('enable', UNIT_NAME)))
     if holder and not status.active:
@@ -281,9 +339,9 @@ def plan_install(rendered, status, force=False, holder=None):
     return plan
 
 
-def plan_start(rendered, status, force=False, holder=None):
+def plan_start(rendered, status, force=False, holder=None, env=None):
     """Install if needed, enable, and start now."""
-    plan = plan_install(rendered, status, force=force)
+    plan = plan_install(rendered, status, force=force, holder=holder, env=env)
     if status.active:
         plan.notes.append(f'{UNIT_NAME} is already running')
         return plan
@@ -292,7 +350,11 @@ def plan_start(rendered, status, force=False, holder=None):
             f'pwr-tray is already running outside systemd (pid {holder}); the unit'
             ' would exit 3 against the single-instance lock.  Remove the desktop'
             ' autostart that started it (or quit that instance) and run this again')
-    plan.steps.append(Step(f'start {UNIT_NAME}', argv=systemctl('start', UNIT_NAME)))
+    plan.steps.append(Step(
+        f'start {UNIT_NAME}',
+        argv=systemctl('start', UNIT_NAME),
+        hint=(f'inspect it with: systemctl --user status {UNIT_NAME}'
+              f' or: journalctl --user -xeu {UNIT_NAME}')))
     return plan
 
 
@@ -336,13 +398,15 @@ def execute(plan, run=run_command):
             path, content = step.write[0], step.write[1]
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding='utf-8')
+        elif step.mkdir:
+            step.mkdir.mkdir(parents=True, exist_ok=True)
         elif step.remove:
             step.remove.unlink(missing_ok=True)
         elif step.argv:
             code, output = run(step.argv)
             if code != 0:
-                raise ServiceError(
-                    f'{step.describe} failed (exit {code}): {output.strip()}')
+                message = f'{step.describe} failed (exit {code}): {output.strip()}'
+                raise ServiceError(f'{message}\n  {step.hint}' if step.hint else message)
 
 
 def applet_holder(lock_dir):
@@ -397,9 +461,9 @@ def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
 
     status = probe(rendered=rendered, env=env, run=run)
     if verb == 'install':
-        plan = plan_install(rendered, status, force=force, holder=holder)
+        plan = plan_install(rendered, status, force=force, holder=holder, env=env)
     elif verb == 'start':
-        plan = plan_start(rendered, status, force=force, holder=holder)
+        plan = plan_start(rendered, status, force=force, holder=holder, env=env)
     elif verb == 'stop':
         plan = plan_stop(status)
     elif verb == 'uninstall':
@@ -450,12 +514,20 @@ def _report(desktop, env, echo, run, script):
 
     rendered = _rendered_if_possible(desktop, env, script)
     status = probe(rendered=rendered, env=env, run=run)
-    state = 'active' if status.active else 'installed, not running'
+    if status.active:
+        state = 'active'
+    elif status.failed:
+        state = 'failed'
+    else:
+        state = 'installed, not running'
     flags = 'enabled' if status.enabled else 'disabled'
     echo(f'{UNIT_NAME}: {state} ({flags})')
     echo(f'  unit: {path}')
     if not status.installed:
         return STATUS_ABSENT
+    if status.failed:
+        echo(f'  note: the last start failed; see: journalctl --user -xeu {UNIT_NAME}')
+        echo('  note: pwr-tray --svc-start clears the failed state and tries again')
     if rendered is not None and not status.up_to_date:
         echo('  note: the file differs from the shipped unit'
              ' (pwr-tray --svc-install would replace it)')

@@ -1,6 +1,6 @@
 # pwr-tray — audit
 
-**Package:** `pwr_tray` **1.0.13**
+**Package:** `pwr_tray` **2.0.0**
 **Tree audited:** working tree at `dd0011f`, 2026-10-30
 **Scope:** the whole repository — application modules, tests, packaging, CI, shipped docs/systemd units.
 **Question asked:** is this sound, and does it have value relative to the alternatives?
@@ -12,7 +12,7 @@ This document describes the code as it stands. Nothing here is a changelog.
 ## 1. Verdict
 
 Sound, deliberately engineered, and small enough to keep sound. The suite is real
-(267 tests, 0.91 s) and the lint gate is clean; the architecture separates event
+(285 tests, 0.91 s) and the lint gate is clean; the architecture separates event
 detection from policy and both from presentation. Nothing found is a
 use-it-and-lose-data bug.
 
@@ -52,7 +52,7 @@ Policy is per battery tier; behaviour is per desktop, chosen from a YAML table.
 | [`pwr_tray/Utils.py`](../pwr_tray/Utils.py:1) | 370 | Console capture, logging, process discovery/killing, `flock` single-instance lock |
 | [`pwr_tray/SwayIdleMgr.py`](../pwr_tray/SwayIdleMgr.py:19) | 123 | Builds and supervises the `swayidle` command line on Wayland |
 | [`pwr_tray/Errors.py`](../pwr_tray/Errors.py:1) | 98 | Three user-facing exceptions with actionable messages |
-| [`pwr_tray/service.py`](../pwr_tray/service.py:1) | 462 | `--svc-*` verbs: desktop-to-unit mapping, install-time rendering, status probe, plan/execute split |
+| [`pwr_tray/service.py`](../pwr_tray/service.py:1) | 534 | `--svc-*` verbs: desktop-to-unit mapping, install-time rendering, log-directory creation, status probe, plan/execute split |
 | `pwr_tray/resources/` | — | `commands.yaml`, 9 SVG/PNG icons installed at first run, and the 10 `systemd` units `--svc-install` copies out |
 
 ### 2.2 Startup sequence
@@ -124,7 +124,7 @@ separately in `picks.json`
 
 ### 2.5 Tests, packaging, CI
 
-* 16 test modules, 267 tests, shared isolation in
+* 16 test modules, 285 tests, shared isolation in
   [`conftest.py`](../conftest.py:97): `HOME` is redirected to a temporary
   directory for every test, and modules that cannot be imported on the runner
   are replaced by permissive stubs.
@@ -154,7 +154,7 @@ $ python3 -m compileall -q pwr_tray conftest.py tests
 rc=0
 
 $ python3 -m pytest -q
-267 passed in 0.91s
+285 passed in 0.91s
 
 $ python -m pwr_tray.main --version
 pwr-tray 1.0.13
@@ -310,7 +310,7 @@ class, not between modules.
 ### F7 — There is no coverage measurement (P3)
 
 `[project.optional-dependencies]` lists `pytest` and `ruff`; CI runs both and no
-coverage tool, so "267 tests" is a count, not a statement about which lines run.
+coverage tool, so "285 tests" is a count, not a statement about which lines run.
 The monkeypatched action layer in [F4](#f4--the-action-layer-is-not-exercised-p2)
 is exactly the kind of gap a coverage report surfaces immediately.
 
@@ -330,6 +330,20 @@ tests validate" are the same bytes -- except for the two machine-specific values
 leave every other directive intact. `pwr-tray --svc-status` is also a runtime
 probe of the installed unit, so a user can tell a syntax-valid unit from one the
 manager actually started. Field-testing each desktop is still open.
+
+The first field test proved the point. Installing the niri unit on a real
+session and starting it failed with `Process: ExecStartPre=/bin/sleep 1
+(code=exited, status=209/STDOUT)` and, in the journal, `Failed to set up
+standard output: No such file or directory`: the units capture stdout/stderr
+into `%h/.local/log`, which systemd does not create, and only the *manual*
+recipe had ever created it. The unit then sat in `failed` because the start
+rate limiter, correctly, gave up. Both are now policy rather than folklore:
+`output_dirs()`/`missing_dirs()` read the paths back out of the unit so
+`--svc-install` creates them (and prints `create /home/.../.local/log` in the
+plan), and a unit already in the `failed` state is cleared with
+`systemctl --user reset-failed` before it is started. Neither defect was
+reachable from the shipped text alone; both are covered by
+[`tests/test_service_commands.py`](../tests/test_service_commands.py:1) now.
 
 ---
 
@@ -356,7 +370,7 @@ manager actually started. Field-testing each desktop is still open.
   failures reach the terminal that launched the applet.
 * **Packaging discipline.** Wheel contents, metadata, and the installed console
   script are asserted in CI, not assumed; the sdist carries the resources.
-* **Test isolation and speed.** 267 tests in 0.91 s with `HOME` redirected, so
+* **Test isolation and speed.** 285 tests in 0.91 s with `HOME` redirected, so
   the suite cannot read or write a developer's real configuration.
 
 ---

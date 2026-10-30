@@ -215,3 +215,17 @@ def test_render_keeps_the_restart_policy(path):
     assert len(prevent) == 1
     assert set(prevent[0].split()) >= PERMANENT_EXIT_STATUSES, prevent[0]
     assert values(sections, 'Unit', 'StartLimitBurst') == ['5']
+
+
+@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
+def test_the_log_directory_is_one_svc_install_can_create(path):
+    """systemd never creates it: a path it cannot resolve fails the unit (209).
+
+    ``plan_install()`` reads these back out of the unit, so every shipped
+    ``StandardOutput=``/``StandardError=`` file target has to expand to an
+    absolute directory.  A target it skipped would be a unit that cannot start.
+    """
+    folders = service.output_dirs(path.read_text(encoding='utf-8'), {'HOME': '/home/user'})
+    assert folders, 'no absolute StandardOutput=/StandardError= file target'
+    assert all(folder.is_absolute() for folder in folders), folders
+    assert folders == [Path('/home/user/.local/log')], folders
