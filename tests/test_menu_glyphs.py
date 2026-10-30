@@ -7,14 +7,19 @@ U+2B9C) are answered by ``Noto Color Emoji`` on a typical desktop: they come
 out coloured, wide and visually unrelated to the rest of the menu -- and as
 tofu boxes on a minimal install that has no symbol font at all.
 
+A coloured symbol column was tried and rejected: an QAction icon is drawn in a
+single column at the menu's left edge, which moves every symbol away from its
+group name and indentation.  The grouping is worth more than the colour, so
+the glyphs stay inline and inherit the menu's text colour.
+
 The contract pinned here:
 
 - ``pwr_tray/main.py`` uses only text-presentation glyphs that DejaVu Sans
   (the de-facto floor next to Liberation Sans) covers;
 - no emoji-block codepoint appears in the shipped documentation either, so
   the README does not advertise a glyph the menu no longer shows;
-- ``build_menu()`` produces labels drawn from that same set, and the labels
-  that users look for are still there.
+- ``build_menu()`` puts each glyph where the grouping needs it: after a group
+  name, or at the em-space indent of a sub-item -- never lifted into an icon.
 """
 
 import os
@@ -184,9 +189,57 @@ def test_battery_plugged_in_uses_the_zigzag_arrow(monkeypatch):
     assert '↯ Plugged In' in labels
 
 
+def test_glyphs_stay_inline_where_the_grouping_needs_them(monkeypatch):
+    """A symbol must never be lifted out of the label into an icon column.
+
+    The icon column would drag every ▷ to the left edge, away from its group
+    name ("niri:"/"System:") and away from the em-space indent of a sub-item.
+    """
+    tray_labels = _menu_labels(monkeypatch)
+
+    # group headers keep the glyph after the name
+    assert 'niri:\u2003 ▷ Lock Screen' in tray_labels
+    assert 'System: \u2003▼ Suspend' in tray_labels
+    # sub-items keep both the glyph and their indentation
+    assert '\u2003\u2003\u2003▷ Blank Monitors' in tray_labels
+    assert '\u2003\u2003\u2003▷ Reload' in tray_labels
+    assert '\u2003\u2003\u2003▷ Log Off' in tray_labels
+    assert '\u2003\u2003\u2003\u2003▼ Reboot' in tray_labels
+    assert '\u2003\u2003♺ Lock: 15m->30m' in tray_labels
+
+
 def test_rows_stay_untouched(monkeypatch):
     """Header/detail rows come from the inhibitor scan and stay plain."""
     rows = ['systemd-inhibit: sleep', '   (blocking: handle-power-key)']
     labels = _menu_labels(monkeypatch, rows=rows)
 
     assert labels[:len(rows)] == rows
+
+
+def test_synthetic_power_state_is_marked_as_testing(monkeypatch):
+    """Without a battery the power item is a cycler, so it says so."""
+    labels = _menu_labels(
+        monkeypatch,
+        battery=types.SimpleNamespace(selector='HiBattery', percent=88,
+                                      present=False))
+
+    assert '█ HiBattery 88% (TESTING)' in labels
+
+
+def test_synthetic_plugged_in_state_is_marked_as_testing(monkeypatch):
+    labels = _menu_labels(
+        monkeypatch,
+        battery=types.SimpleNamespace(selector='Settings', percent=100,
+                                      present=False))
+
+    assert '↯ Plugged In (TESTING)' in labels
+
+
+def test_real_battery_state_is_not_marked_as_testing(monkeypatch):
+    labels = _menu_labels(
+        monkeypatch,
+        battery=types.SimpleNamespace(selector='Settings', percent=100,
+                                      present=True))
+
+    assert '↯ Plugged In' in labels
+    assert not any('TESTING' in label for label in labels)

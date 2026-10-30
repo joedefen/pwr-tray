@@ -120,6 +120,11 @@ Next, you may see:
 - **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next choice.
 - **♫ PlayerCtl** - shows the state (not installed, enabled, disabled); if installed, a click toggles whether playing media inhibits screen locking and sleeping.
 
+The symbols are ordinary text glyphs taken from fonts every desktop has
+(DejaVu Sans, Liberation Sans), never emoji: they follow the menu's own text
+colour and sit where the grouping needs them -- after a group name, or indented
+with the sub-items.
+
 Or act on the applet itself:
 - **✎  Edit Applet Config** - edit the applet's .ini file.
 - **≡ Open Applet Log** - show `debug.log` (and the rotated `debug.log.old`, when present) in a terminal window, following the current log with `less +F`. It is offered only when a terminal emulator can be found; see `log_viewer` below. The viewer is started in its own session -- and, when the applet runs as a systemd service, in its own transient scope -- so it keeps following the log when the applet stops or restarts.
@@ -135,7 +140,7 @@ Or act on the applet itself:
 - Then, ensure closing the lid, hitting the power button, etc., have the desired effects.
 - To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`
 - To test media inhibit: with `playerctl` installed, play media in any MPRIS-capable player; the `PlayingNow` icon appears and the lock/sleep timeouts are suspended until playback stops.
-- To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states.
+- To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states. While it is synthetic, the menu entry is suffixed with `(TESTING)` so it cannot be mistaken for a real power state.
 
 ---
 

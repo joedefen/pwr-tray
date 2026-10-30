@@ -47,7 +47,6 @@ TRAY_WAIT_SECONDS = 20.0        # whole wait, reported while it happens
 TRAY_POLL_SECONDS = 0.5
 TRAY_REPORT_SECONDS = 5.0
 
-
 class PwrTray:
     """ pwr-tray main class.
     NOTES:
@@ -871,6 +870,12 @@ class PwrTray:
         # used here.  Emoji-block codepoints (U+1F000 and up) fall back to
         # Noto Color Emoji, which renders them coloured, wide and out of
         # style -- and as tofu boxes where that font is absent.
+        # They stay *inside* the label on purpose.  A QAction icon is painted
+        # in one column at the menu's left edge, which moves every symbol away
+        # from its group name ("niri:  ▷ Lock Screen") and from the em-space
+        # indent of a sub-item -- and that grouping matters more than drawing
+        # the symbols in their own colour.  Inline glyphs inherit the menu's
+        # text colour, so per-symbol colouring is not available here.
         if self.mode not in ('Presentation',):
             add_item(f'◉ Presentation ← {self.mode} Mode', self.enable_presentation_mode)
 
@@ -897,10 +902,18 @@ class PwrTray:
         add_item('    ▼ PowerOff', self.poweroff)
 
         selector, percent = self.battery.selector, self.battery.percent
-        add_item('↯ Plugged In' if selector == 'Settings'
-                     else (('█' if selector == 'HiBattery' else '▃') + f' {selector}')
-                + (f' {percent}%' if percent < 100 or selector != 'Settings' else '')
-                , self._toggle_battery)
+        # With no battery present the whole power state is synthetic (this item
+        # is then a test cycler), so say so rather than letting it look real.
+        testing = getattr(self.battery, 'present', None) is False
+        if selector == 'Settings':
+            label = '↯ Plugged In'
+        else:
+            label = ('█' if selector == 'HiBattery' else '▃') + f' {selector}'
+        if selector != 'Settings' or percent < 100:
+            label += f' {percent}%'
+        if testing:
+            label += ' (TESTING)'
+        add_item(label, self._toggle_battery)
 
         # if self.mode not in ('Presentation',) and len(self.opts.lock_min_list) > 1:
         add_item(f'  ♺ Lock: {self._lock_rotate_str()}',
