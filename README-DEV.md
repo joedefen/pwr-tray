@@ -178,7 +178,10 @@ it works there, provided the project:
   backend reads (flit does), and never needs writing anywhere else;
 * builds with `python -m build`, and has a dev extra with ruff, pytest,
   pytest-cov, build, twine>=7 and packaging>=26 -- `gates()` runs exactly
-  ruff, compileall and `pytest --cov=<package>`;
+  ruff, compileall and `pytest --cov=<package>`.  twine is not a duplicate of
+  flit: `flit publish` rebuilds and uploads what it just built, while `bless`
+  uploads the two files it inspected, to the index the mode targets, after
+  `twine check --strict` has passed on them;
 * ships an inspector at `tests/inspect_dist.py` (or names one with
   `[tool.bless] inspect = "path"`), because bless refuses to upload what it has
   not inspected; `inspect = ""` opts out knowingly;

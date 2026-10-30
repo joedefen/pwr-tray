@@ -52,7 +52,10 @@ not worth guessing:
     throwaway copy, never in the tree;
   * `python -m build` working on the tree, and a dev extra holding ruff,
     pytest, pytest-cov, build, twine>=7 and packaging>=26, because `gates()`
-    runs precisely ruff, compileall and pytest --cov=<package>;
+    runs precisely ruff, compileall and pytest --cov=<package>.  twine is not
+    made redundant by flit: `flit publish` rebuilds and sends whatever it just
+    built, while bless sends *these two files* to the URL the mode targets,
+    after `twine check --strict` has passed on them;
   * an inspector at that path: bless never uploads a distribution it has not
     inspected, so a missing one is a refusal, not a silent skip;
   * a console script, if declared, that prints the version for `--version`;
@@ -94,6 +97,14 @@ VERIFY_ATTEMPTS = 10        # either index's JSON can lag an accepted upload
 VERIFY_DELAY = 3.0          # seconds between verify attempts
 TEST_TAG = 99               # X.Y.Z.99.N sorts clear of every real release
 TOOL_FLOORS = {'twine': (7, 0, 0), 'packaging': (26, 0, 0)}
+# Why each tool is needed, said in the refusal: flit builds, but it uploads the
+# files it just rebuilt, not two named files at a URL, and it has no standalone
+# checker for a distribution it has already built.
+TOOL_PURPOSE = {
+    'twine': 'upload the two files the gate just inspected and to run '
+             '`twine check --strict` on them',
+    'packaging': 'read the metadata version that `twine check` validates',
+}
 DEFAULT_INSPECTOR = 'tests/inspect_dist.py'
 
 # What a throwaway build must not copy out of the tree.
@@ -228,12 +239,17 @@ def _version_tuple(text: str) -> tuple[int, int, int]:
 
 
 def _tool_floor(name: str, minimum: tuple[int, int, int]) -> None:
+    """One tool this gate cannot do without; the message says what it is for."""
     try:
         found = installed_version(name)
     except PackageNotFoundError:
         raise BlessError(
-            f'{name} is not installed; use the dev extra: '
-            'python -m pip install -e ".[dev]"') from None
+            f'{name} is not installed, and bless uses it to '
+            f'{TOOL_PURPOSE.get(name, "run this gate")}.\n'
+            f'bless checks the interpreter it runs under ({sys.executable}), so '
+            'install the dev extra into that one:\n'
+            '  python -m pip install -e ".[dev]"\n'
+            '  flit install --extras dev          # if you install with flit') from None
     if _version_tuple(found) < minimum:
         wanted = '.'.join(str(part) for part in minimum)
         raise BlessError(

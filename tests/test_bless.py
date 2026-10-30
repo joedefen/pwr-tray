@@ -528,6 +528,22 @@ def test_an_old_validator_is_refused_by_preflight(monkeypatch):
         bless._tool_floor('twine', (7, 0, 0))
 
 
+def test_a_missing_tool_says_why_and_names_both_install_commands(monkeypatch):
+    """flit can build, so the refusal has to say what twine is still doing."""
+
+    def missing(name):
+        raise bless.PackageNotFoundError(name)
+
+    monkeypatch.setattr(bless, 'installed_version', missing)
+    with pytest.raises(bless.BlessError) as caught:
+        bless._tool_floor('twine', (7, 0, 0))
+
+    message = str(caught.value)
+    assert 'twine check --strict' in message
+    assert 'pip install -e ".[dev]"' in message
+    assert 'flit install --extras dev' in message
+
+
 def test_the_post_upload_verification_compares_what_the_index_reports(monkeypatch, tmp_path):
     import hashlib
 

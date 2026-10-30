@@ -209,7 +209,14 @@ prints that in its upload-error message.
   stops a future 5.x from changing the format again without notice. `3.12` is
   the oldest backend kept in the tested range (3.11 also honours the SPDX form).
 * dev extras: `twine>=7` and an explicit `packaging>=26`, replacing
-  `twine>=5`. The validator must never be older than the writer.
+  `twine>=5`. The validator must never be older than the writer. twine is kept
+  even though flit can publish: `flit publish` builds and then uploads what it
+  just built, whereas the gate uploads the two files it inspected -- from a
+  *copied* tree in `test` mode -- to the URL the mode targets, and
+  `twine check --strict` is the standalone validator the floor exists for. The
+  refusal says so, and names both `pip install -e ".[dev]"` and
+  `flit install --extras dev`, because a flit-managed environment is a
+  perfectly reasonable place to be missing twine.
 * `[tool.flit.sdist] include = ["pwr_tray/resources/", "tests/", "conftest.py"]`.
 * License, per R3 and PEP 639: `license = "MIT"`, `license-files = ["LICENSE"]`,
   and drop the now-redundant `License :: OSI Approved :: MIT License`

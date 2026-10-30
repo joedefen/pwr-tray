@@ -121,6 +121,8 @@ dev = [
     # The validator must be at least as new as the writer: flit_core 4.x emits
     # Metadata 2.5, which packaging < 26 rejects.  Keep packaging explicit so
     # the floor does not depend on which twine happens to be installed.
+    # twine earns its place beside flit: flit builds, but only twine publishes
+    # two named files to a chosen URL and checks an already-built one.
     "twine>=7",
     "packaging>=26",
 ]
