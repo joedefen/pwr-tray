@@ -51,6 +51,11 @@ from pwr_tray.Utils import PyKill, prt
 # appears, so start-up never blocks on the bar.
 TRAY_ATTACH_DELAY_MS = 500      # let a new host start serving calls
 
+# How many percentage points the fabricated no-battery test state loses per
+# poll tick.  The point is to make the test look like a battery being drained:
+# HiBattery stays above the low threshold and LoBattery counts down to zero.
+TEST_DISCHARGE_STEP = 1
+
 # The logind vocabulary -- BlockInhibited, the guarded operations, the busctl
 # answer parser -- lives in pwr_tray.Inhibitors, where the event source can use
 # it too.  It is re-exported here because the applet's long-standing entry
@@ -849,6 +854,8 @@ class PwrTray:
             self.update_battery_status()
             # A new battery tier changes the icon even when no inhibitor did.
             self.show_icon(inhibited=self.was_inhibited or '')
+        # The fabricated battery drains even when no real power event arrives.
+        self._advance_test_battery()
         # Reading the cached verdict costs nothing, so it happens every tick:
         # there is no dirty flag a missed signal could leave stale.
         rows, updated = self.check_inhibited()
@@ -887,9 +894,40 @@ class PwrTray:
             # Plugged In leg is the machine's real state, so it drops the
             # menu's "(TESTING)" suffix again.
             self.battery.synthetic = selector != 'Settings'
+            if selector == 'Settings':
+                self.battery.plugged = True
+                self.battery.percent = 100
+            else:
+                self.battery.plugged = False
+                # Start each tier where a real reading would put it: a full
+                # charge for HiBattery, and the threshold itself -- the
+                # highest percentage that still counts as LoBattery.
+                self.battery.percent = (100 if selector == 'HiBattery'
+                                        else self.get_params().lo_battery_pct)
             # self.ini_tool.set_effective_params(selector)
             # The selector also picks the icon, and check_inhibited() re-shows
             # it on the next tick.
+            self.rebuild_menu = True
+
+    def _advance_test_battery(self):
+        """Discharge the fabricated battery so the test state counts down.
+
+        Which tier is under test is the user's choice, so the selector is not
+        changed here.  HiBattery stops one point above the low threshold and
+        stays a high-battery state; LoBattery runs down to zero, where that
+        tier's own power_down policy can act.
+        """
+        if not getattr(self.battery, 'synthetic', False):
+            return
+        if self.battery.selector == 'Settings':
+            return
+        if self.battery.selector == 'HiBattery':
+            floor = self.get_params().lo_battery_pct + 1
+        else:
+            floor = 0
+        percent = max(floor, self.battery.percent - TEST_DISCHARGE_STEP)
+        if percent != self.battery.percent:
+            self.battery.percent = percent
             self.rebuild_menu = True
 
     def _lock_rotate_next(self, advance=None):

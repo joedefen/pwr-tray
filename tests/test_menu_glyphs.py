@@ -294,17 +294,20 @@ def test_the_cycler_marks_only_the_battery_legs_as_synthetic():
     """
     tray = object.__new__(main_module.PwrTray)
     tray.battery = types.SimpleNamespace(present=False, synthetic=False,
-                                         selector='Settings')
+                                         selector='Settings', percent=100,
+                                         plugged=True)
     tray.rebuild_menu = False
     tray._inhibit_dirty = False
+    tray.get_params = lambda: types.SimpleNamespace(lo_battery_pct=20)
 
     seen = []
     for _ in range(3):
         tray._toggle_battery()
-        seen.append((tray.battery.selector, tray.battery.synthetic))
+        seen.append((tray.battery.selector, tray.battery.synthetic,
+                     tray.battery.percent))
 
-    assert seen == [('HiBattery', True), ('LoBattery', True),
-                    ('Settings', False)]
+    assert seen == [('HiBattery', True, 100), ('LoBattery', True, 20),
+                    ('Settings', False, 100)]
     assert tray.rebuild_menu is True
 
 
@@ -316,6 +319,7 @@ def test_cycling_back_to_plugged_in_drops_the_testing_suffix(monkeypatch):
                                            plugged=True)
     cycler.rebuild_menu = False
     cycler._inhibit_dirty = False
+    cycler.get_params = lambda: types.SimpleNamespace(lo_battery_pct=20)
     for _ in range(3):
         cycler._toggle_battery()
 
@@ -323,3 +327,78 @@ def test_cycling_back_to_plugged_in_drops_the_testing_suffix(monkeypatch):
 
     assert '↯ Plugged In' in labels
     assert not any('TESTING' in label for label in labels)
+
+
+def test_the_test_tiers_start_high_and_at_the_low_threshold():
+    """HiBattery starts full; LoBattery starts at the top of its range.
+
+    The threshold is the highest percentage that still selects LoBattery, so
+    the second click lands exactly there before the countdown begins.
+    """
+    tray = object.__new__(main_module.PwrTray)
+    tray.battery = types.SimpleNamespace(present=False, synthetic=False,
+                                         selector='Settings', percent=100,
+                                         plugged=True)
+    tray.rebuild_menu = False
+    tray.get_params = lambda: types.SimpleNamespace(lo_battery_pct=20)
+
+    tray._toggle_battery()
+    assert (tray.battery.selector, tray.battery.percent,
+            tray.battery.plugged) == ('HiBattery', 100, False)
+
+    tray._toggle_battery()
+    assert (tray.battery.selector, tray.battery.percent,
+            tray.battery.plugged) == ('LoBattery', 20, False)
+
+
+def test_hibattery_counts_down_but_stays_above_the_threshold():
+    tray = object.__new__(main_module.PwrTray)
+    tray.battery = types.SimpleNamespace(present=False, synthetic=False,
+                                         selector='Settings', percent=100,
+                                         plugged=True)
+    tray.rebuild_menu = False
+    tray.get_params = lambda: types.SimpleNamespace(lo_battery_pct=20)
+
+    tray._toggle_battery()
+    tray.rebuild_menu = False
+    for _ in range(200):
+        tray._advance_test_battery()
+
+    assert (tray.battery.selector, tray.battery.percent) == ('HiBattery', 21)
+    assert tray.rebuild_menu is True
+
+
+def test_lobattery_counts_down_to_zero():
+    tray = object.__new__(main_module.PwrTray)
+    tray.battery = types.SimpleNamespace(present=False, synthetic=False,
+                                         selector='Settings', percent=100,
+                                         plugged=True)
+    tray.rebuild_menu = False
+    tray.get_params = lambda: types.SimpleNamespace(lo_battery_pct=20)
+
+    tray._toggle_battery()
+    tray._toggle_battery()
+    for _ in range(50):
+        tray._advance_test_battery()
+
+    assert (tray.battery.selector, tray.battery.percent) == ('LoBattery', 0)
+
+
+def test_plugged_in_and_real_batteries_do_not_count_down():
+    tray = object.__new__(main_module.PwrTray)
+    tray.battery = types.SimpleNamespace(present=False, synthetic=False,
+                                         selector='Settings', percent=100,
+                                         plugged=True)
+    tray.rebuild_menu = False
+    tray.get_params = lambda: types.SimpleNamespace(lo_battery_pct=20)
+
+    for _ in range(3):
+        tray._toggle_battery()
+    tray._advance_test_battery()
+    assert tray.battery.percent == 100
+
+    tray.battery.synthetic = False
+    tray.battery.selector = 'HiBattery'
+    tray.battery.percent = 77
+    tray._advance_test_battery()
+    assert tray.battery.percent == 77
