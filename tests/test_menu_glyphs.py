@@ -160,10 +160,10 @@ def _fake_tray(**overrides):
                  'edit_config', 'open_log', 'quit_self', 'restart_self',
                  'dummy'):
         setattr(tray, name, noop)
-    # The PlayerCtl label is real logic, not a constant: bind it (and what it
-    # reads) so these tests exercise the shipped state words.
+    # The PlayerCtl and battery labels are real logic, not constants: bind them
+    # (and what they read) so these tests exercise the shipped state words.
     for name in ('_events', '_bus_is_trusted', '_playing_names',
-                 '_player_ctl_label'):
+                 '_player_ctl_label', 'battery_line'):
         setattr(tray, name, getattr(main_module.PwrTray, name).__get__(tray))
     return tray
 
@@ -218,7 +218,46 @@ def test_battery_plugged_in_uses_the_zigzag_arrow(monkeypatch):
         monkeypatch,
         battery=types.SimpleNamespace(selector='Settings', percent=100))
 
-    assert '↯ Plugged In' in labels
+    assert '↯ Plugged In 100%' in labels
+
+
+def test_a_full_battery_still_shows_its_percentage(monkeypatch):
+    """The charge level is the battery status, so it is never hidden.
+
+    It used to be dropped whenever the machine was on mains at 100%, which is
+    exactly the reading a user on battery reported as "not showing the battery
+    status".
+    """
+    labels = _menu_labels(
+        monkeypatch,
+        battery=types.SimpleNamespace(selector='Settings', percent=100,
+                                      plugged=True, present=True))
+
+    assert '↯ Plugged In 100%' in labels
+
+
+def test_the_reading_decides_plugged_in_not_the_selector(monkeypatch):
+    """``Settings`` is both the plugged-in bucket and the start-up default.
+
+    A machine whose battery was read as discharging is on battery whatever the
+    selector still says, so the label must not claim "Plugged In" for it.
+    """
+    labels = _menu_labels(
+        monkeypatch,
+        battery=types.SimpleNamespace(selector='HiBattery', percent=42,
+                                      plugged=False, present=True))
+
+    assert '█ HiBattery 42%' in labels
+    assert not any('Plugged In' in label for label in labels)
+
+
+def test_a_fractional_reading_is_not_padded(monkeypatch):
+    labels = _menu_labels(
+        monkeypatch,
+        battery=types.SimpleNamespace(selector='HiBattery', percent=98.3,
+                                      plugged=False, present=True))
+
+    assert '█ HiBattery 98.3%' in labels
 
 
 def test_glyphs_stay_inline_where_the_grouping_needs_them(monkeypatch):
@@ -270,7 +309,7 @@ def test_untouched_no_battery_state_is_not_marked_as_testing(monkeypatch):
         battery=types.SimpleNamespace(selector='Settings', percent=100,
                                       present=False, synthetic=False))
 
-    assert '↯ Plugged In' in labels
+    assert '↯ Plugged In 100%' in labels
     assert not any('TESTING' in label for label in labels)
 
 
@@ -280,7 +319,7 @@ def test_real_battery_state_is_not_marked_as_testing(monkeypatch):
         battery=types.SimpleNamespace(selector='Settings', percent=100,
                                       present=True, synthetic=False))
 
-    assert '↯ Plugged In' in labels
+    assert '↯ Plugged In 100%' in labels
     assert not any('TESTING' in label for label in labels)
 
 
@@ -325,7 +364,7 @@ def test_cycling_back_to_plugged_in_drops_the_testing_suffix(monkeypatch):
 
     labels = _menu_labels(monkeypatch, battery=cycler.battery)
 
-    assert '↯ Plugged In' in labels
+    assert '↯ Plugged In 100%' in labels
     assert not any('TESTING' in label for label in labels)
 
 

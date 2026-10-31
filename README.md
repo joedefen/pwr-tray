@@ -114,6 +114,7 @@ Per-DE requirements:
 | `--de NAME` | Force desktop detection (e.g., `--de i3-x11`, `--de sway-wayland`, `--de kde-wayland`). Useful when env vars are unreliable. |
 | `--replace` | Replace the `pwr-tray` that is already running: terminate it and start in its place. Without this flag a second start refuses and exits. |
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
+| `-b`, `--battery` | Print the detected power state -- plugged or on battery, the charge, the battery's own `status`, and every `/sys/class/power_supply` device behind it -- then exit. This is the first thing to run when the menu's battery line looks wrong. |
 | `--svc` / `--svc-status` | Report the `systemd --user` unit: installed, enabled, running. Exits `0` running, `1` installed-but-stopped, `2` not installed. |
 | `--svc-install` | Write the unit matching this desktop to `~/.config/systemd/user/`, reload, and enable it (does not start it now). This is the only verb that writes or enables the unit. The unit runs `~/.local/bin/pwr-tray`, so the verb refuses if that launcher is missing. |
 | `--svc-start` | Start the installed unit now. Enables it if it was disabled, so it returns at your next login; never writes the unit. An already-running unit is left alone; use `--svc-restart` to load new code. Refuses if `~/.local/bin/pwr-tray` is missing. |
@@ -149,7 +150,7 @@ Or choose a new *system state*:
 - **▼ Poweroff System** - power down the system immediately.
 
 Next, you may see:
-- **↯ Plugged In** (or HiBattery or LoBattery). Shows the state of the battery.
+- **↯ Plugged In 100%** (or **█ HiBattery 87%**, or **▃ LoBattery 8%**). Shows the power state and the charge level. The percentage is always there, including a full battery on mains, which used to show the state without it. A machine with no battery has no charge to report, so it shows **↯ Plugged In** alone -- and that item is also the test cycler described under Testing.
 - **♺ Chg Screen Idle: 15m->30m** - change the time to start the screen saver; each time clicked, it changes to the next choice.
 - **♺ Chg System Idle: 5m->30m** - change the time to take the system down; clicking selects the next choice.
 - **♫ PlayerCtl** - shows the state (not installed, enabled, disabled); if installed, a click toggles whether playing media inhibits screen locking and sleeping.
@@ -175,6 +176,27 @@ Or act on the applet itself:
 - To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`. Only an inhibitor that blocks `sleep` or `idle` shows the StopSign icon; one that only holds the power or lid key (`handle-power-key`, `handle-lid-switch`) does not, because a compositor owning an input event is not asking the session to stay awake.
 - To test media inhibit: play media in any MPRIS-capable player; the `PlayingNow` icon appears, the menu's `PlayerCtl` entry changes from `Idle` to `Busy: <player>` (or `Busy: 2+<player>` when several play), and the lock/sleep timeouts are suspended until playback stops. This works without `playerctl` -- the state is read from the session bus.
 - To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state. It steps `Plugged In` -> `HiBattery` -> `LoBattery` -> `Plugged In`. `HiBattery` starts full and counts down to just above `lo_battery_pct`; the next click starts `LoBattery` at `lo_battery_pct` (the highest percentage that still counts as low) and counts down to 0%, where that tier's `power_down` policy can act. The menu entry is suffixed with `(TESTING)` only while it shows one of those fabricated battery states, so it cannot be mistaken for a real power state; the plugged-in state -- at start-up, or when the cycle comes back around to it -- is the machine's real state and carries no suffix.
+
+#### The battery line looks wrong
+
+`pwr-tray --battery` prints the reading and the devices it came from, then exits:
+
+```
+power: present=True plugged=False percent=98.3 status=discharging source=sysfs
+[AC(mains,online=0) BAT0(battery,discharging,98%) CROS_USBPD_CHARGER0(usb,online=0,not charging)]
+```
+
+- `plugged` is what the menu line follows. It comes from UPower when its D-Bus
+  events are available, and from `/sys/class/power_supply` otherwise -- never
+  from the mains `online` flag alone, because on some machines (Chromebooks on
+  `cros_ec`) that flag stays `1` while the battery says `discharging`.
+- `CONFLICT(mains-vs-battery)` means exactly that disagreement; the battery wins
+  and the debug log records the line above when the state changes.
+- If `status` itself says `charging` while the charger is physically out, the
+  kernel/EC is reporting it, not the applet. The same line is in
+  `~/.config/pwr-tray/debug.log`, so it can be compared with
+  `upower -i /org/freedesktop/UPower/devices/battery_BAT0` and `cat
+  /sys/class/power_supply/BAT0/status`.
 
 #### Updating pwr-tray
 

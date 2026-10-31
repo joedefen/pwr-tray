@@ -20,7 +20,6 @@ import time
 import traceback
 from types import SimpleNamespace
 
-import psutil
 from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QCursor, QIcon
 from PyQt5.QtWidgets import QAction, QApplication, QMenu, QSystemTrayIcon  #, QMessageBox
@@ -41,6 +40,7 @@ from pwr_tray.Inhibitors import (
 )
 from pwr_tray.IniTool import IniTool
 from pwr_tray.PowerEvents import PowerEvents
+from pwr_tray.PowerSupply import describe, read_power
 from pwr_tray.SwayIdleMgr import SwayIdleManager
 from pwr_tray.TrayWatch import STATUS_NOTIFIER_WATCHER, TrayWatch
 from pwr_tray.Utils import PyKill, prt
@@ -759,11 +759,16 @@ class PwrTray:
 
         The event source keeps ``Percentage``, ``State`` and ``IsPresent``
         from the UPower signal payload, so applying a battery event costs a
-        dictionary lookup instead of a ``psutil`` call.  psutil answers only
-        when the bus has not spoken -- the first tick, a machine without
+        dictionary lookup instead of a sysfs walk.  ``read_power()`` answers
+        only when the bus has not spoken -- the first tick, a machine without
         UPower, and the five-minute resync -- and its answer is cached with
         the same lifetime as the other one-off queries, so a bus that stays
         silent still means one reading, not one per tick.
+
+        ``read_power()`` rather than ``psutil`` because psutil derives
+        ``power_plugged`` from ``AC/online`` alone, and that file is stale on
+        some machines (Chromebooks on cros_ec report ``online=1`` while the
+        battery says ``discharging``).  See PowerSupply for the cross-check.
         """
         events = self._events()
         if self._bus_is_trusted():
@@ -774,22 +779,32 @@ class PwrTray:
             if plugged is not None and percent is not None:
                 return SimpleNamespace(present=True, plugged=plugged,
                                        percent=round(percent, 1))
-        battery = psutil.sensors_battery()
-        if battery is None:
+        power = read_power()
+        if power.present is not True:
             return None
-        if self._bus_is_trusted():
-            events.note_battery(battery.percent, battery.power_plugged)
-        return SimpleNamespace(present=True,
-                               plugged=battery.power_plugged,
-                               percent=round(battery.percent, 1))
+        if self._bus_is_trusted() and power.percent is not None:
+            events.note_battery(power.percent, power.plugged)
+        return SimpleNamespace(present=True, plugged=power.plugged,
+                               percent=power.percent)
 
     def update_battery_status(self):
-        if self.battery.present is False:
-            return
+        """Re-read the power state and pick the tier it belongs to.
+
+        A machine with no battery keeps whatever the menu's test cycler put
+        there, but the absence itself is re-tested on every tick: a battery
+        the kernel reports late (or only after a resume) must not stay
+        "absent" for the life of the process.
+        """
         reading = self._battery_reading()
+        was_present = self.battery.present
         if reading is None:
             self.battery.present = False
+            if was_present is not False:
+                self.battery.synthetic = False
+                self.rebuild_menu = True
+                prt('power: no battery; the power item is now a test cycler')
             return
+
         was_plugged = self.battery.plugged
         was_selector = self.battery.selector
 
@@ -797,25 +812,49 @@ class PwrTray:
         self.battery.present = True
         self.battery.synthetic = False
         self.battery.plugged = reading.plugged
-        self.battery.percent = reading.percent
-        if self.battery.plugged:
+        if reading.percent is not None:
+            self.battery.percent = reading.percent
+        if reading.plugged is True:
             self.battery.selector = 'Settings'
-        elif self.battery.percent > self.get_params().lo_battery_pct:
-            self.battery.selector = 'HiBattery'
-        else:
-            self.battery.selector = 'LoBattery'
+        elif reading.plugged is False:
+            # Keep the tier a real reading would pick; percent is unknown only
+            # on a driver that publishes neither capacity nor energy.
+            percent = self.battery.percent
+            if percent is None or percent > self.get_params().lo_battery_pct:
+                self.battery.selector = 'HiBattery'
+            else:
+                self.battery.selector = 'LoBattery'
         if was_plugged != self.battery.plugged or was_selector != self.battery.selector:
             self.rebuild_menu = True
-#   IF WANTING TIME LEFT
-#       secsleft = battery.secsleft
-#       if secsleft == psutil.POWER_TIME_UNLIMITED:
-#           time_left = "Calculating..."
-#       elif secsleft == psutil.POWER_TIME_UNKNOWN:
-#           time_left = "Unknown"
-#       else:
-#           hours, remainder = divmod(secsleft, 3600)
-#           minutes, seconds = divmod(remainder, 60)
-#           time_left = f"{hours:02}:{minutes:02}"
+            prt(f'power: plugged={self.battery.plugged}'
+                f' percent={self.battery.percent}'
+                f' selector={self.battery.selector}')
+
+    def battery_line(self):
+        """The power menu item's label, built from what was detected.
+
+        The label used to be inferred from the selector, and ``Settings`` is
+        both the plugged-in bucket and the start-up default, so a machine
+        whose battery was never read still showed "Plugged In".  The reading
+        decides now; the selector is only a fallback for the unknown case.
+        """
+        battery = self.battery
+        percent = battery.percent
+        plugged = getattr(battery, 'plugged', None)
+        on_mains = (plugged if plugged is not None
+                    else battery.selector == 'Settings')
+        if on_mains:
+            label = '↯ Plugged In'
+        else:
+            icon = '█' if battery.selector == 'HiBattery' else '▃'
+            label = f'{icon} {battery.selector}'
+        # The percentage is the battery status: it is shown whatever the tier
+        # is, including a full battery on mains, which used to show nothing.
+        if percent is not None:
+            label += f' {percent:g}%'
+        if getattr(battery, 'synthetic', False):
+            label += ' (TESTING)'
+        return label
 
     def reset_xidle_ms(self):
         """ TBD"""
@@ -1037,21 +1076,11 @@ class PwrTray:
         add_item('    ▼ Reboot', self.reboot)
         add_item('    ▼ PowerOff', self.poweroff)
 
-        selector, percent = self.battery.selector, self.battery.percent
         # Only a fabricated HiBattery/LoBattery leg is synthetic; the
         # plugged-in state of a machine without a battery, whether reached at
         # start-up or by closing the cycle, is its real state and must not be
         # labelled as a test.
-        testing = bool(getattr(self.battery, 'synthetic', False))
-        if selector == 'Settings':
-            label = '↯ Plugged In'
-        else:
-            label = ('█' if selector == 'HiBattery' else '▃') + f' {selector}'
-        if selector != 'Settings' or percent < 100:
-            label += f' {percent}%'
-        if testing:
-            label += ' (TESTING)'
-        add_item(label, self._toggle_battery)
+        add_item(self.battery_line(), self._toggle_battery)
 
         # if self.mode not in ('Presentation',) and len(self.opts.lock_min_list) > 1:
         add_item(f'  ♺ Lock: {self._lock_rotate_str()}',
@@ -1435,6 +1464,9 @@ def main():
                  ' kde-wayland)')
     parser.add_argument('--list-des', action='store_true',
             help='list known desktops and the commands each requires, then exit')
+    parser.add_argument('-b', '--battery', action='store_true',
+            help='print the detected battery/AC state, plus the raw'
+                 ' /sys/class/power_supply values behind it, then exit')
     parser.add_argument('--replace', action='store_true',
             help='if another pwr-tray holds the single-instance lock, terminate'
                  ' it and take over (default: refuse to start)')
@@ -1470,6 +1502,10 @@ def main():
             help='print the systemd unit for this desktop, then exit'
                  ' (a starter for a hand-installed or customized unit)')
     opts = parser.parse_args()
+
+    if opts.battery:
+        print(describe(read_power()))
+        return
 
     if opts.svc:
         sys.exit(run_service_command(opts))

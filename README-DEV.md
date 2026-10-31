@@ -25,6 +25,7 @@ happens at start-up, what the event loop actually does on a tick, and how
 | `pwr_tray/Actions.py` | The user-action layer: every menu entry that starts a process, with the shell semantics of `commands.yaml` |
 | `pwr_tray/Desktop.py` | DE detection, command validation, variable expansion and resource installation over `commands.yaml` |
 | `pwr_tray/PowerEvents.py` | Event sources and the state they carry: two long-lived `dbus-monitor` children (system bus, session bus) keep `BlockInhibited`, the MPRIS play state and player lifetime, and UPower's battery readings current, plus a config-file watcher |
+| `pwr_tray/PowerSupply.py` | The battery and AC reading straight from `/sys/class/power_supply`, cross-checking the mains `online` flag against the battery's own `status`; the fallback behind `PowerEvents`, and what `--battery` prints |
 | `pwr_tray/TrayWatch.py` | Watches the tray host's `org.kde.StatusNotifierWatcher` bus name so the applet re-registers its tray item when a bar starts late or restarts |
 | `pwr_tray/IniTool.py` | `config.ini` parsing, tier inheritance, defaults, list parsing, change detection |
 | `pwr_tray/Utils.py` | Console capture, log rotation, logging, process discovery and killing, the `flock` single-instance lock |
@@ -41,7 +42,7 @@ convenience.
 ### How a run starts
 
 `main()` parses arguments, short-circuits the non-GUI flags (`--list-des`,
-`--edit-config`, `--follow-log`), then:
+`--battery`, `--edit-config`, `--follow-log`), then:
 
 1. constructs `IniTool`, which creates `~/.config/pwr-tray/config.ini` and
    copies the resources if they are missing;
@@ -93,14 +94,27 @@ re-verifies the recorded pid's command line before signalling it
   is stopped idempotently on exit.
 * **The battery reading.** `Percentage`, `State` and `IsPresent` arrive in the
   payload of the UPower property change, so applying a battery event is a
-  dictionary lookup and `psutil.sensors_battery()` is only the fallback: the
+  dictionary lookup and `PowerSupply.read_power()` is only the fallback: the
   first tick, a machine without UPower, and the five-minute resync. That one
   answer is cached (`note_battery`), so a bus that stays silent costs one
-  psutil call rather than one per tick. `State` decides plugged/unplugged --
+  sysfs walk rather than one per tick. `State` decides plugged/unplugged --
   it is what `power_plugged` has always meant -- and the manager's
   `OnBattery`, inverted, answers when the device published no state. UPower's
   composite `DisplayDevice` outranks an individual `BAT0`, so two batteries
   cannot flip-flop the menu.
+* **The fallback is sysfs, not psutil.** psutil derives `power_plugged` from
+  `AC/online` alone, and on a Chromebook (`cros_ec`, which also exposes
+  `CROS_USBPD_CHARGER*`) that file can stay `1` while the battery reports
+  `discharging` -- the applet then says "Plugged In" on battery forever.
+  `read_power()` reads the supplies itself and trusts the battery's `status`
+  when the two disagree, setting `conflict` so the disagreement is visible.
+  `present` is a reading, not a verdict: a machine with no battery is re-tested
+  every tick, so a battery the kernel reports late (or after a resume) is
+  picked up instead of leaving the menu in the test cycler until a restart.
+  The menu label is built from `plugged` and always carries the percentage --
+  inferring "Plugged In" from the selector was what made a never-read battery
+  look like mains power. `pwr-tray --battery` prints the same fields next to
+  the raw devices.
 * **Tray registration.** Qt registers the `QSystemTrayIcon` with
   `org.kde.StatusNotifierWatcher` once, when the item is shown, and never
   retries -- which is why an applet started before the bar used to stay
@@ -144,8 +158,11 @@ the command each desktop is given, `test_idle_state_machine.py` drives the
 branch ladder, `test_media_inhibit.py` the inhibition verdict (both from the bus
 cache and from the subprocess fallback), `test_inhibitors.py` the logind answer
 and row formats, `test_power_events.py` event classification, value capture and
-dirty-flag coalescing, `test_battery.py` the UPower payload and the psutil
-fallback, and the `test_service_*` modules
+dirty-flag coalescing, `test_battery.py` the UPower payload and the sysfs
+fallback, `test_power_supply.py` the sysfs cross-check (synthetic
+`/sys/class/power_supply` trees: a stale mains flag, an absent battery, two
+batteries, no sysfs at all) and the menu line it produces, and the
+`test_service_*` modules
 the `--svc-*` verbs and the shipped units. How to run it, and the coverage floor
 that makes it a gate rather than a habit, are in [Test gate](#test-gate).
 

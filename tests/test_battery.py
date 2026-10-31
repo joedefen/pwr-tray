@@ -1,17 +1,19 @@
-"""The battery reading comes from the UPower payload, not from psutil.
+"""The battery reading comes from the UPower payload, not from sysfs.
 
-``psutil.sensors_battery()`` used to be called on every battery event.  UPower
+``read_power()`` (a sysfs walk) used to be called on every battery event.  UPower
 publishes ``Percentage``, ``State``, ``IsPresent`` and ``OnBattery`` as D-Bus
 property changes whose payload *is* the new value, so the event source keeps
-the reading and psutil becomes the fallback: the first tick, a machine without
-UPower, and the five-minute resync.
+the reading and the sysfs walk becomes the fallback: the first tick, a machine
+without UPower, and the five-minute resync.  (The fallback was psutil until its
+``power_plugged`` was caught trusting a stale ``AC/online``; see
+tests/test_power_supply.py.)
 
 Two things are pinned here:
 
 - the payload's *type*.  logind and MPRIS publish strings, UPower publishes
   booleans and numbers (``variant double 87.5``), so the signature on the line
   has to pick the parser -- one string parser would silently keep nothing;
-- that a bus which has answered costs no psutil call at all, including after
+- that a bus which has answered costs no sysfs read at all, including after
   it has answered only once.
 """
 
@@ -234,22 +236,26 @@ def _tray(events=None, bus_ok=True):
     return tray
 
 
-def _psutil(monkeypatch, percent=None, plugged=None):
-    """Install a psutil reading and return the call log."""
+def _sysfs(monkeypatch, percent=None, plugged=None):
+    """Install a sysfs reading as the fallback and return the call log."""
     calls = []
 
-    def sensors_battery():
-        calls.append('psutil')
+    def read_power():
+        calls.append('sysfs')
         if percent is None:
-            return None
-        return SimpleNamespace(percent=percent, power_plugged=plugged)
+            return SimpleNamespace(present=None, plugged=None, percent=None,
+                                   status='', charging=False, conflict=False,
+                                   source='sysfs', supplies=[])
+        return SimpleNamespace(present=True, plugged=plugged, percent=percent,
+                               status='', charging=False, conflict=False,
+                               source='sysfs', supplies=[])
 
-    monkeypatch.setattr(main_module.psutil, 'sensors_battery', sensors_battery)
+    monkeypatch.setattr(main_module, 'read_power', read_power)
     return calls
 
 
-def test_a_battery_event_costs_no_psutil_call(monkeypatch):
-    calls = _psutil(monkeypatch, 64, True)
+def test_a_battery_event_costs_no_sysfs_read(monkeypatch):
+    calls = _sysfs(monkeypatch, 64, True)
     tray = _tray(_Events(True, False, 55.5))
 
     reading = tray._battery_reading()
@@ -258,15 +264,15 @@ def test_a_battery_event_costs_no_psutil_call(monkeypatch):
     assert calls == []
 
 
-def test_the_bus_saying_there_is_no_battery_skips_psutil(monkeypatch):
-    calls = _psutil(monkeypatch, 50, False)
+def test_the_bus_saying_there_is_no_battery_skips_the_sysfs_read(monkeypatch):
+    calls = _sysfs(monkeypatch, 50, False)
 
     assert _tray(_Events(present=False))._battery_reading() is None
     assert calls == []
 
 
-def test_a_silent_bus_falls_back_to_psutil_and_is_cached(monkeypatch):
-    calls = _psutil(monkeypatch, 64.4, True)
+def test_a_silent_bus_falls_back_to_sysfs_and_is_cached(monkeypatch):
+    calls = _sysfs(monkeypatch, 64.4, True)
     events = _Events()
     tray = _tray(events)
 
@@ -276,27 +282,27 @@ def test_a_silent_bus_falls_back_to_psutil_and_is_cached(monkeypatch):
 
     # The answer is now cached, so the next event asks nothing.
     tray._battery_reading()
-    assert calls == ['psutil']
+    assert calls == ['sysfs']
 
 
-def test_without_a_bus_the_battery_comes_from_psutil(monkeypatch):
-    calls = _psutil(monkeypatch, 33.3, False)
+def test_without_a_bus_the_battery_comes_from_sysfs(monkeypatch):
+    calls = _sysfs(monkeypatch, 33.3, False)
     tray = _tray(None, bus_ok=False)
 
     reading = tray._battery_reading()
 
     assert (reading.plugged, reading.percent) == (False, 33.3)
-    assert calls == ['psutil']
+    assert calls == ['sysfs']
 
 
 def test_a_machine_without_a_battery_reports_none(monkeypatch):
-    _psutil(monkeypatch)
+    _sysfs(monkeypatch)
 
     assert _tray(_Events())._battery_reading() is None
 
 
 def test_update_battery_status_applies_a_bus_reading(monkeypatch):
-    calls = _psutil(monkeypatch, 99, True)
+    calls = _sysfs(monkeypatch, 99, True)
     tray = _tray(_Events(True, False, 15.4))
 
     tray.update_battery_status()
@@ -309,7 +315,7 @@ def test_update_battery_status_applies_a_bus_reading(monkeypatch):
 
 
 def test_a_plugged_reading_keeps_the_settings_tier(monkeypatch):
-    _psutil(monkeypatch, 50, False)
+    _sysfs(monkeypatch, 50, False)
     tray = _tray(_Events(True, True, 80))
 
     tray.update_battery_status()
@@ -318,19 +324,25 @@ def test_a_plugged_reading_keeps_the_settings_tier(monkeypatch):
     assert tray.rebuild_menu is False
 
 
-def test_an_absent_battery_is_recorded_and_not_looked_for_again(monkeypatch):
-    calls = _psutil(monkeypatch)
+def test_an_absent_battery_is_recorded_but_re_tested(monkeypatch):
+    """Absence is a reading, not a verdict for the life of the process.
+
+    Treating the first "no battery" answer as final kept a machine whose
+    battery the kernel reported late -- or only after a resume -- in the test
+    cycler until the applet was restarted.
+    """
+    calls = _sysfs(monkeypatch)
     tray = _tray(_Events())
 
     tray.update_battery_status()
     tray.update_battery_status()
 
     assert tray.battery.present is False
-    assert calls == ['psutil']
+    assert calls == ['sysfs', 'sysfs']
 
 
 def test_a_real_reading_replaces_the_test_cycler(monkeypatch):
-    _psutil(monkeypatch, 50, True)
+    _sysfs(monkeypatch, 50, True)
     tray = _tray(_Events(True, False, 50))
     tray.battery.synthetic = True
 
