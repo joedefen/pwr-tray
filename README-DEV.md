@@ -24,7 +24,7 @@ happens at start-up, what the event loop actually does on a tick, and how
 | `pwr_tray/IdleStateMachine.py` | The idle branch ladder -- lock, blank, suspend, power off, reset, awake -- plus the idle-time and state primitives |
 | `pwr_tray/Actions.py` | The user-action layer: every menu entry that starts a process, with the shell semantics of `commands.yaml` |
 | `pwr_tray/Desktop.py` | DE detection, command validation, variable expansion and resource installation over `commands.yaml` |
-| `pwr_tray/PowerEvents.py` | Event sources and the state they carry: two long-lived `dbus-monitor` children (system bus, session bus) keep `BlockInhibited`, the MPRIS play state and player lifetime current, plus a config-file watcher |
+| `pwr_tray/PowerEvents.py` | Event sources and the state they carry: two long-lived `dbus-monitor` children (system bus, session bus) keep `BlockInhibited`, the MPRIS play state and player lifetime, and UPower's battery readings current, plus a config-file watcher |
 | `pwr_tray/TrayWatch.py` | Watches the tray host's `org.kde.StatusNotifierWatcher` bus name so the applet re-registers its tray item when a bar starts late or restarts |
 | `pwr_tray/IniTool.py` | `config.ini` parsing, tier inheritance, defaults, list parsing, change detection |
 | `pwr_tray/Utils.py` | Console capture, log rotation, logging, process discovery and killing, the `flock` single-instance lock |
@@ -86,9 +86,21 @@ re-verifies the recorded pid's command line before signalling it
   `PrepareForSleep`, UPower AC/device changes, MPRIS playback status, MPRIS
   player lifetime (`NameOwnerChanged`), and the config file. Monitors are
   drained through `QSocketNotifier`s; lines are classified by object path and
-  the property's `variant` value is kept (`blocked`, `media_playing`), so the
-  tick never has to ask a program what changed. The whole thing is stopped
-  idempotently on exit.
+  the property's `variant` value is kept (`blocked`, `media_playing`, the
+  battery readings), so the tick never has to ask a program what changed. The
+  value's type comes from the signature on the line, because UPower publishes
+  booleans and numbers where logind and MPRIS publish strings. The whole thing
+  is stopped idempotently on exit.
+* **The battery reading.** `Percentage`, `State` and `IsPresent` arrive in the
+  payload of the UPower property change, so applying a battery event is a
+  dictionary lookup and `psutil.sensors_battery()` is only the fallback: the
+  first tick, a machine without UPower, and the five-minute resync. That one
+  answer is cached (`note_battery`), so a bus that stays silent costs one
+  psutil call rather than one per tick. `State` decides plugged/unplugged --
+  it is what `power_plugged` has always meant -- and the manager's
+  `OnBattery`, inverted, answers when the device published no state. UPower's
+  composite `DisplayDevice` outranks an individual `BAT0`, so two batteries
+  cannot flip-flop the menu.
 * **Tray registration.** Qt registers the `QSystemTrayIcon` with
   `org.kde.StatusNotifierWatcher` once, when the item is shown, and never
   retries -- which is why an applet started before the bar used to stay
@@ -132,7 +144,8 @@ the command each desktop is given, `test_idle_state_machine.py` drives the
 branch ladder, `test_media_inhibit.py` the inhibition verdict (both from the bus
 cache and from the subprocess fallback), `test_inhibitors.py` the logind answer
 and row formats, `test_power_events.py` event classification, value capture and
-dirty-flag coalescing, and the `test_service_*` modules
+dirty-flag coalescing, `test_battery.py` the UPower payload and the psutil
+fallback, and the `test_service_*` modules
 the `--svc-*` verbs and the shipped units. How to run it, and the coverage floor
 that makes it a gate rather than a habit, are in [Test gate](#test-gate).
 

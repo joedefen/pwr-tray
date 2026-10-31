@@ -44,6 +44,7 @@ desktop.
 ### Requirements
 * **Python** 3.11+ with **PyQt5** (5.15+) and **ruamel.yaml** (0.17+)
 * **systemd** (for `systemctl`, `loginctl`, `busctl` and `systemd-inhibit`; the `--svc-*` verbs also need a reachable `systemd --user` manager)
+* **UPower** (optional but present on most desktops; its D-Bus signals carry the battery state and the AC plug as they change, which is what the applet reads instead of polling)
 * **pipx** (recommended for installation)
 
 Per-DE requirements:

@@ -749,11 +749,40 @@ class PwrTray:
         self.was_output = signature
         return rows, bool(was_output != signature)
 
+    def _battery_reading(self):
+        """Where the battery stands, or None when the machine has none.
+
+        The event source keeps ``Percentage``, ``State`` and ``IsPresent``
+        from the UPower signal payload, so applying a battery event costs a
+        dictionary lookup instead of a ``psutil`` call.  psutil answers only
+        when the bus has not spoken -- the first tick, a machine without
+        UPower, and the five-minute resync -- and its answer is cached with
+        the same lifetime as the other one-off queries, so a bus that stays
+        silent still means one reading, not one per tick.
+        """
+        events = self._events()
+        if self._bus_is_trusted():
+            if events.battery_present is False:
+                return None
+            plugged = events.battery_plugged
+            percent = events.battery_percent
+            if plugged is not None and percent is not None:
+                return SimpleNamespace(present=True, plugged=plugged,
+                                       percent=round(percent, 1))
+        battery = psutil.sensors_battery()
+        if battery is None:
+            return None
+        if self._bus_is_trusted():
+            events.note_battery(battery.percent, battery.power_plugged)
+        return SimpleNamespace(present=True,
+                               plugged=battery.power_plugged,
+                               percent=round(battery.percent, 1))
+
     def update_battery_status(self):
         if self.battery.present is False:
             return
-        battery = psutil.sensors_battery()
-        if battery is None:
+        reading = self._battery_reading()
+        if reading is None:
             self.battery.present = False
             return
         was_plugged = self.battery.plugged
@@ -762,8 +791,8 @@ class PwrTray:
         # A real reading replaces anything the test cycler fabricated.
         self.battery.present = True
         self.battery.synthetic = False
-        self.battery.plugged = battery.power_plugged
-        self.battery.percent = round(battery.percent, 1)
+        self.battery.plugged = reading.plugged
+        self.battery.percent = reading.percent
         if self.battery.plugged:
             self.battery.selector = 'Settings'
         elif self.battery.percent > self.get_params().lo_battery_pct:

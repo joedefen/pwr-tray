@@ -14,6 +14,9 @@ once and *keeps* the answers:
   the stream (or a caller's one-off query) has supplied it,
 * :attr:`PowerEvents.media_playing` -- whether any MPRIS player reports
   ``Playing``, ``None`` until the stream knows,
+* :attr:`PowerEvents.battery_percent`, :attr:`PowerEvents.battery_plugged` and
+  :attr:`PowerEvents.battery_present` -- UPower's readings, taken from the
+  payload instead of asking ``psutil``/sysfs,
 * the ``config.ini`` watch, which only ever needs a notification.
 
 The callbacks therefore only schedule a tick; the tick reads a dictionary
@@ -84,15 +87,27 @@ class PowerEvents:
     UPOWER_DEVICE_PREFIX = '/org/freedesktop/UPower/devices/'
     MPRIS_PATH = '/org/mpris/MediaPlayer2'
 
+    # UPower's composite device: the aggregate a desktop shows, as opposed to
+    # one object per physical battery.
+    DISPLAY_DEVICE = UPOWER_DEVICE_PREFIX + 'DisplayDevice'
+
     # Properties whose change means the cached reading is stale.
     BATTERY_PROPERTIES = ('Percentage', 'State', 'IsPresent',
                           'TimeToEmpty', 'TimeToFull')
     INHIBITOR_PROPERTIES = ('BlockInhibited', 'DelayInhibited')
     PLAYBACK_PROPERTIES = ('PlaybackStatus', )
 
+    # UPower's DeviceState enum, split by which side of the cable it means.
+    # 0 (unknown) is in neither set, so it falls through to OnBattery.
+    PLUGGED_STATES = frozenset({1, 4, 5})      # charging, full, pending-charge
+    ON_BATTERY_STATES = frozenset({2, 3, 6})   # discharging, empty, pending
+
     #: One D-Bus string literal.  dbus-monitor quotes and escapes it the same
     #: way in every body it prints, so one pattern serves names and values.
     STRING_LITERAL = re.compile(r'string "((?:[^"\\]|\\.)*)"')
+
+    #: A variant line: the signature, then the payload (``variant double 87``).
+    VARIANT_LINE = re.compile(r'^variant\s+(\w+)\s+(\S+)$')
 
     def __init__(self, on_inhibitors=None, on_battery=None,
                  on_playback=None, on_config=None, on_resume=None,
@@ -121,6 +136,12 @@ class PowerEvents:
         self._names = {}
         self._media_known = False
         self._media_fallback = None
+        # UPower's readings, kept per device: two batteries report their own
+        # percentages, and the composite DisplayDevice is the one to show.
+        self._batteries = {}
+        self._battery_source = ''
+        self._on_battery = None
+        self._battery_fallback = None
 
         # A normal exit must not orphan the dbus-monitor children.  stop() is
         # idempotent, so an explicit call followed by atexit is harmless.
@@ -181,8 +202,65 @@ class PowerEvents:
             name = root
         return name or 'player'
 
+    # -- the battery -------------------------------------------------------
+
+    @property
+    def battery_percent(self):
+        """The charge percentage UPower last reported, or None while unknown."""
+        percent = self._battery_value('Percentage')
+        if percent is not None:
+            return float(percent)
+        return None if self._battery_fallback is None else self._battery_fallback[0]
+
+    @property
+    def battery_plugged(self):
+        """True on mains power, False on battery, None when nothing said so.
+
+        ``State`` is the authoritative answer -- it is what ``psutil`` and the
+        rest of the stack derive ``power_plugged`` from -- and the manager's
+        ``OnBattery``, inverted, is the fallback for a device that published
+        no state of its own.
+        """
+        state = self._battery_value('State')
+        if state in self.PLUGGED_STATES:
+            return True
+        if state in self.ON_BATTERY_STATES:
+            return False
+        if self._on_battery is not None:
+            return not self._on_battery
+        return None if self._battery_fallback is None else self._battery_fallback[1]
+
+    @property
+    def battery_present(self):
+        """False when UPower says the device is absent; None while unknown."""
+        present = self._battery_value('IsPresent')
+        if present is not None:
+            return bool(present)
+        if self.battery_percent is not None:
+            # A percentage can only come from a battery that is there.
+            return True
+        return None
+
+    def note_battery(self, percent, plugged):
+        """Cache a one-off ``psutil`` reading; UPower overrides it when it speaks."""
+        self._battery_fallback = (float(percent), bool(plugged))
+
+    def _battery_value(self, prop):
+        """One device property, preferring UPower's composite DisplayDevice.
+
+        A machine with two batteries has two devices with their own
+        ``Percentage``; DisplayDevice is the aggregate the desktop itself
+        shows, so it wins whenever it has spoken, and the last device to
+        report answers otherwise.
+        """
+        for path in (self.DISPLAY_DEVICE, self._battery_source):
+            values = self._batteries.get(path)
+            if values and prop in values:
+                return values[prop]
+        return None
+
     def invalidate(self):
-        """Forget both answers so the next tick re-reads them once.
+        """Forget the cached answers so the next tick re-reads them once.
 
         Used by the applet's periodic resync: a missed signal is exactly the
         failure a cache introduces, and one query every five minutes is the
@@ -194,6 +272,10 @@ class PowerEvents:
         self._players.clear()
         self._media_known = False
         self._media_fallback = None
+        self._batteries.clear()
+        self._battery_source = ''
+        self._on_battery = None
+        self._battery_fallback = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -386,7 +468,7 @@ class PowerEvents:
                 self._notify(kind)
             return
 
-        value = self._variant_string(line)
+        value = self._value_for(kind, line)
         if value is not None and message['prop'] is not None:
             message['valued'] = True
             self._apply_value(kind, message['sender'], message['path'],
@@ -412,7 +494,7 @@ class PowerEvents:
         self._messages[key] = None
         if not message or message['prop'] is None or message['valued']:
             return
-        self._mark_unknown(message['kind'], message['prop'])
+        self._mark_unknown(message['kind'], message['path'], message['prop'])
 
     @staticmethod
     def _interesting(kind):
@@ -444,8 +526,19 @@ class PowerEvents:
             self._players[(sender, path)] = value
             self._media_known = True
             self._media_fallback = None
+        elif kind in ('upower', 'upower_device'):
+            self._note_battery_value(path, prop, value)
 
-    def _mark_unknown(self, kind, prop):
+    def _note_battery_value(self, path, prop, value):
+        """Keep one UPower reading, keyed by the object that published it."""
+        if not path.startswith(self.UPOWER_DEVICE_PREFIX):
+            if prop == 'OnBattery':
+                self._on_battery = bool(value)
+            return
+        self._batteries.setdefault(path, {})[prop] = value
+        self._battery_source = path
+
+    def _mark_unknown(self, kind, path, prop):
         """The property arrived invalidated; its value was not in the message."""
         if kind == 'login1' and prop == 'BlockInhibited':
             self._blocked = None
@@ -453,6 +546,10 @@ class PowerEvents:
             self._players.clear()
             self._media_known = False
             self._media_fallback = None
+        elif kind == 'upower' and prop == 'OnBattery':
+            self._on_battery = None
+        elif kind == 'upower_device':
+            self._batteries.get(path, {}).pop(prop, None)
 
     def _owner_changed(self, name, old_owner, new_owner):
         """Track player lifetime by the unique name behind each status."""
@@ -490,6 +587,18 @@ class PowerEvents:
         return match.group(1).replace('\\"', '"').replace('\\\\', '\\')
 
     @classmethod
+    def _value_for(cls, kind, line):
+        """Read a variant line as the type this kind's properties use.
+
+        logind and MPRIS publish strings; UPower publishes booleans and
+        numbers (``variant double 87.5``).  The signature is on the line, so
+        it picks the parser instead of one parser having to guess.
+        """
+        if kind in ('upower', 'upower_device'):
+            return cls._variant_number(line)
+        return cls._variant_string(line)
+
+    @classmethod
     def _variant_string(cls, line):
         """The value of a ``variant string "..."`` line, if this is one.
 
@@ -500,6 +609,30 @@ class PowerEvents:
         if not text.startswith('variant'):
             return None
         return cls._quoted(text[len('variant'):])
+
+    @classmethod
+    def _variant_number(cls, line):
+        """The payload of a boolean or numeric variant line, or None.
+
+        None means "this line is not a value at all", which is how the
+        scanner recognises a property that arrived invalidated.
+        """
+        match = cls.VARIANT_LINE.match(line.strip())
+        if match is None:
+            return None
+        signature, text = match.groups()
+        if signature == 'boolean':
+            return text == 'true'
+        if signature == 'double':
+            try:
+                return float(text)
+            except ValueError:
+                return None
+        # Every integer width dbus-monitor prints for a battery property.
+        try:
+            return int(text)
+        except ValueError:
+            return None
 
     @staticmethod
     def _header_field(header, name):
