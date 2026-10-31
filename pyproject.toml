@@ -47,23 +47,25 @@
 #
 # Releasing
 # ---------
-# `./bless` is the only path to an upload, and it is a dry run unless it is
-# given `test` or `publish`.  Every mode reads the JSON index it targets before
-# building and refuses a version that is already published, listing every
-# release that index has, because an upload cannot be replaced.  It then
-# refuses a dirty tree, runs the gate, builds into a fresh directory (never the
-# accumulating `dist/`), inspects the two files with tests/inspect_dist.py --
-# the same inspector CI uses -- runs `twine check --strict`, installs the wheel
-# in a scratch virtualenv and runs it, and prints what `publish` would do.
-# `./bless test` rehearses the upload on test.pypi.org: it builds a throwaway
+# `./bless` is the only path to an upload, and it takes no argument and no flag:
+# every run runs the whole gate, prints the checklist of what it is holding, and
+# only then asks `====> Enter test or publish or quit:`.  The answer decides the
+# irreversible part, so it must not also be able to skip the careful part.
+# Every run reads the JSON index that answer would write to before building
+# anything, and refuses a version that is already published, listing every
+# release that index has, because an upload cannot be replaced.
+# Before the prompt: refuse a dirty tree, run the gate, build into a fresh
+# directory (never the accumulating `dist/`), inspect the two files with
+# tests/inspect_dist.py -- the same inspector CI uses -- run
+# `twine check --strict`, install the wheel in a scratch virtualenv and run it.
+# `test` rehearses the upload on test.pypi.org: it builds a throwaway
 # `X.Y.Z.99.N` from a copy of the tree (N is one past what TestPyPI already
 # has for that base), so the working version is never spent and no tag is made,
 # and it prints the pip line that installs the result.
-# `./bless publish` fast-forwards `main` and `dev` to one commit, tags it,
-# uploads the two named files to PyPI, verifies the index and pushes.  Releases
-# are run by hand from the development tree (plans/pypi-release-plan.md,
-# R1/R2), so the safety lives in one inspectable command instead of a CI job
-# that can only see what it just built.
+# `publish` makes `main` and `dev` one commit, tags it `vX.Y.Z`, uploads the
+# two named files to PyPI, verifies the index and pushes.  Releases are run by
+# hand from the development tree, so the safety lives in one inspectable
+# command instead of a CI job that can only see what it just built.
 
 [build-system]
 # 3.12 is the oldest backend tested with the SPDX `license` form below.  The

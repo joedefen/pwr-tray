@@ -4,10 +4,10 @@ README guarantees that missing or invalid settings in [HiBattery] and
 [LoBattery] are inherited from [Settings].  The parsed [Settings] values must
 therefore become the base for both tiers, not the hard-coded defaults.
 
-The other half of the rule (audit R3): "inherit from [Settings]" means the
-values the user *wrote* there.  A key absent from both the file's [Settings]
-and the tier has to use the tier's own entry in ``IniTool.defaults`` -- before
-R3 that table was documentation nothing honoured.
+The other half of the rule: "inherit from [Settings]" means the values the user
+*wrote* there.  A key absent from both the file's [Settings] and the tier has
+to use the tier's own entry in ``IniTool.defaults``; before that rule the table
+was documentation nothing honoured.
 """
 
 from pwr_tray.IniTool import IniTool

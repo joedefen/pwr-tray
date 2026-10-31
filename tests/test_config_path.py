@@ -1,4 +1,4 @@
-"""Regression tests for audit finding P2-15: config-path robustness.
+"""Regression tests for config-path robustness.
 
 `update_config()` used to call `os.path.getmtime()` unguarded, and it is called
 from `on_timeout()` inside a Qt slot.  Deleting `config.ini` -- or leaving a

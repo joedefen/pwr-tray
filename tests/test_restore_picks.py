@@ -1,8 +1,8 @@
 """Regression tests for PwrTray.restore_picks() and save_picks().
 
-Covers audit finding P0-2: sleep timeouts were restored through the *lock*
-helper, a partial picks.json aborted the whole restore, and the failure path
-reported success.  The suite runs headless via the stubs in the root
+Sleep timeouts were once restored through the *lock* helper, a partial
+picks.json aborted the whole restore, and the failure path reported success.
+The suite runs headless via the stubs in the root
 conftest.py and never touches the real ~/.config/pwr-tray.
 """
 

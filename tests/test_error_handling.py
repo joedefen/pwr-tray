@@ -1,4 +1,4 @@
-"""Regression tests for audit finding P1-6: startup failures are reported.
+"""Regression tests for startup-failure reporting.
 
 `detect_de()` and the must_haves check used to abort with `assert`, which shows
 the user a traceback -- and, worse, disappears under `python -O`, leaving the

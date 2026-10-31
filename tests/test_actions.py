@@ -1,4 +1,4 @@
-"""Regression tests for audit finding F4 (the action layer is not exercised).
+"""Regression tests for the action layer.
 
 Policy was tested; the commands the policy triggers were not.  Every menu entry
 ends in a ``subprocess`` call whose *exact text* is desktop knowledge:

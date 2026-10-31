@@ -1,13 +1,13 @@
-"""Regression tests for audit finding P1-7 and residual finding R1.
+"""Regression tests for command-line matching and the single-instance lock.
 
-P1-7: PyKill used to match only ``python <target>`` / ``python <target>.py``.
-A restarted instance is ``python -m pwr_tray.main`` (``ps`` shows ``-m`` where
+PyKill used to match only ``python <target>`` / ``python <target>.py``.  A
+restarted instance is ``python -m pwr_tray.main`` (``ps`` shows ``-m`` where
 the script name used to be) and the development launcher was ``python
 runner``, so neither could be found -- a second tray icon and a second
 swayidle manager followed.
 
-R1: the killer then ran *before* the lock, so a second launch never detected
-the incumbent; it terminated it and took over.  With ``Restart=always``, two
+The killer also ran *before* the lock, so a second launch never detected the
+incumbent; it terminated it and took over.  With ``Restart=always``, two
 supervisors could ping-pong forever.  These tests pin down command-line
 matching, the guarded takeover, and the lock-first start-up order.
 """

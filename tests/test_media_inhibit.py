@@ -1,4 +1,4 @@
-"""Regression tests for the media-inhibit path (audit finding R2, v1 #1).
+"""Regression tests for the media-inhibit path.
 
 v1 read ``playerctl status`` and then never used it, so "stop the autolock while
 a video plays" was a no-op on every desktop.  The fix has two halves and the

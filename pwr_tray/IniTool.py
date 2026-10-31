@@ -228,7 +228,7 @@ class IniTool:
         A tier inherits every value the user actually wrote in [Settings]
         (v1 #4).  A key absent from both the file's [Settings] and the tier
         itself falls back to this tier's entry in `self.defaults`, so the
-        per-tier table is authoritative instead of decorative (audit R3).
+        per-tier table is authoritative instead of decorative.
         """
         base = copy.deepcopy(settings_params)
         for key in self.defaults[selector]:

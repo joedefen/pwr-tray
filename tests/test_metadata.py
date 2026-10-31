@@ -1,4 +1,4 @@
-"""Regression tests for audit finding 12 (metadata drift).
+"""Regression tests for metadata drift.
 
 The published metadata once described a PyQt5 applet as a GTK one, carried a
 dependency that could never apply, and exposed no version at all.  These tests

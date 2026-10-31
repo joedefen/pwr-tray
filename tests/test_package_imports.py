@@ -1,4 +1,4 @@
-"""Regression tests for audit finding P1-5.
+"""Regression tests for importable packaged modules.
 
 `pwr_tray/YamlDump.py` imported `LibGen.CustLogger`, a package that has never
 been part of this project, so the module shipped in the wheel could not be

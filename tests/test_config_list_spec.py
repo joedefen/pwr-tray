@@ -1,4 +1,4 @@
-"""Regression tests for list-valued settings (audit finding P1-4).
+"""Regression tests for list-valued settings.
 
 A malformed `*_list` value must fall back to the configured default *list*.
 The bug was a raw-string test (`if not value`) that both reported the wrong

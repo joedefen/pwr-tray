@@ -63,7 +63,7 @@ def build_variables(de_json, de_config):
 
     Split out of ``__init__`` so the action layer can be tested against the
     commands a desktop really gets, read from ``commands.yaml``, instead of
-    against a fixture that can drift from it (audit finding F4).
+    against a fixture that can drift from it.
     """
     variables = dict(de_json['defaults'])
     for key in set(variables) - {'must_haves'}:

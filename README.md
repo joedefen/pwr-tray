@@ -20,6 +20,27 @@ With just a right-click and a left-click, you can do most operations such as cha
 
 ---
 
+### Why pwr-tray?
+
+Power management is usually configured once, per desktop, and then lived with.
+The alternatives each cover part of the problem:
+
+| Option | Covers | Gap it leaves |
+|--------|--------|---------------|
+| `swayidle` / `hypridle` config | Lock + sleep timers on one compositor | No on-screen state, no inhibitor visibility, no per-battery-tier policy, no manual "keep awake" toggle |
+| DE power manager (Powerdevil, XFCE, Cinnamon, MATE, LXQt) | Native, integrated, vendor-maintained | Confined to its own DE; conflicts with `swayidle`-style tools; no uniform behaviour when you switch WMs |
+| `systemd-inhibit` wrappers / caffeine-style tools | One-shot "don't suspend now" | No scheduling, no sequencing of lock→sleep, no feedback about *who* is inhibiting |
+| Hand-rolled shell scripts | Exactly your policy | You own the state machine, the inhibit parsing, the tray, and the edge cases across DEs |
+
+`pwr-tray` occupies the niche that table cannot fill: **one policy engine and one
+tray UI across ten desktops**, with lock→sleep sequencing, per-battery-tier
+timers, visible inhibition, and a manual override -- the same behaviour on i3,
+sway, niri, Hyprland, KDE, XFCE, Cinnamon, MATE, and LXQt. Set the policy once
+and it follows you from one WM to the next, instead of being re-learned per
+desktop.
+
+---
+
 ### Requirements
 * **Python** 3.11+ with **PyQt5** (5.15+) and **ruamel.yaml** (0.17+)
 * **systemd** (for `systemctl`, `loginctl`, `busctl` and `systemd-inhibit`; the `--svc-*` verbs also need a reachable `systemd --user` manager)
@@ -187,7 +208,7 @@ Here are the current 'Settings' defaults with explanation.
 * If you have issues with monitors failing to sleep or the system cannot wake when the monitors are off, then disable the `turn_off_monitors` feature.
 * You can set `gui_editor = konsole -e vim`, for example, to use vim in a terminal window.  If you don't have `geany` installed, then be sure to change `gui_editor`.
 * `log_viewer` is the command prefix `pwr-tray` uses to start the log viewer inside a terminal window, e.g. `log_viewer = xterm -e` or `log_viewer = gnome-terminal --`. When empty it picks the first installed terminal it knows (x-terminal-emulator, gnome-terminal, konsole, kitty, alacritty, foot, xterm, xfce4-terminal, mate-terminal, lxterminal).
-* `debug.log` is the file the menu and `-f` follow, and it is capped at 2 MiB. When it grows past that, it is rotated: the current file becomes `debug.log.old`, any previous `debug.log.old` is discarded, and a fresh `debug.log` is started -- so there are never more than two log files. The applet writes this file even when a systemd unit redirected its stdout elsewhere, so the visible log never goes stale.
+* `debug.log` is the file the menu and `-f` follow, and it is capped at 2 MiB. When it grows past that, it is rotated: the current file becomes `debug.log.old`, any previous `debug.log.old` is discarded, and a fresh `debug.log` is started -- so there are never more than two log files. The applet writes this file even when a systemd unit redirected its stdout elsewhere, so the visible log never goes stale. This is also the only file `pwr-tray` rotates: `-o/--stdout` writes no log at all, and a unit pointed at some other file leaves that file for you to rotate.
 * Every run brackets itself in that log with `START-UP pwr-tray vX.Y.Z pid N` and `ENDED pwr-tray vX.Y.Z pid N`, so the version and the process id can be read off the log itself. A `START-UP` with no `ENDED` below it was killed (`SIGKILL`, a crash); an `ENDED` with no new `START-UP` is simply the end of a run.
 * Edits to `config.ini` are picked up while `pwr-tray` is running; there is no need to restart it.
 * Your picks of mode, timeouts, etc. are saved to disk when changed, and restored on the next start.
@@ -241,6 +262,8 @@ pwr-tray --show-svc-file [--de NAME] > pwr-tray.service
 ```
 
 Then install that file however you normally install a `systemd --user` unit (for example, place it in `~/.config/systemd/user/` and run `systemctl --user daemon-reload && systemctl --user enable --now pwr-tray.service`). The dumped file is already rendered for this machine's desktop and display, so it is the same text `--svc-install` would write.
+
+If you install by hand, create the folder the unit's `StandardOutput` names (`~/.config/pwr-tray` for the shipped units). systemd opens that file but never creates its directory, so a missing folder fails the start with `status=209/STDOUT` and no applet. `--svc-install` creates it for you.
 
 Keep one supervisor per session: do not enable the unit and a DE/WM autostart for the same login. The shipped units pass `RestartPreventExitStatus=2 3`, so a duplicate start (exit 3) or a failed startup (exit 2) is reported as a failure rather than retried.
 

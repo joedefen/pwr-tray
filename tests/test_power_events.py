@@ -1,4 +1,4 @@
-"""Event sources replace the old once-per-tick polling (AUDIT.md finding 10).
+"""Event sources replace the old once-per-tick polling.
 
 Three things are pinned here:
 
@@ -6,8 +6,7 @@ Three things are pinned here:
   (a metadata change in a player must not look like a play/pause change),
 - ``on_timeout()`` runs the expensive queries only when something is dirty, and
 - once the slow branch is due, ``power_down`` really selects ``poweroff()``
-  (v1 #3: the comparison was against the wrong string, so it always
-  suspended -- an audit finding that had no test until R2).
+  (the comparison was once against the wrong string, so it always suspended).
 
 The tests build a bare ``PwrTray`` (no ``__init__``) because the point is the
 gating/decision logic, not Qt or D-Bus.

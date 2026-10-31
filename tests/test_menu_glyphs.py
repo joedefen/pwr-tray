@@ -80,14 +80,13 @@ def test_source_uses_only_text_presentation_glyphs():
     assert not found, _report(found, 'pwr_tray/main.py')
 
 
-def test_readme_and_audit_do_not_advertise_emoji_glyphs():
-    """The docs quote the menu; they must quote what the menu now shows."""
-    for name in ('README.md', os.path.join('tests', 'AUDIT.md')):
-        with open(os.path.join(ROOT, name), encoding='utf-8') as handle:
-            text = handle.read()
-        emoji = {char: unicodedata.name(char, 'UNNAMED')
-                 for char in text if ord(char) >= 0x1F000}
-        assert not emoji, _report(emoji, name)
+def test_readme_does_not_advertise_emoji_glyphs():
+    """The README quotes the menu; it must quote what the menu now shows."""
+    with open(os.path.join(ROOT, 'README.md'), encoding='utf-8') as handle:
+        text = handle.read()
+    emoji = {char: unicodedata.name(char, 'UNNAMED')
+             for char in text if ord(char) >= 0x1F000}
+    assert not emoji, _report(emoji, 'README.md')
 
 
 # --------------------------------------------------------------------------

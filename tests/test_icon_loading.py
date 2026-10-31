@@ -1,8 +1,8 @@
 """Icon loading must not depend on the process working directory.
 
-AUDIT.md finding 9: the tray icons were located with relative paths that only
-resolved because ``IniTool.__init__`` chdir()ed into ~/.config/pwr-tray.  A
-copy that failed then left ``self.icons`` short and ``show_icon()`` raised
+The tray icons were once located with relative paths that only resolved
+because ``IniTool.__init__`` chdir()ed into ~/.config/pwr-tray.  A copy that
+failed then left ``self.icons`` short and ``show_icon()`` raised
 IndexError on the next state change.  These tests pin the replacement:
 resources are resolved against an explicit folder, and anything that cannot
 be installed is a startup error.

@@ -1,4 +1,4 @@
-"""Tray detection must not cost more than it is worth (audit finding 11).
+"""Tray detection must not cost more than it is worth.
 
 pwr_tray.main used to own a module-level pydbus ``SessionBus``, so merely
 importing the module -- and therefore ``pwr-tray --help`` -- needed a session

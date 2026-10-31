@@ -35,8 +35,10 @@ is handed that one token as `TWINE_PASSWORD`, so a PyPI token is never spent on
 TestPyPI just because both happen to be configured on the same machine.
 
 Why no CI publish job: the upload is irreversible and the owner runs it from
-the tree, so the safety has to be visible and local.  CI stays a gate.  See
-plans/pypi-release-plan.md for the reasoning (R1/R2) and for the branch model.
+the tree, so the safety has to be visible and local.  CI stays a gate.  The
+branch model follows from the same decision: a release leaves `main` and `dev`
+at one commit and tags it, so `publish` aligns them here instead of asking the
+owner to remember.
 
 How to reuse: copy this file to another project's root.  Nothing about this
 project is written into it -- `identity()` reads the whole of it from

@@ -1,4 +1,4 @@
-"""Regression tests for audit finding 14 (repository hygiene).
+"""Regression tests for repository hygiene.
 
 The repository now carries its own lint configuration, a CI gate for lint,
 tests and packaging, and ignores local virtualenvs.  These tests fail if any
@@ -22,7 +22,8 @@ def test_ruff_configuration_lives_in_the_repository():
     ruff = tool['ruff']
     assert ruff['target-version'] == 'py311'
     selected = set(ruff['lint']['select'])
-    # The audit's two headline findings must stay gated.
+    # A blind `except` (BLE) and bandit's checks (S) must stay gated: they are
+    # the two rules that caught the most in this tree.
     assert {'BLE', 'S'} <= selected
 
 
@@ -35,7 +36,7 @@ def test_ci_runs_lint_tests_and_a_packaging_smoke_test():
 
 
 def test_the_coverage_gate_is_wired_and_cannot_quietly_disappear():
-    """Audit F7: the suite reports coverage and enforces a floor.
+    """The suite reports coverage and enforces a floor.
 
     The gate is only real when all four links are present -- the dependency,
     the configuration, the CI command and the documented command.  Lose any one
@@ -65,7 +66,7 @@ def test_the_coverage_gate_is_wired_and_cannot_quietly_disappear():
 
 
 def test_readme_matches_the_applet_on_chdir_and_single_instance():
-    """Audit R4: the README promised two things the applet no longer does.
+    """The README must not promise two things the applet no longer does.
 
     It claimed the applet chdir()ed into the config folder, and that starting
     a second copy left you with two tray icons.  Both are pinned from each
@@ -82,7 +83,7 @@ def test_readme_matches_the_applet_on_chdir_and_single_instance():
 
 
 def test_the_release_gate_exists_and_the_documents_name_it():
-    """Audit F1: one release entry point, and docs that point at the real one.
+    """One release entry point, and docs that point at the real one.
 
     The old six-step recipe uploaded `dist/*`, which accumulates every past
     version and aborts on the first `File already exists`.
@@ -91,7 +92,7 @@ def test_the_release_gate_exists_and_the_documents_name_it():
     assert gate.is_file(), 'the release gate is missing'
     assert gate.stat().st_mode & 0o111, './bless must be executable'
 
-    for document in ('README-DEV.md', 'pyproject.toml', 'plans/pypi-release-plan.md'):
+    for document in ('README-DEV.md', 'pyproject.toml'):
         text = (ROOT / document).read_text(encoding='utf-8')
         assert './bless' in text, document
         assert './release' not in text, document

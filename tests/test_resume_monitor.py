@@ -1,4 +1,4 @@
-"""Resume detection is part of the system-bus event source (AUDIT.md R5).
+"""Resume detection is part of the system-bus event source.
 
 The applet used to run a third ``dbus-monitor`` child just for
 ``PrepareForSleep`` and read its pipe with a non-blocking ``os.read`` on every
