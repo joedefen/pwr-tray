@@ -20,10 +20,11 @@ happens at start-up, what the event loop actually does on a tick, and how
 | File | Responsibility |
 | --- | --- |
 | `pwr_tray/main.py` | Composition root and facade: Qt timer and tray wiring, dirty-flag scheduler, menu, icons, event handlers, `main()`, and thin delegates to the modules below |
+| `pwr_tray/Inhibitors.py` | The logind vocabulary: `BlockInhibited` parsing and the who/why rows from `ListInhibitors`, without a listing tool |
 | `pwr_tray/IdleStateMachine.py` | The idle branch ladder -- lock, blank, suspend, power off, reset, awake -- plus the idle-time and state primitives |
 | `pwr_tray/Actions.py` | The user-action layer: every menu entry that starts a process, with the shell semantics of `commands.yaml` |
 | `pwr_tray/Desktop.py` | DE detection, command validation, variable expansion and resource installation over `commands.yaml` |
-| `pwr_tray/PowerEvents.py` | Event sources: two long-lived `dbus-monitor` children (system bus, session bus) plus a config-file watcher |
+| `pwr_tray/PowerEvents.py` | Event sources and the state they carry: two long-lived `dbus-monitor` children (system bus, session bus) keep `BlockInhibited`, the MPRIS play state and player lifetime current, plus a config-file watcher |
 | `pwr_tray/TrayWatch.py` | Watches the tray host's `org.kde.StatusNotifierWatcher` bus name so the applet re-registers its tray item when a bar starts late or restarts |
 | `pwr_tray/IniTool.py` | `config.ini` parsing, tier inheritance, defaults, list parsing, change detection |
 | `pwr_tray/Utils.py` | Console capture, log rotation, logging, process discovery and killing, the `flock` single-instance lock |
@@ -71,18 +72,22 @@ re-verifies the recorded pid's command line before signalling it
 * **One timer, recomputed.** A single `QTimer` is re-armed at whatever interval
   the current state needs; `poll_100ms` is how code says "soon" after something
   changed (100 ms is the fast cadence, not a fixed tick).
-* **The tick is cheap.** `on_timeout()` only acts on dirty flags --
-  `_inhibit_dirty`, `_battery_dirty`, `_config_dirty`. When an event source is
-  unavailable for an input, that input is marked dirty every tick, so the code
-  degrades to the old polling behaviour *per input* rather than globally.
+* **The tick is cheap.** `on_timeout()` acts on `_battery_dirty` and
+  `_config_dirty`, and reads the inhibit verdict every tick -- it is a lookup in
+  the state `PowerEvents` already parsed, so there is no flag a missed signal
+  could leave stale. When an event source is unavailable for an input, that
+  input is marked dirty every tick (or queried every tick, for inhibitors), so
+  the code degrades to the old polling behaviour *per input*, not globally.
 * **The slow branch is the policy.** Every `loop_sample` ticks (1 instead of 15
   under `--quick`) it reads the idle time and asks `IdleStateMachine` which
   branch is due -- `LockOnly`, `SleepAfterLock`, `Presentation`, `NoSleep` --
   with `power_down` selecting `poweroff()` over `suspend()`.
 * **Event sources.** `PowerEvents` watches logind inhibitor properties and
-  `PrepareForSleep`, UPower AC/device changes, MPRIS playback status, and the
-  config file. Monitors are drained through `QSocketNotifier`s, lines are
-  classified by object path (`_context_for`), and the whole thing is stopped
+  `PrepareForSleep`, UPower AC/device changes, MPRIS playback status, MPRIS
+  player lifetime (`NameOwnerChanged`), and the config file. Monitors are
+  drained through `QSocketNotifier`s; lines are classified by object path and
+  the property's `variant` value is kept (`blocked`, `media_playing`), so the
+  tick never has to ask a program what changed. The whole thing is stopped
   idempotently on exit.
 * **Tray registration.** Qt registers the `QSystemTrayIcon` with
   `org.kde.StatusNotifierWatcher` once, when the item is shown, and never
@@ -92,11 +97,24 @@ re-verifies the recorded pid's command line before signalling it
   old item and creates a new one, which is what makes Qt register with the host
   that is running now. The five-minute resync retries the same thing in case a
   name event was missed.
-* **Inhibition.** `check_inhibited()` asks logind for `BlockInhibited` (via
-  `busctl`) and reads `playerctl status`; a blocked `sleep` or `idle` wins over
-  media playback, the `systemd-inhibit` listing supplies the who/why rows, and
-  the kind of inhibition decides the icon and whether the `swayidle` command
-  keeps its timeouts.
+* **Inhibition.** `check_inhibited()` reads `BlockInhibited` and the MPRIS play
+  state from the event source's cache; a blocked `sleep` or `idle` wins over
+  media playback, and the kind of inhibition decides the icon and whether the
+  `swayidle` command keeps its timeouts. The who/why rows come from logind's
+  `ListInhibitors` via QtDBus (`Inhibitors.py`) and are refreshed when the menu
+  opens, because *who* is blocking changes without the blocked set changing.
+  `busctl`, `playerctl` and `systemd-inhibit` remain as the fallbacks used when
+  the cache cannot answer: start-up, the five-minute resync, and a session with
+  no usable D-Bus event source.
+* **The PlayerCtl entry.** It is a state word plus the blocker: `Disable`
+  (inhibit switched off), `Idle` (nothing playing), or `Busy: firefox` --
+  `Busy: 2+firefox` when several play, the count first so a long name can only
+  lose its own tail, never the number. The name is the MPRIS well-known name
+  with its `.instanceNNN` suffix trimmed; it is learned from
+  `NameOwnerChanged` and seeded once with `ListNames`/`GetNameOwner`, so a
+  player that predates the applet still has one. It is refreshed on the same
+  menu-open event as the rows, since a player can change without the blocked
+  set changing.
 
 ### Configuration model
 
@@ -111,8 +129,10 @@ independent axes.
 
 The suite is split by concern, not by source file: `tests/test_actions.py` pins
 the command each desktop is given, `test_idle_state_machine.py` drives the
-branch ladder, `test_media_inhibit.py` the inhibition verdict, `test_power_events.py`
-event classification and dirty-flag coalescing, and the `test_service_*` modules
+branch ladder, `test_media_inhibit.py` the inhibition verdict (both from the bus
+cache and from the subprocess fallback), `test_inhibitors.py` the logind answer
+and row formats, `test_power_events.py` event classification, value capture and
+dirty-flag coalescing, and the `test_service_*` modules
 the `--svc-*` verbs and the shipped units. How to run it, and the coverage floor
 that makes it a gate rather than a habit, are in [Test gate](#test-gate).
 

@@ -26,10 +26,19 @@ from PyQt5.QtGui import QCursor, QIcon
 from PyQt5.QtWidgets import QAction, QApplication, QMenu, QSystemTrayIcon  #, QMessageBox
 from ruamel.yaml import YAML
 
-from pwr_tray import Desktop, Utils, __version__, service
+from pwr_tray import Desktop, Inhibitors, Utils, __version__, service
 from pwr_tray.Actions import Actions
 from pwr_tray.Errors import MissingCommandsError, PwrTrayError
 from pwr_tray.IdleStateMachine import IdleStateMachine
+from pwr_tray.Inhibitors import (
+    BLOCK_INHIBITED,
+    GUARDED_OPERATIONS,
+    LOGIND_MANAGER,
+    LOGIND_PATH,
+    LOGIND_SERVICE,
+    blocked_operations,
+    parse_block_inhibited,
+)
 from pwr_tray.IniTool import IniTool
 from pwr_tray.PowerEvents import PowerEvents
 from pwr_tray.SwayIdleMgr import SwayIdleManager
@@ -42,40 +51,15 @@ from pwr_tray.Utils import PyKill, prt
 # appears, so start-up never blocks on the bar.
 TRAY_ATTACH_DELAY_MS = 500      # let a new host start serving calls
 
-# logind answers "is anything keeping this session awake?" with a property, not
-# with a table: BlockInhibited is a colon-separated list of the operations that
-# are blocked ("" when nothing is).  It is a machine field, so it does not care
-# about column layout, locale or whether a listing tool exists.
-LOGIND_SERVICE = 'org.freedesktop.login1'
-LOGIND_PATH = '/org/freedesktop/login1'
-LOGIND_MANAGER = 'org.freedesktop.login1.Manager'
-BLOCK_INHIBITED = 'BlockInhibited'
-# The operations this applet's own timeouts perform.  handle-power-key and
+# The logind vocabulary -- BlockInhibited, the guarded operations, the busctl
+# answer parser -- lives in pwr_tray.Inhibitors, where the event source can use
+# it too.  It is re-exported here because the applet's long-standing entry
+# points and tests refer to these names.  GUARDED_OPERATIONS holds the
+# operations this applet's own timeouts perform: handle-power-key and
 # handle-lid-switch say a compositor owns an input event, which is not a
-# request to stay awake; asking which operations are blocked, rather than which
-# rows a table happens to contain, is what removes the per-desktop exception
-# list for xfce4-power-manager, org_kde_powerdevil and niri.
-GUARDED_OPERATIONS = frozenset({'sleep', 'idle'})
-
-
-def parse_block_inhibited(output):
-    """Return the value of ``busctl get-property ... BlockInhibited``.
-
-    busctl prints one line: ``s "sleep:idle"``, or ``s ""`` when nothing is
-    blocked.  ``''`` and ``None`` are different answers -- the first means
-    logind says nothing is blocked, the second means the answer could not be
-    read -- and callers must never treat them alike.
-    """
-    lines = output.strip().splitlines()
-    text = lines[0].strip() if lines else ''
-    if not text.startswith('s "') or len(text) < 4 or not text.endswith('"'):
-        return None
-    return text[3:-1]
-
-
-def blocked_operations(value):
-    """Split a BlockInhibited value into operation names."""
-    return {token for token in value.split(':') if token}
+# request to stay awake, and asking which operations are blocked rather than
+# which rows a table happens to contain is what removes the per-desktop
+# exception list for xfce4-power-manager, org_kde_powerdevil and niri.
 
 
 class PwrTray:
@@ -188,12 +172,15 @@ class PwrTray:
         self.enable_playerctl = True
 
         # Event-driven refresh: a D-Bus signal or a config-file watch marks the
-        # matching flag dirty and schedules one fast poll.  The timer itself
-        # only runs the cheap state machine; nothing is spawned per tick.
+        # matching flag dirty and schedules one fast poll.  Inhibitors need no
+        # flag: the event source keeps the answer, so every tick can read it
+        # for the price of a dictionary lookup -- and a missed signal can no
+        # longer leave a stale verdict behind.
         self._config_dirty = False
         self._battery_dirty = True
-        self._inhibit_dirty = True
         self._inhibit_rows = []
+        # Which blocked-operation set the cached rows describe.
+        self._rows_blocked = None
         # The last inhibit-source failure that was logged, so a broken busctl or
         # a changed table is reported once instead of on every event.
         self._inhibit_warning = ''
@@ -300,7 +287,8 @@ class PwrTray:
         self.timer.start(100)
 
     def _on_inhibitors_event(self):
-        self._inhibit_dirty = True
+        # The new BlockInhibited value is already cached by the event source;
+        # this only makes the tick that reads it happen now.
         self._schedule_fast_poll()
 
     def _on_battery_event(self):
@@ -309,17 +297,21 @@ class PwrTray:
 
     def _on_playback_event(self):
         # Playback state feeds check_inhibited(), so the icon and the swayidle
-        # command have to be rebuilt when a player starts or stops.
-        self._inhibit_dirty = True
+        # command have to be rebuilt when a player starts or stops.  The state
+        # itself is already cached by the event source.
         self._schedule_fast_poll()
 
     def _on_resume_event(self):
         """logind reported the resume half of PrepareForSleep.
 
         State read before the machine slept (battery, inhibitors, idle time)
-        is stale, so force the slow branch of the next tick.
+        is stale, so the cached answers are dropped -- the next tick re-reads
+        them once -- and the slow branch of the tick is forced.
         """
         prt('resume detected')
+        events = self._events()
+        if events is not None:
+            events.invalidate()
         self.poll_100ms = True
         self._schedule_fast_poll()
 
@@ -328,8 +320,16 @@ class PwrTray:
         self._schedule_fast_poll()
 
     def _resync(self):
-        """Periodic safety net for a D-Bus signal we might have missed."""
-        self._inhibit_dirty = True
+        """Periodic safety net for a D-Bus signal we might have missed.
+
+        A cache is what makes a missed signal possible at all, so the cached
+        answers are invalidated rather than trusted: the next tick re-reads
+        logind and the players once.  That is 288 ``busctl``/``playerctl``
+        calls per day -- the safety net, not the polling loop.
+        """
+        events = self._events()
+        if events is not None:
+            events.invalidate()
         self._battery_dirty = True
         self._schedule_fast_poll()
         self._ensure_tray_attached()
@@ -390,8 +390,7 @@ class PwrTray:
                     f.write(picks_str + '\n')
                 print("Picks saved:", picks_str)
                 # The mode/timeout change affects the icon as well as the
-                # menu, so make the next tick re-read the inhibit state.
-                this._inhibit_dirty = True
+                # menu, so apply it on the next tick rather than in two.
                 this.poll_100ms = True
             except (OSError, TypeError) as e:
                 print(f"An error occurred while saving picks: {e}", file=sys.stderr)
@@ -508,13 +507,107 @@ class PwrTray:
         self._inhibit_warning = message
         prt(f'WARN: {message}')
 
+    def _events(self):
+        """The event source, if this applet has one (bare test instances do not)."""
+        return getattr(self, 'events', None)
+
+    def _bus_is_trusted(self):
+        """True when the signal stream is expected to keep the cache current."""
+        return (self._events() is not None
+                and getattr(self, '_events_bus_ok', False))
+
+    def _blocked_operations(self):
+        """logind's blocked operations: the cache when it can answer.
+
+        The event source keeps ``BlockInhibited`` up to date from the signal
+        stream, so this is normally a dictionary lookup.  One query is made
+        when the cache is empty (start-up, after a resync, or a property that
+        arrived invalidated), and it is cached only when a live event source
+        will keep it current -- otherwise the old per-tick polling stands.
+        """
+        events = self._events()
+        if self._bus_is_trusted():
+            cached = events.blocked
+            if cached is not None:
+                return set(cached)
+            blocked = self._logind_blocked()
+            if blocked is not None:
+                events.note_blocked(blocked)
+            return blocked
+        return self._logind_blocked()
+
+    def _cached_media(self):
+        """True/False from the event source, or None when it cannot answer."""
+        if not self._bus_is_trusted():
+            return None
+        return self._events().media_playing
+
+    def _note_media(self, playing):
+        """Cache a one-off ``playerctl status`` answer, when a bus will use it."""
+        if self._bus_is_trusted():
+            self._events().note_media(playing)
+
+    def _playing_names(self):
+        """The players the event source is currently showing as playing."""
+        if not self._bus_is_trusted():
+            return []
+        return list(self._events().media_players)
+
+    def _player_ctl_label(self):
+        """The PlayerCtl entry: ``Disable``, ``Idle``, or ``Busy`` with who.
+
+        The state word is short because the blocker rides on the same line,
+        and the count comes *first* (``2+firefox``) so a long name can only
+        lose its own tail, never the number of blockers.  The count appears
+        only when more than one player is playing; a player the bus never
+        named is still shown, as ``player``.
+        """
+        if not self.enable_playerctl:
+            return '♫ PlayerCtl: Disable'
+        if getattr(self, 'was_play_state', '') != 'playing':
+            return '♫ PlayerCtl: Idle'
+        names = self._playing_names()
+        if not names:
+            return '♫ PlayerCtl: Busy'
+        who = f'{len(names)}+{names[0]}' if len(names) > 1 else names[0]
+        return f'♫ PlayerCtl: Busy: {who}'
+
+    def _play_state(self):
+        """``playing``, another playerctl state, or ``''``.
+
+        MPRIS is a bus protocol, so the signal stream already knows whether a
+        player is playing: ``playerctl`` is consulted only when the cache has
+        nothing to say (no event source, or a player that appeared without
+        publishing a status).
+        """
+        if not self.enable_playerctl:
+            return ''
+        cached = self._cached_media()
+        if cached is not None:
+            return 'playing' if cached else ''
+        if not self.has_playerctl:
+            return ''
+        child = subprocess.run(
+            ['playerctl', 'status'],
+            capture_output=True, text=True, check=False
+        )
+        play_state = child.stdout.strip().lower()
+        # Exit 1 with an empty stdout is "no player", which is normal;
+        # any other status is worth one line in the log.
+        if child.returncode not in (0, 1):
+            self._warn_inhibit_source(
+                f'playerctl status failed (rc={child.returncode}):'
+                f' {child.stderr.strip()}')
+        self._note_media(play_state == 'playing')
+        return play_state
+
     def _logind_blocked(self):
         """Ask logind which operations are blocked; None means "could not ask".
 
-        busctl is used rather than a D-Bus binding: it ships with systemd,
-        which this applet already requires, and its exit status is meaningful.
-        The cost is one short-lived process per inhibitor change -- the caller
-        is event-driven, not polled.
+        busctl is used rather than a QtDBus call: it ships with systemd, which
+        this applet already requires, and its exit status is meaningful.  It is
+        only reached when the event source cannot answer, so the steady state
+        spawns nothing.
         """
         argv = ['busctl', 'get-property', LOGIND_SERVICE, LOGIND_PATH,
                 LOGIND_MANAGER, BLOCK_INHIBITED]
@@ -536,15 +629,38 @@ class PwrTray:
             return None
         return blocked_operations(value)
 
-    def _inhibitor_rows(self, blocked):
+    def _inhibitor_rows(self, blocked, refresh=False):
         """Who is blocking what, for the menu.  Display only.
 
         ``--mode=block`` leaves delay inhibitors out on purpose: a session
         manager postponing suspend while it locks the screen is not preventing
         it.  Only rows blocking one of the operations behind the verdict are
         kept, so a compositor holding the power key does not read as "keep this
-        session awake".  An unreadable table costs rows, never the verdict.
+        session awake".  An unreadable source costs rows, never the verdict.
+
+        The rows are cached per blocked set, because the same set is read on
+        every tick while an inhibitor is held.  ``refresh`` forces a re-read;
+        the menu does that when it opens, since *who* is blocking can change
+        without the blocked set changing.
         """
+        key = frozenset(blocked)
+        if (not refresh and getattr(self, '_inhibit_rows', None)
+                and key == getattr(self, '_rows_blocked', None)):
+            return self._inhibit_rows
+        rows = self._bus_rows(key)
+        if rows is None:
+            rows = self._table_rows(key)
+        self._rows_blocked = key
+        return rows
+
+    def _bus_rows(self, blocked):
+        """Rows from logind's ListInhibitors; None when it cannot be asked."""
+        if not self._bus_is_trusted():
+            return None
+        return Inhibitors.bus_rows(blocked)
+
+    def _table_rows(self, blocked):
+        """Rows from the ``systemd-inhibit`` listing -- the no-QtDBus fallback."""
         summary = f'blocked: {" ".join(sorted(blocked))}'
         try:
             result = subprocess.run(
@@ -578,10 +694,15 @@ class PwrTray:
         field, not from the systemd-inhibit table: column layout, locale and
         whether the listing tool exists at all are properties of a rendering,
         and a parse that degrades reads as "not inhibited" -- the dangerous
-        direction.  The table is still read when something *is* blocked,
-        because the menu shows who and why; see _inhibitor_rows().
+        direction.
+
+        The event source keeps that property (and the MPRIS play state) from
+        the signal stream, so this method normally spawns nothing at all; a
+        one-off query stands in only when the cache cannot answer.  The who/why
+        rows are still read when something *is* blocked, because the menu shows
+        them; see _inhibitor_rows().
         """
-        blocked = self._logind_blocked()
+        blocked = self._blocked_operations()
         if blocked is None:
             # Unknown counts as "not inhibited": this applet exists to lock the
             # screen, so an unreadable inhibit state must never switch locking
@@ -594,21 +715,7 @@ class PwrTray:
                 listed = ','.join(sorted(blocked)) or '(none)'
                 prt('DB', f'logind {BLOCK_INHIBITED}={listed}')
 
-        play_state = ''
-        if self.has_playerctl and self.enable_playerctl:
-            # Event-driven: this query runs when logind or an MPRIS player
-            # reported a change, not on every poll tick.
-            child = subprocess.run(
-                ['playerctl', 'status'],
-                capture_output=True, text=True, check=False
-            )
-            play_state = child.stdout.strip().lower()
-            # Exit 1 with an empty stdout is "no player", which is normal;
-            # any other status is worth one line in the log.
-            if child.returncode not in (0, 1):
-                self._warn_inhibit_source(
-                    f'playerctl status failed (rc={child.returncode}):'
-                    f' {child.stderr.strip()}')
+        play_state = self._play_state()
 
         # Media playback inhibits locking/sleeping, but an existing systemd
         # inhibitor keeps priority (it is already visible as the StopSign).
@@ -696,8 +803,9 @@ class PwrTray:
 
         # Without an event source for a given input there is nothing to tell
         # us it changed, so keep the old once-per-tick polling for that input.
+        # (The inhibit verdict needs no flag here: _blocked_operations() goes
+        # back to querying logind itself when no bus is trusted.)
         if not self._events_bus_ok:
-            self._inhibit_dirty = True
             self._battery_dirty = True
         if not self._events_config_ok:
             self._config_dirty = True
@@ -712,12 +820,12 @@ class PwrTray:
             self.update_battery_status()
             # A new battery tier changes the icon even when no inhibitor did.
             self.show_icon(inhibited=self.was_inhibited or '')
-        if self._inhibit_dirty:
-            self._inhibit_dirty = False
-            rows, updated = self.check_inhibited()
-            self._inhibit_rows = rows
-            if updated:
-                self.rebuild_menu = True
+        # Reading the cached verdict costs nothing, so it happens every tick:
+        # there is no dirty flag a missed signal could leave stale.
+        rows, updated = self.check_inhibited()
+        self._inhibit_rows = rows
+        if updated:
+            self.rebuild_menu = True
         if self.rebuild_menu:
             self.build_menu(self._inhibit_rows)
             self.rebuild_menu = False
@@ -751,8 +859,9 @@ class PwrTray:
             # menu's "(TESTING)" suffix again.
             self.battery.synthetic = selector != 'Settings'
             # self.ini_tool.set_effective_params(selector)
+            # The selector also picks the icon, and check_inhibited() re-shows
+            # it on the next tick.
             self.rebuild_menu = True
-            self._inhibit_dirty = True   # the selector changes the icon
 
     def _lock_rotate_next(self, advance=None):
         advance = True if advance is None else advance
@@ -774,7 +883,9 @@ class PwrTray:
         return rv
 
     def toggle_playerctl(self):
-        if self.has_playerctl:
+        # MPRIS is a bus protocol: with a live event source the media inhibit
+        # works without playerctl, which is only the fallback query.
+        if self.has_playerctl or self._bus_is_trusted():
             self.enable_playerctl = not bool(self.enable_playerctl)
             self.save_picks()
             self.rebuild_menu = True
@@ -885,11 +996,9 @@ class PwrTray:
         add_item(f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}',
                  lambda: self._sleep_rotate_next())
 
-        label = '♫ PlayerCtl: '
-        label += ('not installed' if not self.has_playerctl
-                   else 'Enabled' if self.enable_playerctl
-                   else 'Disabled')
+        label = self._player_ctl_label()
         add_item(label, self.toggle_playerctl)
+        self._player_ctl_cache = label
         if self.get_params().gui_editor:
             add_item('✎  Edit Applet Config', self.edit_config)
         # Only offer the log viewer when something can actually show it: the
@@ -907,11 +1016,38 @@ class PwrTray:
 
         if first_menu:
             self.tray_icon.setContextMenu(self.menu)
+            # The rows name *who* is blocking, and that can change while the
+            # blocked-operation set does not, so refresh them when the menu is
+            # opened -- a ListInhibitors call, only when someone is looking.
+            self.menu.aboutToShow.connect(self._on_menu_about_show)
 
         if not self.tray_icon.isVisible():
             prt('self.tray_icon.isVisible() is False ... restarting app')
             time.sleep(0.5)
             self.restart_self(None)
+
+    def _on_menu_about_show(self):
+        """Refresh the rows and the PlayerCtl label when the menu opens.
+
+        The verdict is event-driven, but the rows and the blocker's name are
+        renderings of it: the processes holding sleep, and which player is the
+        one playing, change while the blocked-operation set stays the same --
+        and logind announces neither.  Asking once per menu open keeps both
+        honest without a fork.  When no bus is trusted the rows come from the
+        polling fallback anyway and no player name is available, so nothing is
+        done here.
+        """
+        if not self._bus_is_trusted():
+            return
+        blocked = self._blocked_operations()
+        rows = []
+        if blocked and blocked & GUARDED_OPERATIONS:
+            rows = self._inhibitor_rows(blocked, refresh=True)
+        label = self._player_ctl_label()
+        if (rows != self._inhibit_rows
+                or label != getattr(self, '_player_ctl_cache', None)):
+            self._inhibit_rows = rows
+            self.build_menu(rows)
 
     def on_tray_icon_activated(self, reason):
         left_click = (reason == QSystemTrayIcon.Trigger and not self.is_wayland)

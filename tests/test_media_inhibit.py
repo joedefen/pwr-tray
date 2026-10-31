@@ -357,3 +357,195 @@ def test_build_cmd_reports_only_actual_changes(manager):
     idle.applet.was_inhibited = 'player'
     assert idle.build_cmd() is True
     assert 'timeout' not in idle.current_cmd
+
+
+# -- the bus cache: the verdict and the play state cost no process ----------
+
+class _Events:
+    """The slice of PowerEvents that check_inhibited() reads."""
+
+    def __init__(self, blocked, playing, players=()):
+        self.blocked = blocked
+        self.media_playing = playing
+        self.media_players = list(players)
+        self.notes = []
+
+    def note_blocked(self, blocked):
+        self.notes.append(('blocked', blocked))
+
+    def note_media(self, playing):
+        self.notes.append(('media', playing))
+
+
+def _refuse(commands):
+    """A subprocess.run that records the attempt and fails the test."""
+    def run(argv, **_kwargs):
+        commands.append(list(argv))
+        raise AssertionError(f'unexpected spawn {argv!r}')
+    return run
+
+
+def _snapshot(monkeypatch, blocked, playing, rows=None, **tray_kwargs):
+    """A tray whose event source already knows both answers."""
+    tray = _tray(**tray_kwargs)
+    tray.events = _Events(blocked, playing)
+    tray._events_bus_ok = True
+    commands = []
+    monkeypatch.setattr('pwr_tray.main.subprocess.run', _refuse(commands))
+    if rows is not None:
+        monkeypatch.setattr('pwr_tray.main.Inhibitors.bus_rows',
+                            lambda _blocked: list(rows))
+    result = tray.check_inhibited()
+    return SimpleNamespace(tray=tray, rows=result[0], updated=result[1],
+                           commands=commands)
+
+
+def test_the_cached_verdict_costs_no_process(monkeypatch):
+    result = _snapshot(monkeypatch, frozenset({'sleep'}), False,
+                       rows=['blocked: sleep', 'firefox row'])
+
+    assert result.tray.was_inhibited == 'systemd'
+    assert result.tray.tray_icon.shown == [7]          # StopSign
+    assert result.rows == ['blocked: sleep', 'firefox row']
+    assert result.commands == []                       # no busctl, no listing
+
+
+def test_the_cached_play_state_costs_no_playerctl(monkeypatch):
+    result = _snapshot(monkeypatch, frozenset(), True)
+
+    assert result.tray.was_inhibited == 'player'
+    assert result.tray.tray_icon.shown == [4]          # PlayingNow
+    assert result.commands == []
+
+
+def test_media_inhibit_works_without_playerctl_when_the_bus_answers(monkeypatch):
+    """playerctl is the fallback query, not the mechanism."""
+    result = _snapshot(monkeypatch, frozenset(), True, has_playerctl=False)
+
+    assert result.tray.was_inhibited == 'player'
+    assert result.commands == []
+
+
+def test_an_unknown_verdict_is_queried_once_and_cached(monkeypatch):
+    tray = _tray()
+    tray.events = _Events(None, False)
+    tray._events_bus_ok = True
+    commands = []
+    monkeypatch.setattr('pwr_tray.main.subprocess.run',
+                        _run_stub(commands, NOTHING_BLOCKED, 'Paused'))
+
+    tray.check_inhibited()
+
+    assert [cmd[0] for cmd in commands] == ['busctl']
+    assert tray.events.notes == [('blocked', set())]
+
+
+def test_an_unknown_play_state_is_queried_once_and_cached(monkeypatch):
+    """A player that appeared without publishing a status is asked about."""
+    tray = _tray()
+    tray.events = _Events(frozenset(), None)
+    tray._events_bus_ok = True
+    commands = []
+    monkeypatch.setattr('pwr_tray.main.subprocess.run',
+                        _run_stub(commands, NOTHING_BLOCKED, 'Playing'))
+
+    tray.check_inhibited()
+
+    assert [cmd[0] for cmd in commands] == ['playerctl']
+    assert tray.events.notes == [('media', True)]
+
+
+def test_opening_the_menu_refreshes_who_is_blocking(monkeypatch):
+    """The rows name processes, and logind does not announce that change."""
+    tray = _tray()
+    tray.events = _Events(frozenset({'sleep'}), False)
+    tray._events_bus_ok = True
+    tray._inhibit_rows = ['blocked: sleep', 'old row']
+    tray._rows_blocked = frozenset({'sleep'})
+    built = []
+    tray.build_menu = lambda rows=None: built.append(rows)
+    monkeypatch.setattr('pwr_tray.main.Inhibitors.bus_rows',
+                        lambda _blocked: ['blocked: sleep', 'new row'])
+
+    tray._on_menu_about_show()
+
+    assert built == [['blocked: sleep', 'new row']]
+    assert tray._inhibit_rows == ['blocked: sleep', 'new row']
+
+
+def test_opening_the_menu_does_nothing_without_a_bus(monkeypatch):
+    """The polling fallback already has fresh rows; do not fork for them."""
+    tray = _tray()
+    tray.events = None
+    commands = []
+    monkeypatch.setattr('pwr_tray.main.subprocess.run', _refuse(commands))
+
+    tray._on_menu_about_show()
+
+    assert commands == []
+
+
+# -- the PlayerCtl entry: Disable / Idle / Busy:<who> -----------------------
+
+def _label_tray(playing_names=(), **tray_kwargs):
+    tray = _tray(**tray_kwargs)
+    tray.was_play_state = 'playing' if playing_names else ''
+    tray.events = _Events(frozenset(), bool(playing_names),
+                          players=playing_names)
+    tray._events_bus_ok = True
+    return tray
+
+
+def test_the_entry_is_idle_when_nothing_plays():
+    assert _label_tray()._player_ctl_label() == '♫ PlayerCtl: Idle'
+
+
+def test_the_entry_is_disable_when_the_feature_is_off():
+    tray = _label_tray(playing_names=['firefox'], enable_playerctl=False)
+
+    assert tray._player_ctl_label() == '♫ PlayerCtl: Disable'
+
+
+def test_the_entry_names_the_only_player():
+    assert (_label_tray(playing_names=['firefox'])._player_ctl_label()
+            == '♫ PlayerCtl: Busy: firefox')
+
+
+def test_the_count_comes_first_when_several_players_play():
+    """``2+firefox``: a long name may lose its tail, never the number."""
+    tray = _label_tray(playing_names=['firefox', 'spotify'])
+
+    assert tray._player_ctl_label() == '♫ PlayerCtl: Busy: 2+firefox'
+
+
+def test_busy_without_a_name_is_still_busy():
+    """The fallback knows something plays but not who."""
+    tray = _tray()
+    tray.was_play_state = 'playing'
+
+    assert tray._player_ctl_label() == '♫ PlayerCtl: Busy'
+
+
+def test_opening_the_menu_picks_up_a_new_blocker_name():
+    """The name changes without the blocked set changing."""
+    tray = _label_tray(playing_names=['firefox'])
+    tray._inhibit_rows = []
+    tray._player_ctl_cache = '♫ PlayerCtl: Busy: vlc'
+    built = []
+    tray.build_menu = lambda rows=None: built.append(rows)
+
+    tray._on_menu_about_show()
+
+    assert built == [[]]
+
+
+def test_opening_the_menu_leaves_an_unchanged_entry_alone():
+    tray = _label_tray(playing_names=['firefox'])
+    tray._inhibit_rows = []
+    tray._player_ctl_cache = tray._player_ctl_label()
+    built = []
+    tray.build_menu = lambda rows=None: built.append(rows)
+
+    tray._on_menu_about_show()
+
+    assert built == []

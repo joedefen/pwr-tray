@@ -83,7 +83,9 @@ Per-DE requirements:
     * Checks the DE-dependent commands it needs and exits with an install hint
       if any are missing. Note:
       * `systemctl` is always required.
-      * Optionally, install `playerctl` if you wish playing media to inhibit screen saving and sleeping.
+      * Playing media inhibits screen saving and sleeping over MPRIS on the
+        session bus, so no extra package is needed. Install `playerctl` only as
+        a fallback for a session where that bus event source is unavailable.
     * **PyQt5 is installed for you.** It is a declared dependency, and the
       published wheels bundle the Qt libraries they need, so `pipx install
       pwr-tray` (or `pip install`) is normally all there is to it. A missing
@@ -170,7 +172,7 @@ Or act on the applet itself:
 - You can run in various modes, but the default, `SleepAfterLock`, exercises the most code paths.
 - Then, ensure closing the lid, hitting the power button, etc., have the desired effects.
 - To test systemd inhibits: create a test inhibit with `systemd-inhibit --why="Prevent sleep for demonstration" sleep infinity`. Only an inhibitor that blocks `sleep` or `idle` shows the StopSign icon; one that only holds the power or lid key (`handle-power-key`, `handle-lid-switch`) does not, because a compositor owning an input event is not asking the session to stay awake.
-- To test media inhibit: with `playerctl` installed, play media in any MPRIS-capable player; the `PlayingNow` icon appears and the lock/sleep timeouts are suspended until playback stops.
+- To test media inhibit: play media in any MPRIS-capable player; the `PlayingNow` icon appears, the menu's `PlayerCtl` entry changes from `Idle` to `Busy: <player>` (or `Busy: 2+<player>` when several play), and the lock/sleep timeouts are suspended until playback stops. This works without `playerctl` -- the state is read from the session bus.
 - To test Hi/Lo Battery states (only on a system w/o a battery), click the battery state which artificially changes to HiBattery or LoBattery states for testing behaviors in those states. The menu entry is suffixed with `(TESTING)` only while it shows one of those fabricated battery states, so it cannot be mistaken for a real power state; the plugged-in state -- at start-up, or when the cycle comes back around to it -- is the machine's real state and carries no suffix.
 
 #### Updating pwr-tray

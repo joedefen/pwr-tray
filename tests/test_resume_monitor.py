@@ -29,7 +29,8 @@ def _watcher():
     calls = []
     watcher = PowerEvents(on_resume=lambda: calls.append('resume'))
     watcher._pending['system'] = b''
-    watcher._context['system'] = ''
+    # _start_monitor() seeds this slot; a bare watcher starts with no message.
+    watcher._messages['system'] = None
     return watcher, calls
 
 

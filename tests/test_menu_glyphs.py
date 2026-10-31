@@ -160,6 +160,11 @@ def _fake_tray(**overrides):
                  'edit_config', 'open_log', 'quit_self', 'restart_self',
                  'dummy'):
         setattr(tray, name, noop)
+    # The PlayerCtl label is real logic, not a constant: bind it (and what it
+    # reads) so these tests exercise the shipped state words.
+    for name in ('_events', '_bus_is_trusted', '_playing_names',
+                 '_player_ctl_label'):
+        setattr(tray, name, getattr(main_module.PwrTray, name).__get__(tray))
     return tray
 
 
@@ -181,7 +186,7 @@ def test_build_menu_still_offers_the_expected_actions(monkeypatch):
 
     assert '≡  Open Applet Log' in labels
     assert '✎  Edit Applet Config' in labels
-    assert '♫ PlayerCtl: Enabled' in labels
+    assert '♫ PlayerCtl: Idle' in labels
     assert '◉ Presentation ← LockOnly Mode' in labels
     assert '○ SleepAfterLock ← LockOnly Mode' in labels
     assert '█ HiBattery 88%' in labels
