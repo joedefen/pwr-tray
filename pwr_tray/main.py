@@ -921,10 +921,8 @@ class PwrTray:
             return
         if self.battery.selector == 'Settings':
             return
-        if self.battery.selector == 'HiBattery':
-            floor = self.get_params().lo_battery_pct + 1
-        else:
-            floor = 0
+        floor = (self.get_params().lo_battery_pct + 1
+                 if self.battery.selector == 'HiBattery' else 0)
         percent = max(floor, self.battery.percent - TEST_DISCHARGE_STEP)
         if percent != self.battery.percent:
             self.battery.percent = percent
