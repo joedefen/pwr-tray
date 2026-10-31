@@ -98,6 +98,7 @@ Per-DE requirements:
 * Then, follow the "Per-DE Specific Notes" below to ensure proper operation. To just kick the tires, you can defer this until ready to go forward.
 * Read the other sections for customization and everyday use.
 * From the CLI, you can start pwr-tray in the background with `setsid pwr-tray`; typically, you will "autostart" `pwr-tray` when you log in however your DE/WM manages autostarts. Only one instance ever runs: if one is already running, a plain start **refuses and exits** rather than disturbing it; use `setsid pwr-tray --replace` to deliberately replace it.
+* The start order between `pwr-tray` and your status bar does not matter: if the bar (waybar, polybar, ...) is not running yet, or is restarted later, the applet registers its tray icon with the bar as soon as the bar appears. No `sleep` before starting `pwr-tray` is needed.
 
 ### Command Line Options
 | Option | Description |
@@ -292,19 +293,19 @@ bindsym $mod+Escape exec --no-startup-id $screenlock  # create shortcut to lock 
         }
         exec_always --no-startup-id ~/.local/bin/pwr-tray
 ```
-* If you use `polybar` for status, then it may be best to run `pwr-tray` from polybar's 'launch' script; e.g., `sleep 1.5 && setsid ~/.local/bin/pwr-tray &`;  the delay may be need to allow time for the tray to become ready.
+* If you use `polybar` for status, then it may be best to run `pwr-tray` from polybar's 'launch' script; e.g., `setsid ~/.local/bin/pwr-tray &`. The icon registers when polybar's tray appears, so no delay is needed.
 
 ### sway Specific Notes
 * Uninstall or disable any **other** `swayidle` instances or competing energy savers. `pwr-tray` manages its own `swayidle` process and will kill any stray instances on startup.
 * **NOTE**: on `sway`, `pwr-tray` cannot read the idle time directly; instead, it manages a `swayidle` process whose arguments vary with your settings.
 * Edit `/etc/systemd/logind.conf` and uncomment `HandlePowerKey=` and `HandleLidSwitch=`, and set each action to `suspend`; then either reboot or restart `systemd-logind`.  That enables the ever-running `swayidle` to handle the suspend / resume events.
-* Again, start `pwr-tray` as a systemd service (see above) or find another way; for example, adding to sway's config: `exec_always --no-startup-id sleep 2 && ~/.local/bin/pwr-tray` -- a delay may be required to let the tray initialize.
+* Again, start `pwr-tray` as a systemd service (see above) or find another way; for example, adding to sway's config: `exec_always --no-startup-id ~/.local/bin/pwr-tray` (the icon appears once the bar's tray is up).
 
 ### Hyprland Specific Notes
 * Disable any other idle managers. `pwr-tray` manages its own `swayidle` process.
 * Start `pwr-tray` as a systemd service (see above) or, for example, via Hyprland's `exec-once`:
 ```
-exec-once = sleep 2 && ~/.local/bin/pwr-tray
+exec-once = ~/.local/bin/pwr-tray
 ```
 * Screen locking uses `swaylock`; monitor control uses `hyprctl dispatch dpms`.
 
@@ -314,9 +315,9 @@ exec-once = sleep 2 && ~/.local/bin/pwr-tray
 * Monitor blanking uses `niri msg action power-off-monitors`. niri has no "monitors on" action because keyboard or pointer input wakes the display, so `monitors_on` is intentionally empty.
 * Log off and config reload use `niri msg action quit` and `niri msg action reload-config`.
 * niri handles the power key itself; the `handle-power-key` inhibitor it registers is ignored when deciding whether to show the StopSign icon.
-* Start `pwr-tray` as a systemd service (see above) or from niri's `spawn-at-startup` with a short delay:
+* Start `pwr-tray` as a systemd service (see above) or from niri's `spawn-at-startup`:
 ```
-spawn-at-startup "sh" "-c" "sleep 2 && ~/.local/bin/pwr-tray"
+spawn-at-startup "sh" "-c" "~/.local/bin/pwr-tray"
 ```
 
 ### KDE Specific Notes

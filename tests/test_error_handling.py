@@ -280,7 +280,6 @@ def test_main_reports_pwr_tray_error_without_traceback(monkeypatch):
     monkeypatch.setattr(main_module, 'PyKill',
                         lambda *args, **kw: types.SimpleNamespace(
                             kill_pid=lambda *a, **k: False))
-    monkeypatch.setattr(main_module, 'wait_for_tray', lambda *a, **k: True)
     monkeypatch.setattr(sys, 'argv', ['pwr-tray'])
 
     with pytest.raises(SystemExit) as raised:

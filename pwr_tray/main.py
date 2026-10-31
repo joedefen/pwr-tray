@@ -33,15 +33,14 @@ from pwr_tray.IdleStateMachine import IdleStateMachine
 from pwr_tray.IniTool import IniTool
 from pwr_tray.PowerEvents import PowerEvents
 from pwr_tray.SwayIdleMgr import SwayIdleManager
+from pwr_tray.TrayWatch import STATUS_NOTIFIER_WATCHER, TrayWatch
 from pwr_tray.Utils import PyKill, prt
 
 # Every tray host -- plasmashell, xfce4-panel, waybar, swaybar+snixembed, ... --
-# claims this name.  Its absence is not an error: a bare X11 bar has no
-# StatusNotifierWatcher and the applet still runs, it just may not be visible.
-STATUS_NOTIFIER_WATCHER = 'org.kde.StatusNotifierWatcher'
-TRAY_WAIT_SECONDS = 20.0        # whole wait, reported while it happens
-TRAY_POLL_SECONDS = 0.5
-TRAY_REPORT_SECONDS = 5.0
+# claims STATUS_NOTIFIER_WATCHER (see TrayWatch.py).  A host that is not on the
+# bus yet is an event, not a wait: the item is registered again when one
+# appears, so start-up never blocks on the bar.
+TRAY_ATTACH_DELAY_MS = 500      # let a new host start serving calls
 
 # logind answers "is anything keeping this session awake?" with a property, not
 # with a table: BlockInhibited is a colon-separated list of the operations that
@@ -153,11 +152,32 @@ class PwrTray:
         # Not a tray icon: the wallpaper the default locker command uses.
         self.ensure_resources(ini_tool.folder, ['lockpaper.png'])
 
+        # The tray item is shown immediately; a host that is not on the bus
+        # yet is picked up by the watch below instead of being waited for.
+        # ``menu`` and ``current_icon_num`` exist first, so re-registering the
+        # item later can restore both.
+        self.menu = None
+        self.menu_items = []
+        self.current_icon_num = -1  # triggers immediate icon update
+
+        # The watch is started before the item is shown: a watcher that
+        # appears between the two still produces the event we need.
+        tray_present = tray_watcher_present()
+        self._tray_seen = tray_present is True
+        self.tray_watch = TrayWatch(on_available=self._on_tray_host_appeared,
+                                    on_lost=self._on_tray_host_lost)
+        if not self.tray_watch.start() and tray_present is not None:
+            prt('WARN: cannot watch for a tray host that starts later')
+        self._install_tray_icon()
+        if tray_present is True:
+            prt('tray host detected.')
+        elif tray_present is False:
+            prt('no tray host yet; the icon registers when one appears.')
+        else:
+            prt('tray host status unknown (no QtDBus / no session bus).')
+
         # states are Awake, Locked, Blanked, Asleep
         # when is idle time
-        self.tray_icon = QSystemTrayIcon(self.icons[0], self.app)
-        self.tray_icon.setToolTip("pwr-tray")
-        self.tray_icon.setVisible(True)
         self.state = SimpleNamespace(name='Awake', when=0)
 
         self.running_idle_s = 0.000
@@ -165,7 +185,6 @@ class PwrTray:
         self.poll_100ms = False
         self.rebuild_menu = False
         self.picks_file = ini_tool.picks_path
-        self.current_icon_num = -1  # triggers immediate icon update
         self.enable_playerctl = True
 
         # Event-driven refresh: a D-Bus signal or a config-file watch marks the
@@ -230,10 +249,7 @@ class PwrTray:
         self.idle_manager = (SwayIdleManager(self)
             if self.de_config.get('idle_method') == 'swayidle' else None)
 
-        self.menu_items = []
-        self.menu = None
         self.build_menu()
-        self.tray_icon.activated.connect(self.on_tray_icon_activated)
         if self.idle_manager:
             self.idle_manager_start()
 
@@ -316,6 +332,7 @@ class PwrTray:
         self._inhibit_dirty = True
         self._battery_dirty = True
         self._schedule_fast_poll()
+        self._ensure_tray_attached()
 
     def get_params(self, selector=None):
         selector = self.battery.selector if selector is None else selector
@@ -901,6 +918,56 @@ class PwrTray:
         if reason == QSystemTrayIcon.Context or left_click:
             self.tray_icon.contextMenu().exec_(QCursor.pos())
 
+    # -- tray registration -------------------------------------------------
+    def _install_tray_icon(self):
+        """Create the tray item; showing it is what registers it with a host.
+
+        Qt talks to the StatusNotifierWatcher once, when the item is shown, and
+        never retries, so re-creating the item is the only way to register with
+        a host that was absent the first time -- or with a host that has been
+        restarted since.  The previous item is hidden before the new one is
+        shown, so a host never lists two pwr-tray entries.
+        """
+        previous = getattr(self, 'tray_icon', None)
+        if previous is not None:
+            previous.hide()
+            previous.deleteLater()
+        icon_num = self.current_icon_num if self.current_icon_num >= 0 else 0
+        self.tray_icon = QSystemTrayIcon(self.icons[icon_num], self.app)
+        self.tray_icon.setToolTip('pwr-tray')
+        if self.menu is not None:
+            self.tray_icon.setContextMenu(self.menu)
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        self.tray_icon.setVisible(True)
+
+    def _on_tray_host_appeared(self):
+        """A host appeared (or restarted): register the item with it again."""
+        self._tray_seen = True
+        # A watcher claims its bus name just before it starts serving calls,
+        # so give it a moment instead of racing its own start-up.
+        QTimer.singleShot(TRAY_ATTACH_DELAY_MS, self._reattach_tray)
+
+    def _on_tray_host_lost(self):
+        """The host went away; the registration went with it."""
+        self._tray_seen = False
+
+    def _reattach_tray(self):
+        """Re-create the item at last, if a host is really there now."""
+        if tray_watcher_present() is not True:
+            # The host left again between its announcement and this call; the
+            # next appearance schedules another attempt.
+            self._tray_seen = False
+            return
+        self._install_tray_icon()
+        prt('tray icon registered with the host that is now running')
+
+    def _ensure_tray_attached(self):
+        """Retry a missed host announcement from the periodic resync."""
+        watch = getattr(self, 'tray_watch', None)
+        if getattr(self, '_tray_seen', True) or watch is None or not watch.watching:
+            return
+        if tray_watcher_present():
+            self._on_tray_host_appeared()
 
     def idle_manager_start(self):
         """ For any mode, get the idle manager started"""
@@ -1020,8 +1087,8 @@ def tray_watcher_present():
             prt('WARN: no D-Bus session bus; cannot detect a tray')
             return None
         interface = bus.interface()
-        # The default D-Bus timeout is 25s, which would defeat the caller's
-        # deadline if the bus is wedged.
+        # The default D-Bus timeout is 25s, which would stall start-up and the
+        # periodic resync if the bus is wedged.
         interface.setTimeout(2000)
         reply = interface.isServiceRegistered(STATUS_NOTIFIER_WATCHER)
         return bool(reply.isValid() and reply.value())
@@ -1029,34 +1096,6 @@ def tray_watcher_present():
     except Exception as exc:                    # noqa: BLE001
         prt(f'WARN: tray detection failed: {exc}')
         return None
-
-
-def wait_for_tray(timeout=TRAY_WAIT_SECONDS):
-    """Wait up to `timeout` seconds for the tray to register itself.
-
-    Returns True when the watcher appears, False when it does not (or when the
-    bus cannot be queried at all).  The wait is bounded and logs progress, so a
-    session without a watcher -- a bare X11 bar, for instance -- costs at most
-    `timeout` seconds and is visible in the log; the caller decides whether to
-    carry on, and normally it does.
-    """
-    deadline = time.monotonic() + max(0.0, float(timeout))
-    next_report = time.monotonic() + TRAY_REPORT_SECONDS
-    while True:
-        present = tray_watcher_present()
-        if present is None:            # D-Bus unusable: retrying cannot help
-            return False
-        if present:
-            return True
-        now = time.monotonic()
-        remaining = deadline - now
-        if remaining <= 0:
-            return False
-        if now >= next_report:
-            prt(f'  ... still no {STATUS_NOTIFIER_WATCHER}'
-                f' ({remaining:.0f}s left)')
-            next_report = now + TRAY_REPORT_SECONDS
-        time.sleep(min(TRAY_POLL_SECONDS, remaining))
 
 
 def load_known_de_json():
@@ -1292,14 +1331,10 @@ def main():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override
 
 
-    # Wait for the tray to be ready so we don't need 'sleep' in the config.
-    # The result is used, not discarded: no watcher is a warning, not an error,
-    # because an X11 bar without one still runs the applet.
-    prt("Waiting for tray...")
-    if wait_for_tray():
-        prt("                ... tray detected.")
-    else:
-        prt("                ... no tray watcher found; starting anyway.")
+    # Nothing waits for the tray here: PwrTray asks once where this session
+    # stands, and TrayWatch registers the item whenever a host appears, so a
+    # bar that starts late (or restarts) no longer needs a 'sleep' before
+    # pwr-tray, nor a restart after it.
     try:
         tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de)
     except PwrTrayError as exc:

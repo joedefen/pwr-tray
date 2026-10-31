@@ -24,6 +24,7 @@ happens at start-up, what the event loop actually does on a tick, and how
 | `pwr_tray/Actions.py` | The user-action layer: every menu entry that starts a process, with the shell semantics of `commands.yaml` |
 | `pwr_tray/Desktop.py` | DE detection, command validation, variable expansion and resource installation over `commands.yaml` |
 | `pwr_tray/PowerEvents.py` | Event sources: two long-lived `dbus-monitor` children (system bus, session bus) plus a config-file watcher |
+| `pwr_tray/TrayWatch.py` | Watches the tray host's `org.kde.StatusNotifierWatcher` bus name so the applet re-registers its tray item when a bar starts late or restarts |
 | `pwr_tray/IniTool.py` | `config.ini` parsing, tier inheritance, defaults, list parsing, change detection |
 | `pwr_tray/Utils.py` | Console capture, log rotation, logging, process discovery and killing, the `flock` single-instance lock |
 | `pwr_tray/SwayIdleMgr.py` | Builds and supervises the `swayidle` command line on Wayland |
@@ -48,12 +49,17 @@ convenience.
    otherwise swallow the startup error that matters;
 3. takes the `flock` through `acquire_lock_or_take_over()` and registers
    `atexit` handlers for the lock and for `PwrTray.goodbye`;
-4. waits a bounded time for a StatusNotifierWatcher in `wait_for_tray()` -- no
-   watcher is a warning, not an error;
-5. builds `PwrTray`, where desktop detection and the resource and command checks
+4. builds `PwrTray`, where desktop detection and the resource and command checks
    can fail with a typed error, reported to both the log and the console, and
    exiting 2;
-6. enters the Qt event loop.
+5. enters the Qt event loop.
+
+Nothing waits for the bar. `PwrTray` asks once whether a
+`StatusNotifierWatcher` is registered (for the log), shows its tray item
+immediately, and starts a `TrayWatch`; a watcher that appears later -- a bar
+still starting, or one restarted -- is what makes the item be registered again.
+An X11 bar with no watcher at all is not an error: the icon is simply not
+visible there.
 
 The lock is taken **before** anything destructive, and it buys exactly one
 thing: the right to replace an instance. That path is opt-in via `--replace` and
@@ -78,6 +84,14 @@ re-verifies the recorded pid's command line before signalling it
   config file. Monitors are drained through `QSocketNotifier`s, lines are
   classified by object path (`_context_for`), and the whole thing is stopped
   idempotently on exit.
+* **Tray registration.** Qt registers the `QSystemTrayIcon` with
+  `org.kde.StatusNotifierWatcher` once, when the item is shown, and never
+  retries -- which is why an applet started before the bar used to stay
+  invisible until it was restarted. `TrayWatch` reports the watcher's name
+  being registered (or unregistered); `_install_tray_icon()` then hides the
+  old item and creates a new one, which is what makes Qt register with the host
+  that is running now. The five-minute resync retries the same thing in case a
+  name event was missed.
 * **Inhibition.** `check_inhibited()` asks logind for `BlockInhibited` (via
   `busctl`) and reads `playerctl status`; a blocked `sleep` or `idle` wins over
   media playback, the `systemd-inhibit` listing supplies the who/why rows, and
