@@ -61,10 +61,13 @@ desktops:
   niri-wayland:
     locker: swaylock -i {{wallpaper}} --ignore-empty-password --show-failed-attempts
     monitors_off: niri msg action power-off-monitors
-    # Niri doesn't have a 'monitors-on' action because moving the mouse/typing 
+    # Niri doesn't have a 'monitors-on' action because moving the mouse/typing
     # wakes them automatically, but you can leave it blank or use a no-op.
-    monitors_on: "" 
-    logoff: niri msg action quit
+    monitors_on: ""
+    # --skip-confirmation is mandatory here: without it `niri msg action quit`
+    # asks "Press Enter to confirm" on stdin, and the applet runs commands with
+    # no terminal attached, so the prompt can never be answered and niri stays up.
+    logoff: niri msg action quit --skip-confirmation
     # Niri configuration is usually reloaded automatically on save, 
     # but you can trigger it manually:
     reload_wm: niri msg action reload-config

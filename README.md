@@ -369,7 +369,7 @@ exec-once = ~/.local/bin/pwr-tray
 * `pwr-tray` ships a `niri-wayland` profile in `commands.yaml`. It is selected from `$XDG_CURRENT_DESKTOP`/`$XDG_SESSION_DESKTOP`, or force it with `--de niri-wayland`.
 * Install `niri`, `swaylock`, and `swayidle` (1.8+). As with sway and Hyprland, disable any other idle manager: `pwr-tray` manages its own `swayidle` process and kills stray instances on startup.
 * Monitor blanking uses `niri msg action power-off-monitors`. niri has no "monitors on" action because keyboard or pointer input wakes the display, so `monitors_on` is intentionally empty.
-* Log off and config reload use `niri msg action quit` and `niri msg action reload-config`.
+* Log off and config reload use `niri msg action quit --skip-confirmation` and `niri msg action reload-config`. The `--skip-confirmation` flag matters: plain `quit` asks for an interactive confirmation on stdin, and the applet has no terminal to answer it, so the log off would hang.
 * niri handles the power key itself; the `handle-power-key` inhibitor it registers is ignored when deciding whether to show the StopSign icon.
 * Start `pwr-tray` as a systemd service (see above) or from niri's `spawn-at-startup`:
 ```

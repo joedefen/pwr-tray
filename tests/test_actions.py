@@ -69,7 +69,7 @@ WM_ACTIONS = [
     ('hyprland-wayland', 'exit_wm', 'hyprctl dispatch exit'),
     ('niri-wayland', 'reload_wm', 'niri msg action reload-config'),
     ('niri-wayland', 'restart_wm', ''),
-    ('niri-wayland', 'exit_wm', 'niri msg action quit'),
+    ('niri-wayland', 'exit_wm', 'niri msg action quit --skip-confirmation'),
     ('kde-x11', 'reload_wm', ''),
     ('kde-x11', 'restart_wm',
      'killall plasmashell && kstart5 plasmashell && sleep 3 && pwr-tray'),
