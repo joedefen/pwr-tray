@@ -21,7 +21,7 @@ import traceback
 from types import SimpleNamespace
 
 from PyQt5.QtCore import QTimer, QtMsgType, qInstallMessageHandler
-from PyQt5.QtGui import QCursor, QIcon
+from PyQt5.QtGui import QCursor, QIcon, QSessionManager
 from PyQt5.QtWidgets import QAction, QApplication, QMenu, QSystemTrayIcon  #, QMessageBox
 from ruamel.yaml import YAML
 
@@ -162,6 +162,10 @@ class PwrTray:
         PwrTray.singleton = self
         self.app = QApplication([])
         self.app.setQuitOnLastWindowClosed(False)
+        # A logout has to be able to *ask* the applet to leave.  Without this an
+        # X11 session manager waits for a client that never answers; see
+        # install_session_shutdown_handler().
+        self.install_session_shutdown_handler()
 #       while not QSystemTrayIcon.isSystemTrayAvailable():
 #           prt("System tray is not available. Retry in 1 second...")
 #           time.sleep(1.0)
@@ -1495,6 +1499,53 @@ class PwrTray:
     @staticmethod
     def enable_normal_mode(_):
         Actions(PwrTray.singleton).enable_normal_mode()
+
+    # -- a session that is ending ------------------------------------------
+
+    def install_session_shutdown_handler(self):
+        """Leave the event loop, and stay gone, when the desktop ends the session.
+
+        An X11 logout is a conversation, not a kill: ksmserver (the session
+        manager) asks every client registered with it -- and Qt registers as
+        soon as ``SESSION_MANAGER`` is set, which KDE sets for a session started
+        from its own autostart or from a terminal -- to save itself and quit,
+        then waits for that client to disappear.  Qt reports the request as
+        ``commitDataRequest``.  Nothing was connected to it here, so the applet
+        said nothing and waited to be killed; on an immediate logout that is
+        exactly the wait the user sees, while the confirmation prompt gives the
+        session manager a chance to time out or kill us instead, which is why
+        that path appeared to work.
+
+        Quitting here answers the request in the protocol's own terms: a clean
+        exit that `Restart=on-failure` leaves down, and that no supervisor
+        respawns into a session waiting for its processes to go away.
+
+        The shipped unit is deliberately different: it unsets
+        ``SESSION_MANAGER`` (a stale one from an earlier login must not make Qt
+        join a session that is not ours), so this signal never fires there and
+        systemd's stop signal ends the unit instead.  A manual run and a window
+        manager's autostart inherit the live session's variable, and are exactly
+        the case this handler exists for.
+        """
+        try:
+            self.app.commitDataRequest.connect(self._on_commit_data_request)
+        except (AttributeError, TypeError) as exc:
+            prt(f'note: no session management in this Qt: {exc}')
+
+    def _on_commit_data_request(self, manager):
+        """A session manager is ending the session: quit, and do not come back.
+
+        The Qt signal carries the ``QSessionManager``; the restart hint rides
+        along with the client's saved state and says "do not restore me".  A Qt
+        that refuses the hint is not fatal -- the process is quitting anyway --
+        so the failure is logged and ignored.
+        """
+        prt('session manager is ending the session; quitting')
+        try:
+            manager.setRestartHint(QSessionManager.RestartHint.RestartNever)
+        except (AttributeError, RuntimeError) as exc:
+            prt(f'note: cannot set the session restart hint: {exc}')
+        self.app.quit()
 
     @staticmethod
     def goodbye(message=''):

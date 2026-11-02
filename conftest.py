@@ -87,7 +87,13 @@ if not _available('PyQt5'):
               QtDebugMsg=0, QtInfoMsg=4, QtWarningMsg=1,
               QtCriticalMsg=2, QtFatalMsg=3),
           qInstallMessageHandler=_Stub())
-    _stub('PyQt5.QtGui', QIcon=_Stub, QCursor=_Stub)
+    # QSessionManager needs a real namespace rather than a _Stub: the
+    # session-shutdown test compares the restart hint it recorded against the
+    # enum, and two fresh _Stub() objects never compare equal.
+    _stub('PyQt5.QtGui', QIcon=_Stub, QCursor=_Stub,
+          QSessionManager=types.SimpleNamespace(
+              RestartHint=types.SimpleNamespace(RestartNever=3),
+              RestartNever=3))
     _stub('PyQt5.QtWidgets', QApplication=_Stub, QSystemTrayIcon=_Stub,
           QMenu=_Stub, QAction=_Stub)
     # No QtDBus stub on purpose: tray_watcher_present() imports it lazily and
