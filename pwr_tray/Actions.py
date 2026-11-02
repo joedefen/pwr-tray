@@ -73,16 +73,15 @@ class Actions:
         applet = self.applet
         if applet:
             applet.tray_icon.hide()
-        if getattr(applet, 'svc_mode', False):
-            # Under the unit, exiting is not enough: a unit configured with
-            # Restart=always would bring the applet straight back.  Ask systemd
-            # to stop the unit, from outside its cgroup, and let the event loop
-            # end normally so atexit releases the lock and writes ENDED.
-            if self._ask_systemd('stop'):
-                app = getattr(applet, 'app', None)
-                if app is not None:
-                    app.quit()
-                    return
+        # Under the unit, exiting is not enough: a unit configured with
+        # Restart=always would bring the applet straight back.  Ask systemd
+        # to stop the unit, from outside its cgroup, and let the event loop
+        # end normally so atexit releases the lock and writes ENDED.
+        if getattr(applet, 'svc_mode', False) and self._ask_systemd('stop'):
+            app = getattr(applet, 'app', None)
+            if app is not None:
+                app.quit()
+                return
         sys.exit()
 
     def restart_self(self):
