@@ -129,6 +129,7 @@ def recorder_fixture(monkeypatch):
     monkeypatch.setattr(actions_module, 'subprocess', types.SimpleNamespace(
         run=recorder.run,
         Popen=recorder.Popen,
+        DEVNULL=real_subprocess.DEVNULL,
         SubprocessError=real_subprocess.SubprocessError,
         TimeoutExpired=real_subprocess.TimeoutExpired,
         CalledProcessError=real_subprocess.CalledProcessError))
@@ -388,6 +389,28 @@ def test_edit_config_runs_the_configured_editor_as_argv(tray, rec):
     PwrTray.edit_config(None)
 
     assert rec.calls == [('run', ['geany', '/tmp/pwr-tray/config.ini'], False)]
+
+
+def test_edit_config_keeps_the_editor_out_of_our_log(tray, monkeypatch):
+    """The editor must not inherit debug.log as its stdout.
+
+    gui_editor is often a terminal emulator (konsole -e vim), and prt() has
+    pointed our fds 1/2 at debug.log: without redirection the editor appends
+    its own toolkit's raw output to the log, where no message handler of ours
+    can see it.
+    """
+    seen = []
+    tray('sway-wayland')
+    monkeypatch.setattr(actions_module.subprocess, 'run',
+                        lambda argv, **kwargs: seen.append((argv, kwargs)))
+
+    PwrTray.edit_config(None)
+
+    assert seen == [(['geany', '/tmp/pwr-tray/config.ini'],
+                     {'check': True,
+                      'stdin': real_subprocess.DEVNULL,
+                      'stdout': real_subprocess.DEVNULL,
+                      'stderr': real_subprocess.DEVNULL})]
 
 
 def test_edit_config_does_nothing_without_a_gui_editor(tray, rec):

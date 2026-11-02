@@ -235,7 +235,8 @@ def tray_stub(log, old, log_viewer='xterm -e'):
         get_params=lambda: types.SimpleNamespace(log_viewer=log_viewer))
 
 
-def test_open_log_launches_the_viewer(monkeypatch, tmp_path):
+def test_opening_the_log_spawns_the_viewer_outside_our_process(
+        monkeypatch, tmp_path):
     import pwr_tray.Actions as actions_module
     import pwr_tray.main as main_module
 
@@ -250,13 +251,20 @@ def test_open_log_launches_the_viewer(monkeypatch, tmp_path):
     # open_log() now lives in the action layer, so that is where its narration
     # is silenced -- and spawn_detached() is still the only launcher.
     monkeypatch.setattr(actions_module, 'prt', lambda *args, **kwargs: None)
-    monkeypatch.setattr(utils, 'spawn_detached', launched.append)
+    monkeypatch.setattr(
+        utils, 'spawn_detached',
+        lambda argv, **kwargs: launched.append((argv, kwargs)))
     monkeypatch.setattr(utils, 'less_follow_name_supported', lambda: True)
 
     main_module.PwrTray.open_log(None)
 
-    assert launched == [['xterm', '-e', 'less', '--follow-name', '+F',
-                         str(log), str(old)]]
+    # quiet=True: prt() has pointed our fds 1/2 at debug.log, so a terminal
+    # emulator spawned without redirection would inherit the log as its own
+    # stdout and append its raw toolkit output (konsole's Qt palette dump)
+    # where our Qt message handler cannot reach it.
+    assert launched == [(
+        ['xterm', '-e', 'less', '--follow-name', '+F', str(log), str(old)],
+        {'quiet': True})]
 
 
 def test_open_log_reports_when_no_terminal_exists(monkeypatch, tmp_path):
@@ -322,3 +330,35 @@ def test_spawn_detached_ignores_an_empty_command():
         pytest.fail('nothing should be spawned')
 
     assert utils.spawn_detached([], spawn=spawn) is None
+
+
+def test_spawn_detached_can_keep_a_child_out_of_our_log(monkeypatch):
+    """quiet=True: the child must not inherit debug.log as its stdout."""
+    calls = []
+    monkeypatch.setattr(utils.shutil, 'which', lambda name, path=None: None)
+
+    utils.spawn_detached(['konsole', '-e', 'less', '+F', '/tmp/x.log'],
+                         spawn=lambda argv, **kwargs: calls.append((argv, kwargs)),
+                         env={}, quiet=True)
+
+    assert calls == [(
+        ['konsole', '-e', 'less', '+F', '/tmp/x.log'],
+        {'start_new_session': True,
+         'stdin': utils.subprocess.DEVNULL,
+         'stdout': utils.subprocess.DEVNULL,
+         'stderr': utils.subprocess.DEVNULL})]
+
+
+def test_spawn_detached_leaves_the_applet_s_own_streams_alone(monkeypatch):
+    """The default spawn keeps the inherited fds: that output is the session log."""
+    calls = []
+    monkeypatch.setattr(utils.shutil, 'which', lambda name, path=None: None)
+
+    utils.spawn_detached(['python3', '-m', 'pwr_tray.main'],
+                         spawn=lambda argv, **kwargs: calls.append((argv, kwargs)),
+                         env={})
+
+    assert calls == [(['python3', '-m', 'pwr_tray.main'],
+                      {'start_new_session': True})]
+    assert 'stdout' not in calls[0][1]
+    assert 'stderr' not in calls[0][1]

@@ -342,7 +342,7 @@ def log_viewer_argv(log_path, old_path=None, preferred=''):
     return terminal_argv(command, preferred)
 
 
-def spawn_detached(command, spawn=None, env=None):
+def spawn_detached(command, spawn=None, env=None, quiet=False):
     """Start `command` so that it outlives this process.
 
     The log viewer has to keep running when the applet stops or restarts.
@@ -353,6 +353,16 @@ def spawn_detached(command, spawn=None, env=None):
     ``start_new_session=True`` is setsid(2): it detaches the viewer from our
     session and controlling terminal, which is what keeps it alive when the
     applet was started from a terminal or a DE autostart.
+
+    `quiet=True` gives the child ``/dev/null`` on stdin, stdout and stderr.
+    prt() has already dup2()-ed our fds 1 and 2 onto debug.log, so a child
+    spawned without redirection inherits that log as its own stdout: a Qt
+    terminal emulator then appends its raw palette dump, ``QThreadStorage:``
+    warnings and all, straight to the file.  Our Qt message handler cannot
+    filter that -- it only ever sees messages raised in *this* process -- so
+    the spawner has to redirect the child's streams instead.  `quiet` stays
+    off by default because the applet's own restart wants the inherited
+    descriptors: there the child's output *is* the session log.
 
     `spawn`/`env` are injectable for tests.  Returns whatever `spawn` returns
     (``None`` for an empty command).
@@ -365,6 +375,10 @@ def spawn_detached(command, spawn=None, env=None):
     if runner and in_systemd_service(env):
         command = [runner, '--user', '--scope', '--quiet', '--', *command]
     spawn = subprocess.Popen if spawn is None else spawn
+    if quiet:
+        return spawn(command, start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
     return spawn(command, start_new_session=True)
 
 

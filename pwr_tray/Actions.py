@@ -94,7 +94,14 @@ class Actions:
                 arguments = params.gui_editor.split()
                 arguments.append(ini_path)
                 prt('+', 'running:', arguments)
-                subprocess.run(arguments, check=True)
+                # gui_editor is often a terminal emulator ('konsole -e vim'),
+                # so this child is a toolkit application as well: left alone
+                # it inherits our fds 1/2 -- debug.log -- and appends its own
+                # raw Qt output where our message handler cannot filter it.
+                subprocess.run(arguments, check=True,
+                               stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
             except (OSError, subprocess.SubprocessError) as e:
                 prt(f"Edit Config ERR: {e}")
 
@@ -107,6 +114,13 @@ class Actions:
         spawn_detached() puts the viewer in its own session -- and, under
         systemd, its own transient scope -- so a stop or restart of the applet
         does not take the log window down with it.
+
+        The viewer is spawned quiet: prt() points our fds 1 and 2 at
+        debug.log, so without redirection the terminal emulator inherits that
+        file as its stdout and appends its own toolkit chatter -- konsole, a
+        Qt6 application, dumps its palette table and layout warnings there in
+        raw Qt format.  Those lines never pass through our Qt message handler,
+        which only sees this process, so the redirection is the only fix.
         """
         applet = self.applet
         try:
@@ -125,7 +139,7 @@ class Actions:
 
         prt('+', 'running:', arguments)
         try:
-            Utils.spawn_detached(arguments)
+            Utils.spawn_detached(arguments, quiet=True)
         except (OSError, subprocess.SubprocessError) as e:
             prt(f'Open Log ERR: {e}')
 
