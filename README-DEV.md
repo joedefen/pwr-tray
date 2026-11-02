@@ -270,6 +270,8 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
+* `pipx install --editable .` -- point `pwr-tray` at the tree; after edits,
+  `pwr-tray --svc-restart` reloads the applet systemd is running.
 * `.venv/bin/python -m pwr_tray.main -D -o` -- run the tree, log to stdout.
 * `./runner [args]` -- the same, but `execve`s `python -m pwr_tray.main` with
   `--replace`, so it looks like a restarted instance to `ps`/`PyKill` and takes
