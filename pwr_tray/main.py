@@ -111,6 +111,25 @@ TEST_DISCHARGE_STEP = 1
 # exception list for xfce4-power-manager, org_kde_powerdevil and niri.
 
 
+#: The `session_end` list a desktop gets when commands.yaml does not name one.
+#: Needed for the *old* `my-commands.yaml`: build_variables() only copies keys
+#: the file's `defaults` block already has, so without this fallback a
+#: pre-existing user file would silently turn log off back into one click.
+DEFAULT_SESSION_END = ('logoff', 'poweroff', 'reboot')
+
+#: The words the menu and the log use for a session-ending action, keyed by the
+#: commands.yaml action name.  build_menu() takes the key from the call site and
+#: the wording from here, and arms the entry only when this desktop's
+#: `session_end` list names that key.
+SESSION_END_WORDS = {
+    'logoff': 'Log off',
+    'poweroff': 'Power off',
+    'reboot': 'Reboot',
+    'reload_wm': 'Reload',
+    'restart_wm': 'Restart',
+}
+
+
 class PwrTray:
     """ pwr-tray main class.
     NOTES:
@@ -217,6 +236,13 @@ class PwrTray:
         self.poll_s = 2.000
         self.poll_100ms = False
         self.rebuild_menu = False
+        # (key, deadline) of a session-ending entry waiting for its second
+        # click; see arm_or_run().  None means nothing is armed.
+        self._armed = None
+        # The arm this menu open promised (`(click NOW)` is on screen), and the
+        # arm the labels in the menu were last rendered with.
+        self._menu_arm = None
+        self._rendered_arm = None
         self.picks_file = ini_tool.picks_path
         self.enable_playerctl = True
 
@@ -602,8 +628,23 @@ class PwrTray:
             return []
         return list(self._events().media_players)
 
+    def can_toggle_playerctl(self):
+        """True when the PlayerCtl toggle can actually do something.
+
+        MPRIS is a bus protocol, so a live event source is enough; `playerctl`
+        is only the fallback query.  The menu and toggle_playerctl() share this
+        one test, so a row that would swallow the click is never offered.
+        """
+        return (bool(getattr(self, 'has_playerctl', False))
+                or self._bus_is_trusted())
+
     def _player_ctl_label(self):
-        """The PlayerCtl entry: ``Disable``, ``Idle``, or ``Busy`` with who.
+        """The PlayerCtl entry: ``Disabled``, ``Idle``, or ``Busy`` with who.
+
+        All three are *states*, because this row reports rather than offers an
+        action -- like ``♺ Lock: 15m->30m`` and the battery line, it changes when
+        clicked.  An imperative here read as the opposite of the truth: the row
+        said "Disable" while the feature was already disabled.
 
         The state word is short because the blocker rides on the same line,
         and the count comes *first* (``2+firefox``) so a long name can only
@@ -612,7 +653,7 @@ class PwrTray:
         named is still shown, as ``player``.
         """
         if not self.enable_playerctl:
-            return '♫ PlayerCtl: Disable'
+            return '♫ PlayerCtl: Disabled'
         if getattr(self, 'was_play_state', '') != 'playing':
             return '♫ PlayerCtl: Idle'
         names = self._playing_names()
@@ -1032,8 +1073,9 @@ class PwrTray:
 
     def toggle_playerctl(self):
         # MPRIS is a bus protocol: with a live event source the media inhibit
-        # works without playerctl, which is only the fallback query.
-        if self.has_playerctl or self._bus_is_trusted():
+        # works without playerctl, which is only the fallback query.  The menu
+        # asks the same question before offering the row at all.
+        if self.can_toggle_playerctl():
             self.enable_playerctl = not bool(self.enable_playerctl)
             self.save_picks()
             self.rebuild_menu = True
@@ -1064,8 +1106,21 @@ class PwrTray:
         def has_cmd(label):
             return bool(self.variables.get(label, None))
 
-        def add_item(text, callback, enabled=True):
+        def add_item(text, callback, enabled=True, key=None):
+            """Add one entry, arming it instead of running it when appropriate.
+
+            `key` names the commands.yaml action the row performs, and only the
+            session-ending rows pass it.  It is explicit on purpose: inferring
+            the action from the callback would stop confirming the day a
+            callback is wrapped in a lambda, and a confirmation that silently
+            disappears is worse than one that was never offered.
+            """
             nonlocal self
+            if (key and key in self.session_end_keys()
+                    and getattr(self.get_params(), 'confirm_session_end', False)):
+                text = f'{text}{self._confirm_suffix(key)}'
+                callback = self._arming(key, SESSION_END_WORDS.get(key, key),
+                                        callback)
             item = QAction(text)
             item.triggered.connect(callback)
             item.setEnabled(enabled)
@@ -1110,15 +1165,21 @@ class PwrTray:
             add_item('   ▷ Blank Monitors', self.blank_quick)
 
         if has_cmd('reload_wm'):
-            add_item('   ▷ Reload', self.reload_wm)
+            add_item('   ▷ Reload', self.reload_wm, key='reload_wm')
 
         if has_cmd('restart_wm'):
-            add_item('   ▷ Restart', self.restart_wm)
+            add_item('   ▷ Restart', self.restart_wm, key='restart_wm')
 
-        add_item('   ▷ Log Off', self.exit_wm)
-        add_item('System:  ▼ Suspend', self.suspend)
-        add_item('    ▼ Reboot', self.reboot)
-        add_item('    ▼ PowerOff', self.poweroff)
+        # A `key=` here means "this row can end the session": with
+        # confirm_session_end on it is armed rather than run, and which keys
+        # qualify comes from commands.yaml (see session_end_keys).  Suspend
+        # passes none -- it is reversible.  The em-space indents are escapes so
+        # an edit cannot silently flatten them into ordinary spaces.
+        add_item('\u2003\u2003\u2003▷ Log Off', self.exit_wm, key='logoff')
+        add_item('System: \u2003▼ Suspend', self.suspend)
+        add_item('\u2003\u2003\u2003\u2003▼ Reboot', self.reboot, key='reboot')
+        add_item('\u2003\u2003\u2003\u2003▼ PowerOff', self.poweroff,
+                 key='poweroff')
 
         # Only a fabricated HiBattery/LoBattery leg is synthetic; the
         # plugged-in state of a machine without a battery, whether reached at
@@ -1134,8 +1195,12 @@ class PwrTray:
         add_item(f'  ♺ Sleep (after Lock): {self._sleep_rotate_str()}',
                  lambda: self._sleep_rotate_next())
 
-        label = self._player_ctl_label()
-        add_item(label, self.toggle_playerctl)
+        # Only offered when the toggle can act.  A row that ignores the click
+        # is worse than no row, which is the same rule Reload and Restart
+        # follow when the desktop defines no command for them.
+        label = self._player_ctl_label() if self.can_toggle_playerctl() else None
+        if label is not None:
+            add_item(label, self.toggle_playerctl)
         self._player_ctl_cache = label
         if self.get_params().gui_editor:
             add_item('✎  Edit Applet Config', self.edit_config)
@@ -1152,12 +1217,18 @@ class PwrTray:
         # behaves differently from what the reader expects.
         add_item(f'↺ Restart pwr-tray v{__version__}', self.restart_self)
 
+        # The armed state these labels were rendered with: _on_menu_about_show()
+        # compares it, so a pending "(click NOW)" appears on the next open.
+        self._rendered_arm = self._armed_key()
+
         if first_menu:
             self.tray_icon.setContextMenu(self.menu)
             # The rows name *who* is blocking, and that can change while the
             # blocked-operation set does not, so refresh them when the menu is
             # opened -- a ListInhibitors call, only when someone is looking.
             self.menu.aboutToShow.connect(self._on_menu_about_show)
+            # Closing ends the promise: the next open re-reads the deadline.
+            self.menu.aboutToHide.connect(self._on_menu_about_hide)
 
         if not self.tray_icon.isVisible():
             prt('self.tray_icon.isVisible() is False ... restarting app')
@@ -1165,7 +1236,7 @@ class PwrTray:
             self.restart_self(None)
 
     def _on_menu_about_show(self):
-        """Refresh the rows and the PlayerCtl label when the menu opens.
+        """Refresh the rows, the PlayerCtl label and the armed entry on open.
 
         The verdict is event-driven, but the rows and the blocker's name are
         renderings of it: the processes holding sleep, and which player is the
@@ -1173,19 +1244,35 @@ class PwrTray:
         and logind announces neither.  Asking once per menu open keeps both
         honest without a fork.  When no bus is trusted the rows come from the
         polling fallback anyway and no player name is available, so nothing is
-        done here.
+        asked for here.
+
+        The arm is decided once, right here, and then *promised*: whatever is
+        pending is what this open shows, and a "(click NOW)" on screen stays
+        valid until the menu closes however long the user takes.  ARM_SECONDS
+        therefore measures how long they have to open the menu again, not how
+        fast they must read it.
         """
-        if not self._bus_is_trusted():
-            return
-        blocked = self._blocked_operations()
-        rows = []
-        if blocked and blocked & GUARDED_OPERATIONS:
-            rows = self._inhibitor_rows(blocked, refresh=True)
-        label = self._player_ctl_label()
-        if (rows != self._inhibit_rows
-                or label != getattr(self, '_player_ctl_cache', None)):
-            self._inhibit_rows = rows
+        self._menu_arm = self._pending_key()
+        rebuild = self._menu_arm != getattr(self, '_rendered_arm', None)
+        rows = getattr(self, '_inhibit_rows', None)
+        if self._bus_is_trusted():
+            blocked = self._blocked_operations()
+            fresh = []
+            if blocked and blocked & GUARDED_OPERATIONS:
+                fresh = self._inhibitor_rows(blocked, refresh=True)
+            label = (self._player_ctl_label()
+                     if self.can_toggle_playerctl() else None)
+            if (fresh != self._inhibit_rows
+                    or label != getattr(self, '_player_ctl_cache', None)):
+                rows = fresh
+                self._inhibit_rows = fresh
+                rebuild = True
+        if rebuild:
             self.build_menu(rows)
+
+    def _on_menu_about_hide(self):
+        """Close the promise made at the last open; the arm itself survives."""
+        self._menu_arm = None
 
     def on_tray_icon_activated(self, reason):
         left_click = (reason == QSystemTrayIcon.Trigger and not self.is_wayland)
@@ -1277,6 +1364,90 @@ class PwrTray:
     @staticmethod
     def open_log(_):
         Actions(PwrTray.singleton).open_log()
+
+    # -- session-ending menu entries ---------------------------------------
+    # Confirming happens in the menu, and NOT in Actions or in the wrappers
+    # below: the idle path calls PwrTray.poweroff() directly (see
+    # IdleStateMachine) and must stay unconfirmed -- there is nobody at the
+    # machine to click twice.
+    #
+    # There is deliberately no dialog.  The applet is a tray icon with no
+    # window of its own, and on the Wayland compositors it targets a parentless
+    # toplevel is at the compositor's mercy (niri tiles it, and nothing can
+    # raise it).  A menu row that says what it is about to do, twice, needs no
+    # window-manager cooperation at all.
+
+    #: How long an armed entry stays armed.  The tray menu closes on the click
+    #: that armed it, so the second click lands in a later open: long enough to
+    #: be convenient, short enough that it is never a surprise.
+    ARM_SECONDS = 12.0
+
+    def session_end_keys(self):
+        """The actions this desktop treats as session-ending.
+
+        Comes from commands.yaml (`session_end`), so a desktop whose restart
+        takes every app down adds that key there and gets the same treatment as
+        log off.  DEFAULT_SESSION_END is the fallback for a user's older
+        `my-commands.yaml`, which predates the key.
+        """
+        keys = self.variables.get('session_end')
+        return tuple(keys) if keys else DEFAULT_SESSION_END
+
+    def _pending_key(self):
+        """The key waiting for its second click, or None once it has lapsed.
+
+        Expiry is checked here, on every look, rather than by a QTimer: nothing
+        is watching a label while the menu is closed, so the deadline only has
+        to be evaluated when the menu is opened and when an entry is clicked.
+        """
+        armed = getattr(self, '_armed', None)
+        if not armed:
+            return None
+        key, deadline = armed
+        if time.monotonic() >= deadline:
+            self._armed = None
+            return None
+        return key
+
+    def _armed_key(self):
+        """The key to present as "(click NOW)", or None.
+
+        Once the menu is open the answer is frozen in `_menu_arm` (set by
+        _on_menu_about_show), so a "(click NOW)" the user can actually see
+        stays valid until the menu closes, even if ARM_SECONDS runs out while
+        it is open.
+        """
+        promised = getattr(self, '_menu_arm', None)
+        return promised if promised else self._pending_key()
+
+    def _confirm_suffix(self, key):
+        """The marker after a session-ending label: armed, or still double."""
+        return ' (click NOW)' if self._armed_key() == key else ' (click twice)'
+
+    def _arming(self, key, what, action):
+        """Return the menu callback that arms on one click and runs on the next.
+
+        A tiny closure, because `triggered` passes the `checked` flag and
+        arm_or_run takes exactly three arguments.
+        """
+        def armed(_checked=False):
+            self.arm_or_run(key, what, action)
+        return armed
+
+    def arm_or_run(self, key, what, action):
+        """Arm `key` on the first click, run `action` on the second.
+
+        One slot only: arming another entry drops the pending one, so exactly
+        one "(click NOW)" is ever visible.
+        """
+        if self._armed_key() == key:
+            self._armed = None
+            self._menu_arm = None
+            prt(f'+ {what}: confirmed')
+            action(None)     # the static wrappers take the QAction's `checked`
+            return
+        self._armed = (key, time.monotonic() + self.ARM_SECONDS)
+        prt(f'+ {what}: armed {self.ARM_SECONDS:g}s; click again to confirm')
 
     @staticmethod
     def suspend(_):
@@ -1652,6 +1823,11 @@ def main():
 
 
     ini_tool.update_config()
+    # Add the rows this version expects but an older config.ini lacks: a new
+    # setting, and [ServiceAllowed] rows for desktops supported since.  Additive
+    # and one-shot -- see IniTool.normalize_config_text() for why a battery-tier
+    # row is never filled in, and why nothing is ever deleted.
+    ini_tool.normalize_config(known_desktops=service.known_desktops())
     if opts.debug:
         for selector in ini_tool.get_selectors():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override

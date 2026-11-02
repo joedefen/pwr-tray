@@ -485,7 +485,7 @@ def test_opening_the_menu_does_nothing_without_a_bus(monkeypatch):
     assert commands == []
 
 
-# -- the PlayerCtl entry: Disable / Idle / Busy:<who> -----------------------
+# -- the PlayerCtl entry: Disabled / Idle / Busy:<who> ----------------------
 
 def _label_tray(playing_names=(), **tray_kwargs):
     tray = _tray(**tray_kwargs)
@@ -500,10 +500,23 @@ def test_the_entry_is_idle_when_nothing_plays():
     assert _label_tray()._player_ctl_label() == '♫ PlayerCtl: Idle'
 
 
-def test_the_entry_is_disable_when_the_feature_is_off():
+def test_the_entry_is_disabled_when_the_feature_is_off():
+    """A state, not an imperative: "Disable" read as the opposite of the truth."""
     tray = _label_tray(playing_names=['firefox'], enable_playerctl=False)
 
-    assert tray._player_ctl_label() == '♫ PlayerCtl: Disable'
+    assert tray._player_ctl_label() == '♫ PlayerCtl: Disabled'
+
+
+def test_the_toggle_and_the_menu_ask_the_same_question():
+    """`can_toggle_playerctl` is one test, so a row cannot promise a no-op."""
+    assert _label_tray().can_toggle_playerctl() is True
+
+    no_cli = _label_tray(**{'has_playerctl': False})
+    no_cli.events = None
+    assert no_cli.can_toggle_playerctl() is False
+
+    # No CLI, but a live bus: MPRIS still answers, so the toggle still works.
+    assert _label_tray(**{'has_playerctl': False}).can_toggle_playerctl() is True
 
 
 def test_the_entry_names_the_only_player():

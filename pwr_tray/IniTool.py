@@ -157,6 +157,132 @@ def set_flag_text(text, key, value, keys=()):
     return '\n'.join(lines) + '\n'
 
 
+def _default_text(value):
+    """Return the config.ini text for one built-in default value."""
+    return value if isinstance(value, str) else str(value)
+
+
+def _present_keys(lines, bounds):
+    """Return the lower-cased keys a section already holds.
+
+    A *commented-out* row counts as present: `#key = value` is how a hand
+    editor disables a setting on purpose, and writing it back live would
+    silently undo that.
+    """
+    if bounds is None:
+        return set()
+    start, end = bounds
+    names = set()
+    for line in lines[start + 1:end]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped[0] in '#;':
+            stripped = stripped[1:].lstrip()
+        match = _ENTRY_RE.match(stripped)
+        if match:
+            names.add(match.group('key').strip().lower())
+    return names
+
+
+def _insert_rows(lines, bounds, rows):
+    """Insert `rows` at the end of a section, before its trailing blanks."""
+    start, end = bounds
+    insert_at = end
+    while insert_at - 1 > start and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    lines[insert_at:insert_at] = rows
+
+
+def normalize_config_text(text, defaults, known_desktops=None):
+    """Return `(text, changes)`: `text` plus the rows this version expects.
+
+    Additive only.  Nothing already in the file is removed or rewritten, so
+    ordering, comments, `key: value` separators and blank lines survive -- the
+    same rule :func:`set_flag_text` follows, and the reason
+    ``configparser.write()`` is never used here (it would reorder the file and
+    delete every comment).
+
+    Three decisions worth naming:
+
+    * A key that is *present but commented out* counts as present, so a row the
+      user disabled by hand is not re-added live.
+    * ``[HiBattery]`` and ``[LoBattery]`` are never filled in.  Their rows are
+      deliberately absent: an absent key inherits the user's ``[Settings]``
+      value, while a key written into the tier wins outright (see
+      :meth:`IniTool._tier_base`).  Materialising ``power_down = True`` into
+      ``[LoBattery]`` would therefore power a machine off instead of suspending
+      it for a user who wrote ``power_down = False`` in ``[Settings]`` -- the
+      opposite of what that user asked for.
+    * ``[ServiceAllowed]`` rows come from the supported-desktop list, which a
+      release can change.  A missing row is added as ``False``, never ``True``:
+      absence already means False, so this only makes the section complete and
+      readable, and consent is never inferred.  A row naming a desktop this
+      build no longer supports is left alone (see
+      :func:`service_rows_not_supported`), because deleting it would revoke a
+      permission as a side effect of a cosmetic edit.
+
+    `changes` is empty when the file already holds everything, and the caller
+    then writes nothing -- so a normalised file is byte-identical to itself on
+    every later start.
+    """
+    if not text:
+        return text, []
+    lines = text.splitlines()
+    trailing = text.endswith('\n')
+    changes = []
+
+    settings = dict(defaults.get('Settings', {}))
+    bounds = _section_bounds(lines, 'Settings')
+    if bounds is None:
+        if lines and lines[-1].strip():
+            lines.append('')
+        lines.append('[Settings]')
+        bounds = _section_bounds(lines, 'Settings')
+        changes.append('created the [Settings] section')
+    present = _present_keys(lines, bounds)
+    rows = [f'{key} = {_default_text(value)}'
+            for key, value in settings.items()
+            if key.lower() not in present]
+    if rows:
+        _insert_rows(lines, bounds, rows)
+        changes.extend(f'Settings: {row}' for row in rows)
+
+    known = [str(name) for name in (known_desktops or [])]
+    bounds = _section_bounds(lines, SERVICE_SECTION)
+    if bounds is None:
+        if known:
+            if lines and lines[-1].strip():
+                lines.append('')
+            lines.extend(SERVICE_HEADER)
+            lines.extend(f'{name} = False' for name in known)
+            changes.append(f'created the [{SERVICE_SECTION}] section')
+    else:
+        present = _present_keys(lines, bounds)
+        rows = [f'{name} = False' for name in known
+                if name.lower() not in present]
+        if rows:
+            _insert_rows(lines, bounds, rows)
+            changes.extend(f'{SERVICE_SECTION}: {row}' for row in rows)
+
+    if not changes:
+        return text, []
+    return '\n'.join(lines) + ('\n' if trailing else ''), changes
+
+
+def service_rows_not_supported(text, known_desktops):
+    """Rows in ``[ServiceAllowed]`` naming a desktop this build does not know.
+
+    Reported, never removed: the row may be a typo the user is debugging, or a
+    permission they still want if that desktop comes back.
+    """
+    bounds = _section_bounds((text or '').splitlines(), SERVICE_SECTION)
+    if bounds is None:
+        return []
+    known = {str(name).lower() for name in (known_desktops or [])}
+    return [name for name in parse_service_allowed(text) if name not in known]
+
+
 def default_config_text():
     """The text a brand-new config.ini starts from (the built-in defaults)."""
     parser = configparser.ConfigParser()
@@ -175,6 +301,11 @@ class IniTool:
             'debug_mode': False,
             'power_down': False,
             'turn_off_monitors': False,
+            # Ask before the menu's log off / reboot / power off.  Only the
+            # menu: the idle-driven power down (IdleStateMachine) is never
+            # confirmed, because nobody is there to click twice (see
+            # PwrTray.arm_or_run).
+            'confirm_session_end': False,
             'lock_min_list': '[15, 30]',
             'sleep_min_list': '[5, 30]',
             'lo_battery_pct': 10,
@@ -274,6 +405,48 @@ class IniTool:
             self._report_config_problem(f'cannot create ({exc})')
             return False
         return True
+
+    def normalize_config(self, known_desktops=None):
+        """Add the rows this version expects and an older file lacks.
+
+        Called once at start-up, after the first read (see `main()`): doing it
+        from `update_config()` would race the user's editor and change the very
+        mtime the tick compares against.  Nothing is ever deleted -- unknown
+        keys and sections are reported by `_parse_config()` and left in place.
+
+        A missing or read-only file is not an error: the applet runs on the
+        built-in defaults, so the failure is logged and start-up continues.
+        Returns the list of changes, empty when the file was already complete
+        (in which case it is not opened for writing at all).
+        """
+        try:
+            with open(self.ini_path, encoding='utf-8') as handle:
+                text = handle.read()
+        except OSError as exc:
+            prt(f'WARN: cannot normalise {self.ini_path} ({exc})')
+            return []
+        for name in service_rows_not_supported(text, known_desktops):
+            prt(f'CONFIG: [{SERVICE_SECTION}] has {name!r}, which this build'
+                ' does not support; leaving it alone')
+        updated, changes = normalize_config_text(text, self.defaults,
+                                                 known_desktops)
+        if not changes:
+            return []
+        try:
+            with open(self.ini_path, 'w', encoding='utf-8') as handle:
+                handle.write(updated)
+        except OSError as exc:
+            prt(f'WARN: cannot write {self.ini_path} ({exc})')
+            return []
+        for change in changes:
+            prt(f'CONFIG: added {change}')
+        # The write moved the mtime the tick watches; remembering it keeps the
+        # next tick from re-reading a file that only gained defaults.
+        try:
+            self.last_mod_time = os.path.getmtime(self.ini_path)
+        except OSError:
+            self.last_mod_time = None
+        return changes
 
     def _report_config_problem(self, reason):
         """Warn about a config.ini problem once, not once per poll tick."""
@@ -439,6 +612,14 @@ class IniTool:
         all_params = {}
         explicit_settings = set()
         settings_params = None
+
+        # A section nobody reads is reported, not removed: the file is meant to
+        # be edited by hand, and a section the user wrote (or a release left
+        # behind) is theirs to keep.
+        known_sections = set(self.get_selectors()) | {SERVICE_SECTION}
+        for section in self.config.sections():
+            if section not in known_sections:
+                prt(f'skip [{section}]: unknown section [kept]')
 
         # Access the configuration values in order
         prt('parsing config.ini...')

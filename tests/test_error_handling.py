@@ -239,6 +239,10 @@ def test_main_reports_pwr_tray_error_without_traceback(monkeypatch):
         def update_config(self):
             return False
 
+        def normalize_config(self, known_desktops=None):
+            """main() adds the rows this version expects; nothing to add here."""
+            return []
+
         def get_selectors(self):
             return []
 

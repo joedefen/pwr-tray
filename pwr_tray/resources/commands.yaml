@@ -21,6 +21,12 @@ defaults:
   reset_idle: ""
   reload_wm: ""
   restart_wm: ""
+  # Actions that END the session.  With confirm_session_end = True the menu
+  # arms them on the first click ("Reboot (click twice)", then
+  # "Reboot (click NOW)") instead of running them, and the idle timer never
+  # asks anything.  A desktop whose reload/restart kills every running app
+  # lists that key here too.
+  session_end: [logoff, poweroff, reboot]
   must_haves: [systemctl]
 
 session_types:
@@ -32,6 +38,11 @@ session_types:
     must_haves: [xprintidle, xset]
   wayland:
     idle_method: swayidle
+    # A Wayland compositor owns every client socket, so restarting one ends
+    # the session: the apps die with it.  (Reloading its config does not, and
+    # is not listed.)  X11 keeps the default list, because i3's restart
+    # preserves its windows.
+    session_end: [logoff, poweroff, reboot, restart_wm]
     must_haves: [swayidle]
 
 desktops:

@@ -162,8 +162,12 @@ def _fake_tray(**overrides):
         setattr(tray, name, noop)
     # The PlayerCtl and battery labels are real logic, not constants: bind them
     # (and what they read) so these tests exercise the shipped state words.
+    # Every row that carries a `key=` reads session_end_keys() and the arm
+    # state; these tests do not ask for confirmation, so it only decides "not
+    # armed" -- but build_menu() records that state, so it must be readable.
     for name in ('_events', '_bus_is_trusted', '_playing_names',
-                 '_player_ctl_label', 'battery_line'):
+                 '_player_ctl_label', 'can_toggle_playerctl', 'battery_line',
+                 'session_end_keys', '_pending_key', '_armed_key'):
         setattr(tray, name, getattr(main_module.PwrTray, name).__get__(tray))
     return tray
 
@@ -175,10 +179,100 @@ def _menu_labels(monkeypatch, rows=None, **overrides):
     return [action.text for action in tray.menu.actions]
 
 
+def _confirming_tray(**overrides):
+    """`_fake_tray` with confirm_session_end on and the arming methods bound.
+
+    The label is the whole confirmation UI, so these tests build the real menu
+    from the real state: what a user sees after one click is a menu row.
+    """
+    tray = _fake_tray(**overrides)
+    tray.get_params = lambda: types.SimpleNamespace(
+        turn_off_monitors=True, gui_editor='geany', log_viewer='xterm -e',
+        confirm_session_end=True)
+    tray.ARM_SECONDS = main_module.PwrTray.ARM_SECONDS
+    tray._menu_arm = None
+    for name in ('session_end_keys', '_pending_key', '_armed_key',
+                 '_confirm_suffix', '_arming', 'arm_or_run'):
+        setattr(tray, name, getattr(main_module.PwrTray, name).__get__(tray))
+    return tray
+
+
+def _confirming_labels(monkeypatch, tray=None, rows=None):
+    monkeypatch.setattr(main_module, 'QAction', _FakeAction)
+    tray = tray or _confirming_tray()
+    main_module.PwrTray.build_menu(tray, rows=rows)
+    return tray, [action.text for action in tray.menu.actions]
+
+
+def test_confirm_mode_marks_the_session_ending_entries(monkeypatch):
+    _tray, labels = _confirming_labels(monkeypatch)
+
+    assert '\u2003\u2003\u2003▷ Log Off (click twice)' in labels
+    assert '\u2003\u2003\u2003\u2003▼ Reboot (click twice)' in labels
+    assert '\u2003\u2003\u2003\u2003▼ PowerOff (click twice)' in labels
+    # Suspend is reversible, so it is never marked.
+    assert 'System: \u2003▼ Suspend' in labels
+    # Nothing is armed yet.
+    assert not any(label.endswith('(click NOW)') for label in labels)
+
+
+def test_only_the_armed_entry_says_click_now(monkeypatch):
+    tray = _confirming_tray()
+    tray.arm_or_run('poweroff', 'Power off', lambda _checked=None: None)
+
+    _tray, labels = _confirming_labels(monkeypatch, tray=tray)
+
+    assert '\u2003\u2003\u2003\u2003▼ PowerOff (click NOW)' in labels
+    # One "NOW" and only one: arming the same or another entry replaces it.
+    assert sum(label.endswith('(click NOW)') for label in labels) == 1
+    assert '\u2003\u2003\u2003▷ Log Off (click twice)' in labels
+
+
+def test_a_desktop_can_make_its_restart_session_ending(monkeypatch):
+    """Requirement: a reload/restart that kills every app is gated like log off.
+
+    `session_end` in commands.yaml decides, per desktop, so a desktop whose
+    restart takes the clients with it lists `restart_wm` there -- as the
+    shipped `wayland` session type does.  A reload is never listed: it keeps
+    the apps.
+    """
+    tray = _confirming_tray(variables={
+        'monitors_off': '',
+        'reload_wm': 'swaymsg reload',
+        'restart_wm': 'swaymsg exit',
+        'session_end': ['logoff', 'poweroff', 'reboot', 'restart_wm'],
+    })
+
+    _tray, labels = _confirming_labels(monkeypatch, tray=tray)
+
+    assert '\u2003\u2003\u2003▷ Restart (click twice)' in labels
+    assert '\u2003\u2003\u2003▷ Reload' in labels
+    assert '\u2003\u2003\u2003▷ Reload (click twice)' not in labels
+
+
 def test_build_menu_labels_use_only_allowed_glyphs(monkeypatch):
     for label in _menu_labels(monkeypatch):
         found = _offenders(label)
         assert not found, _report(found, f'menu label {label!r}')
+
+
+def test_the_player_ctl_entry_reads_as_a_state(monkeypatch):
+    """Idle/Busy are states, so the off word must be one too, not "Disable"."""
+    labels = _menu_labels(monkeypatch, enable_playerctl=False)
+
+    assert '♫ PlayerCtl: Disabled' in labels
+    assert not any(label.endswith('PlayerCtl: Disable') for label in labels)
+
+
+def test_the_player_ctl_entry_is_hidden_when_it_cannot_work(monkeypatch):
+    """No playerctl and no bus: the click would be swallowed, so no row.
+
+    Same rule as Reload/Restart, which only appear when the desktop defines a
+    command for them.
+    """
+    labels = _menu_labels(monkeypatch, has_playerctl=False)
+
+    assert not any('PlayerCtl' in label for label in labels)
 
 
 def test_build_menu_still_offers_the_expected_actions(monkeypatch):

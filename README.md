@@ -224,6 +224,7 @@ Here are the current 'Settings' defaults with explanation.
     debug_mode = False                  # more frequent and elaborate logging
     power_down = False                  # power down (rather than suspend)
     turn_off_monitors = False           # turn off monitors after locking screen
+    confirm_session_end = False         # ask before Log Off / Reboot / PowerOff
     lock_min_list = [15, 30]            # lock minutes choices
     sleep_min_list = [5, 30]            # sleep minutes choices (after lock)
     lo_battery_pct = 10                 # define "low battery" state
@@ -231,6 +232,8 @@ Here are the current 'Settings' defaults with explanation.
     log_viewer =                        # terminal prefix for "Open Applet Log" (empty = auto-detect)
 ```
 **NOTES**:
+* `confirm_session_end = True` turns the menu's session-ending entries into a two-click arm: the row reads `Reboot (click twice)`, and after one click it reads `Reboot (click NOW)` -- in the menu, with no dialog, because the applet has no window of its own and on the tiling Wayland compositors it targets a dialog is just another toplevel for the compositor to place (niri would tile it). The tray menu closes on every click, so the second click is normally in the menu you reopen, and the 12-second window is how long you have to *reopen* it: once the menu is open with `(click NOW)` showing, that stays valid until the menu closes, however long you leave it open. Only one entry is ever armed at a time, so arming another replaces the pending one. The automatic actions are never armed: an idle timeout or a low-battery power down runs straight through, because there is nobody at the machine to click twice. Suspend is not session-ending and is never armed. Which actions count is the `session_end` list in `commands.yaml`: log off, power off and reboot, plus `restart_wm` on Wayland, where restarting the compositor kills every client. This is also the only answerable confirmation a tiling WM gets: `niri msg action quit` can only ask on a terminal, which the applet does not have (hence `--skip-confirmation`).
+* On start-up, `pwr-tray` adds the rows this version expects but an older `config.ini` lacks, and it **never removes anything**: an unknown key or section is reported in `debug.log` and left where it is. A row you commented out counts as present, so it is not re-added, and `[HiBattery]`/`[LoBattery]` rows are never filled in -- an absent tier key inherits `[Settings]`, while a written one overrides it, so writing defaults into a tier would quietly pin them.
 * If you have issues with monitors failing to sleep or the system cannot wake when the monitors are off, then disable the `turn_off_monitors` feature.
 * You can set `gui_editor = konsole -e vim`, for example, to use vim in a terminal window.  If you don't have `geany` installed, then be sure to change `gui_editor`.
 * `log_viewer` is the command prefix `pwr-tray` uses to start the log viewer inside a terminal window, e.g. `log_viewer = xterm -e` or `log_viewer = gnome-terminal --`. When empty it picks the first installed terminal it knows (x-terminal-emulator, gnome-terminal, konsole, kitty, alacritty, foot, xterm, xfce4-terminal, mate-terminal, lxterminal). The viewer is given `/dev/null` as its stdin, stdout and stderr: because the applet points its own fds 1 and 2 at `debug.log`, a terminal emulator left alone would inherit that file and append its own toolkit chatter -- konsole's Qt palette dump and `QLayout` warnings -- to the log.
@@ -256,6 +259,8 @@ On each startup, `pwr-tray` copies its built-in `commands.yaml` to `~/.config/pw
 
 The config uses a three-layer merge: **defaults** → **session_type** (x11 or wayland) → **desktop**. Later layers override earlier ones. Desktop entries are keyed by compound names like `i3-x11` or `kde-wayland`; the part before the last `-` is matched against environment variables (`$XDG_CURRENT_DESKTOP`, `$XDG_SESSION_DESKTOP`, `$DESKTOP_SESSION`), and the suffix must match `$XDG_SESSION_TYPE`.
 
+`session_end` lists the action keys that end the session, which is what `confirm_session_end` in `config.ini` guards. Log off, power off and reboot are always there; `session_types.wayland` adds `restart_wm`, because a Wayland compositor owns its clients and restarting it takes them all down, while `reload_wm` leaves them running and is never listed. If your desktop's `reload_wm` or `restart_wm` kills every app, name that key in the desktop's own `session_end` list and it gets the same two-click treatment.
+
 ---
 
 ## Running pwr-tray as a systemd Service
@@ -280,7 +285,7 @@ kde-wayland = False
 # ...every supported desktop is listed; False until you opt in
 ```
 
-It is an ordinary `config.ini` section and `--svc-install` edits it **in place**, so your comments and your own sections survive. Edit it by hand whenever that is easier; only `--svc-install` (True) and `--svc-uninstall` (False) ever write it, and `pwr-tray -e` opens the file.
+It is an ordinary `config.ini` section and `--svc-install` edits it **in place**, so your comments and your own sections survive. Edit it by hand whenever that is easier; `pwr-tray -e` opens the file, `--svc-install` (True) and `--svc-uninstall` (False) record your answer, and start-up only ever *adds* a row for a desktop it supports but the section lacks (as `False`, which is what a missing row already meant). A row naming a desktop this build no longer supports is reported in `debug.log` and left alone, so a permission is never revoked by an upgrade.
 
 All the verbs print `desktops allowed:` and whether the current session is one of them; `-y/--yes` answers any prompt and `--force` replaces or deletes a unit pwr-tray did not write (and implies `--yes`).
 

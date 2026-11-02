@@ -194,6 +194,28 @@ def test_the_reader_matches_the_shipped_file():
         'swaymsg "output * dpms off"')
 
 
+def test_session_ending_actions_are_listed_per_session_type():
+    """A compositor restart ends a Wayland session; i3's restart does not.
+
+    On Wayland the clients live and die with the compositor socket, so a
+    desktop that defines a restart is ending the session, not reloading it.
+    X11 keeps the three-action default: `i3-msg restart` preserves its windows,
+    which is why the rule is per session type and not global.
+    """
+    data = _parse_commands(resource_text('commands.yaml'))
+    assert data['defaults']['session_end'] == ['logoff', 'poweroff', 'reboot']
+    assert 'restart_wm' in data['session_types']['wayland']['session_end']
+    assert 'restart_wm' not in data['session_types']['x11'].get('session_end',
+                                                                ['logoff'])
+
+    wayland_vars, _ = _desktop('sway-wayland')
+    assert 'restart_wm' in wayland_vars['session_end']
+
+    x11_vars, _ = _desktop('i3-x11')
+    assert 'restart_wm' not in x11_vars['session_end']
+    assert 'logoff' in x11_vars['session_end']
+
+
 @pytest.fixture(name='tray')
 def tray_fixture(monkeypatch):
     """Build a bare PwrTray for one desktop, with the state side effects hidden.
