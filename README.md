@@ -59,8 +59,8 @@ Status lines:
 The applet itself:
 - **✎ Edit Applet Config** - edits `config.ini`.
 - **≡ Open Applet Log** - follows `debug.log` in a terminal window; offered when a terminal is found (see `log_viewer`).
-- **☓ Quit this Applet** - exits the applet.
-- **↺ Restart pwr-tray vX.Y.Z** - restarts the applet, showing the version it runs.
+- **☓ Quit this Applet** - exits the applet. Under the systemd unit it also stops the unit for this session; it stays enabled and returns at your next login.
+- **↺ Restart pwr-tray vX.Y.Z** - restarts the applet, showing the version it runs. Under the systemd unit this asks systemd to restart the unit, so the new instance is the one the unit's `ExecStart=` launches.
 
 ---
 
@@ -218,7 +218,9 @@ kde-wayland = False
 
 **What a disallowed desktop looks like.** The unit still starts at login; the applet sees `False` for its desktop, writes one line to `debug.log` and exits **0**. A clean exit is final for `Restart=on-failure`, so the unit ends `inactive` -- not `failed`.
 
-**Logout is never blocked.** The unit bounds its stop with `TimeoutStopSec=5`, names its stop exit codes in `RestartPreventExitStatus`, and the applet turns SIGTERM into a normal quit.
+**Quit and Restart in the menu are unit operations.** Under the unit, both rows ask `systemctl --user` to act on `pwr-tray.service` instead of exiting into a replacement process. A replacement spawned by the applet would share the unit's cgroup, which systemd kills when the main process exits, so it died with the old instance -- which is why `↺ Restart pwr-tray` looked like a stop for the session. The request is queued with `--no-block` before the applet leaves, so systemd carries it out even though the same stop also signals the applet; the unit's own `ExecStart=` starts the new instance. `☓ Quit this Applet` stops the unit the same way (a clean exit alone would be undone by a unit configured with `Restart=always`); it stays enabled and returns at your next login, exactly like `--svc-stop`.
+
+**Logout is never blocked.** The applet does not outlive a logout it asked for: `▷ Log Off` runs the desktop's `logoff` command with a bounded wait, and a zero status quits the applet (exit 0, so nothing restarts it, and the lock release and `ENDED` line still happen). A desktop that defines no `logoff` gets no row at all, and one whose tool fails keeps the applet running. The unit bounds its own stop as well: `TimeoutStopSec=5`, the stop exit codes listed in `RestartPreventExitStatus`, and SIGTERM turned into a normal quit.
 
 **Switching desktops.** Logging out and back in always works. Switching to a *second* session that is still logged in does not -- for pwr-tray or any other `graphical-session.target` unit -- because the target is already active, so no start job exists. Add one line to that desktop's startup file and the tray always appears:
 

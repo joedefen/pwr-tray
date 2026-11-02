@@ -158,8 +158,13 @@ class PwrTray:
     detect_de = staticmethod(Desktop.detect_de)
     ensure_resources = staticmethod(Desktop.ensure_resources)
 
-    def __init__(self, ini_tool, quick=False, force_de=None):
+    def __init__(self, ini_tool, quick=False, force_de=None, svc_mode=False):
         PwrTray.singleton = self
+        # True only for the run the systemd unit started (`--svc-mode`).  The
+        # menu's Quit/Restart rows use it to ask the user manager to stop or
+        # restart the unit: spawning a replacement here would be killed with
+        # the unit's cgroup.
+        self.svc_mode = svc_mode
         self.app = QApplication([])
         self.app.setQuitOnLastWindowClosed(False)
         # A logout has to be able to *ask* the applet to leave.  Without this an
@@ -1179,7 +1184,12 @@ class PwrTray:
         # qualify comes from commands.yaml (see session_end_keys).  Suspend
         # passes none -- it is reversible.  The em-space indents are escapes so
         # an edit cannot silently flatten them into ordinary spaces.
-        add_item('\u2003\u2003\u2003▷ Log Off', self.exit_wm, key='logoff')
+        # Like Reload and Restart, the row exists only when the desktop binds
+        # the action: a `logoff: ""` (in my-commands.yaml, or on a desktop whose
+        # logout tool is not worth offering) hides it instead of offering a click
+        # that does nothing.
+        if has_cmd('logoff'):
+            add_item('\u2003\u2003\u2003▷ Log Off', self.exit_wm, key='logoff')
         add_item('System: \u2003▼ Suspend', self.suspend)
         add_item('\u2003\u2003\u2003\u2003▼ Reboot', self.reboot, key='reboot')
         add_item('\u2003\u2003\u2003\u2003▼ PowerOff', self.poweroff,
@@ -1520,12 +1530,20 @@ class PwrTray:
         exit that `Restart=on-failure` leaves down, and that no supervisor
         respawns into a session waiting for its processes to go away.
 
-        The shipped unit is deliberately different: it unsets
-        ``SESSION_MANAGER`` (a stale one from an earlier login must not make Qt
-        join a session that is not ours), so this signal never fires there and
-        systemd's stop signal ends the unit instead.  A manual run and a window
-        manager's autostart inherit the live session's variable, and are exactly
-        the case this handler exists for.
+        The shipped unit opts out of that conversation on purpose (it unsets
+        ``SESSION_MANAGER``, so a stale value from an earlier login cannot make
+        Qt join a session that is not ours), which means this signal never fires
+        there and systemd's stop signal ends the unit instead.  A manual run and
+        a window manager's autostart inherit the live session's variable, and are
+        exactly the case this handler exists for.
+
+        It is not the load-bearing path, though: Qt as shipped in the PyQt
+        wheels is built without X11 session management at all (its
+        ``libQt5XcbQpa`` has no ``SmcOpenConnection``, and a ``QApplication``
+        with ``SESSION_MANAGER`` set reports an empty ``sessionId`` and opens no
+        ICE socket), so on those builds no client is ever asked.  The logout path
+        in Actions.py covers that: the applet leaves because it asked the desktop
+        to log out, not because it was asked to leave.
         """
         try:
             self.app.commitDataRequest.connect(self._on_commit_data_request)
@@ -1553,10 +1571,13 @@ class PwrTray:
 
         Registered with atexit, so it runs for sys.exit(), for a normal return
         from the event loop, and for an exception that reaches the
-        interpreter.  It does *not* run after SIGKILL or after
-        restart_self()'s os._exit(), which is why the replacement process
-        prints its own START-UP: an ENDED line with no later START-UP is the
-        end of a run, and a START-UP with no ENDED is a run that was killed.
+        interpreter.  It does *not* run after SIGKILL or after the non-service
+        restart_self() path's os._exit(); a service restart does go through
+        it, because that path ends by quitting the Qt event loop and asking
+        systemd to start the unit again.  That is why the non-service
+        replacement process prints its own START-UP: an ENDED line with no
+        later START-UP is the end of a run, and a START-UP with no ENDED is a
+        run that was killed.
         """
         detail = f' {message}' if message else ''
         prt(f'ENDED pwr-tray v{__version__} pid {os.getpid()}{detail}')
@@ -1889,7 +1910,8 @@ def main():
     # bar that starts late (or restarts) no longer needs a 'sleep' before
     # pwr-tray, nor a restart after it.
     try:
-        tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de)
+        tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de,
+                       svc_mode=opts.svc_mode)
     except PwrTrayError as exc:
         prt(f'ERROR: {exc}')      # keep a copy in debug.log
         Utils.error_print(str(exc))  # ...and put it where the user can see it

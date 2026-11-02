@@ -142,7 +142,8 @@ def _fake_tray(**overrides):
         graphical='niri',
         variables={'monitors_off': 'swaymsg "output * dpms off"',
                    'reload_wm': 'niri msg action reload-config',
-                   'restart_wm': ''},
+                   'restart_wm': '',
+                   'logoff': 'niri msg action quit --skip-confirmation'},
         battery=types.SimpleNamespace(selector='HiBattery', percent=88),
         has_playerctl=True,
         enable_playerctl=True,
@@ -226,6 +227,18 @@ def test_only_the_armed_entry_says_click_now(monkeypatch):
     # One "NOW" and only one: arming the same or another entry replaces it.
     assert sum(label.endswith('(click NOW)') for label in labels) == 1
     assert '\u2003\u2003\u2003▷ Log Off (click twice)' in labels
+
+
+def test_a_desktop_without_a_logoff_command_gets_no_row(monkeypatch):
+    """A `logoff: ""` hides the row, the rule Reload and Restart already follow.
+
+    The row used to be added unconditionally, so an unbound action was a click
+    that did nothing -- the opposite of what the neighbouring rows promise.
+    """
+    labels = _menu_labels(monkeypatch, variables={
+        'monitors_off': '', 'reload_wm': '', 'restart_wm': '', 'logoff': ''})
+
+    assert not any('Log Off' in label for label in labels)
 
 
 def test_a_desktop_can_make_its_restart_session_ending(monkeypatch):

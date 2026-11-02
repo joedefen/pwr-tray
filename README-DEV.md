@@ -227,8 +227,10 @@ that launcher reloads the copy forever. `--svc-install` and `--svc-status` say
 so; `--svc-restart` says so instead of promising it applied your edits.
 
 Consequence for you as a developer: **never make a non-editable install into
-the environment `~/.local/bin/pwr-tray` points at.** In a checkout venv, use
-`python -m pip install -e .`; with pipx, use `pipx install --editable .`.
+the environment `~/.local/bin/pwr-tray` points at.** Use
+`pipx install --force --editable .`; `--force` is harmless on a first install
+and makes a repeat run re-install instead of refusing because pwr-tray is
+already installed.
 
 ### The unit is validated, not field-tested
 
@@ -248,6 +250,26 @@ The policy that used to be expressed by ten unit files is now
 `[ServiceAllowed]` in `config.ini`, and it is tested where it lives:
 `test_config_service_allowed.py` for the section, `test_desktop_gate.py` for the
 decision (a disallowed desktop exits 0 and leaves `inactive`, never `failed`).
+
+### Menu Quit and Restart are unit operations
+
+The menu's `☓ Quit this Applet` and `↺ Restart pwr-tray` rows behave
+differently when the applet was started by the unit (`--svc-mode`). The
+non-service restart replaces the process with a fresh
+`python -m pwr_tray.main`; under systemd that replacement would be spawned
+into the unit's cgroup, and systemd's default `KillMode=control-group` kills
+the whole cgroup when the main process exits. The replacement therefore died
+with the old instance, and Restart looked like "stop for the session".
+
+So `Actions.restart_self()` and `Actions.quit_self()` call
+`systemctl --user --no-block restart|stop pwr-tray.service` instead.
+`--no-block` is the ordering that makes this safe from inside the unit: the
+job is queued before the client waits for anything, so the request has been
+accepted even though the same stop also signals the systemctl client. The
+applet then quits the Qt event loop normally: atexit releases the
+single-instance lock and writes `ENDED`, and the unit's `ExecStart=` starts
+the fresh instance. `test_action_state.py` pins the exact systemctl verb and
+the `--no-block` argument for both rows.
 
 Two facts came out of the first field test and are now policy rather than
 folklore:
@@ -270,8 +292,10 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-* `pipx install --editable .` -- point `pwr-tray` at the tree; after edits,
-  `pwr-tray --svc-restart` reloads the applet systemd is running.
+* `pipx install --force --editable .` -- point `pwr-tray` at the tree; after
+  edits, `pwr-tray --svc-restart` reloads the applet systemd is running.
+  `--force` keeps a second run from stopping at "already installed", which is
+  easy to miss when you expected the command to update the install.
 * `.venv/bin/python -m pwr_tray.main -D -o` -- run the tree, log to stdout.
 * `./runner [args]` -- the same, but `execve`s `python -m pwr_tray.main` with
   `--replace`, so it looks like a restarted instance to `ps`/`PyKill` and takes

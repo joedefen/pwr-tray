@@ -13,6 +13,11 @@ defaults:
   suspend: systemctl suspend
   poweroff: systemctl poweroff
   reboot: systemctl reboot
+  # A command that ends the session is run once and, if it succeeds, the applet
+  # quits rather than outlive it.  An empty value leaves the action unbound, so
+  # the menu row is not offered at all (Reload and Restart work the same way):
+  # that is how a desktop -- or a my-commands.yaml -- says "no log out from
+  # here".
   logoff: ""
   monitors_off: ""
   monitors_on: ""

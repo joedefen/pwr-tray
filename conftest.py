@@ -136,6 +136,7 @@ def _never_run_real_power_commands(monkeypatch):
     monkeypatch.setattr(actions_module, 'subprocess', types.SimpleNamespace(
         run=refuse,
         Popen=refuse,
+        DEVNULL=real_subprocess.DEVNULL,
         SubprocessError=real_subprocess.SubprocessError,
         TimeoutExpired=real_subprocess.TimeoutExpired,
         CalledProcessError=real_subprocess.CalledProcessError))

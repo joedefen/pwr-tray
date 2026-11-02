@@ -105,7 +105,8 @@ def test_unit_has_required_directives(path):
     assert values(sections, 'Unit', 'After')
     # A stale SESSION_MANAGER inherited from an earlier KDE login would make Qt
     # open an ICE connection to a session that is not ours -- one more client
-    # ksmserver waits for at logout.
+    # ksmserver waits for at logout.  Leaving a session is handled by the logoff
+    # action instead (Actions.exit_wm quits once the desktop accepts it).
     assert values(sections, 'Service', 'UnsetEnvironment') == ['SESSION_MANAGER']
 
     assert values(sections, 'Service', 'Type') == ['simple']

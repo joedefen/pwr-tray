@@ -350,6 +350,63 @@ def test_wm_actions_match_the_declared_command(tray, rec, desktop, method,
     assert rec.calls == ([_shell(command)] if command else [])
 
 
+class _FakeApp:
+    """The one method `exit_wm()` calls on the application."""
+
+    def __init__(self):
+        self.quits = 0
+
+    def quit(self):
+        self.quits += 1
+
+
+def test_logging_out_leaves_once_the_desktop_accepts(tray, rec):
+    """A logout the applet asked for must not leave it behind.
+
+    The desktop's logout ends the session; it does not kill us, and on a full DE
+    the teardown waits for the processes in the session (measured on kde-x11:
+    the session only finished when pwr-tray was killed 2.5 minutes later).  So a
+    zero status is answered by leaving, and the exit is 0 -- final for
+    `Restart=on-failure`, and still going through atexit.
+    """
+    tray = tray('kde-x11')
+    tray.app = _FakeApp()
+
+    PwrTray.exit_wm(None)
+
+    assert rec.calls == [
+        _shell('qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout')]
+    assert tray.app.quits == 1
+
+
+def test_a_logout_the_desktop_refuses_keeps_the_applet(tray, rec, monkeypatch):
+    """A missing tool, or a prompt the user cancels, must not cost the tray."""
+    tray = tray('kde-wayland')
+    tray.app = _FakeApp()
+    monkeypatch.setattr(actions_module.subprocess, 'run',
+                        lambda *_a, **_k: _Completed(returncode=1))
+
+    PwrTray.exit_wm(None)
+
+    assert tray.app.quits == 0
+
+
+def test_a_logoff_command_that_never_answers_keeps_the_applet(tray, rec,
+                                                              monkeypatch):
+    """The wait is bounded, so a wedged tool cannot freeze the event loop."""
+    tray = tray('kde-x11')
+    tray.app = _FakeApp()
+
+    def hang(_command, **_kwargs):
+        raise real_subprocess.TimeoutExpired('qdbus', actions_module.LOGOFF_TIMEOUT)
+
+    monkeypatch.setattr(actions_module.subprocess, 'run', hang)
+
+    PwrTray.exit_wm(None)
+
+    assert tray.app.quits == 0
+
+
 # -- run_command() itself --------------------------------------------------
 
 def test_run_command_hands_the_line_to_the_shell_untouched(tray, rec):

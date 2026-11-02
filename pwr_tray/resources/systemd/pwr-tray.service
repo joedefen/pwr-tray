@@ -33,7 +33,9 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 # A user unit can inherit a SESSION_MANAGER left behind by an earlier KDE
 # login.  Joining that X11 session manager would make Qt open an ICE connection
 # to a session that is not ours -- one more client ksmserver waits for at
-# logout.  This applet has no session-manager duties, so it opts out.
+# logout.  This applet has no session-manager duties, so it opts out.  (Leaving
+# a session is handled where it belongs: the logoff action in Actions.py quits
+# the applet as soon as the desktop accepts the request.)
 UnsetEnvironment=SESSION_MANAGER
 # `--svc-mode` means "a unit started me", which is the only run that obeys
 # [ServiceAllowed]: a manual run and a WM autostart are not the service and are
