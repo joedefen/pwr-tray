@@ -1,0 +1,73 @@
+# pwr-tray -- the power/energy tray applet, supervised by `systemd --user`.
+#
+# Install it in every desktop that should run it:
+#   pwr-tray --svc-install          # in that desktop, then
+#   pwr-tray --svc-start
+# or by hand:
+#   pwr-tray --show-svc-file > ~/.config/systemd/user/pwr-tray.service
+#   systemctl --user daemon-reload && systemctl --user enable pwr-tray.service
+#
+# This file is a CONSTANT: it names no desktop, pins no display variable and
+# substitutes nothing, so installing from any session, on any machine, produces
+# the same bytes.  Which desktops may run it is [ServiceAllowed] in
+# ~/.config/pwr-tray/config.ini -- a policy no unit file can hold, because a
+# unit cannot observe the session it is started in.  The applet re-derives the
+# session itself (pwr_tray/Session.py) and exits 0 in a desktop it is not
+# allowed in: a clean exit, so nothing is retried and nothing shows as failed.
+[Unit]
+Description=pwr-tray (power/energy tray applet)
+PartOf=graphical-session.target
+After=graphical-session.target
+BindsTo=graphical-session.target
+# Give up on a genuine crash loop instead of respawning forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+Requires=dbus.socket
+After=dbus.socket
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+# A user unit can inherit a SESSION_MANAGER left behind by an earlier KDE
+# login.  Joining that X11 session manager would make Qt open an ICE connection
+# to a session that is not ours -- one more client ksmserver waits for at
+# logout.  This applet has no session-manager duties, so it opts out.
+UnsetEnvironment=SESSION_MANAGER
+# `--svc-mode` means "a unit started me", which is the only run that obeys
+# [ServiceAllowed]: a manual run and a WM autostart are not the service and are
+# never gated.  An explicit flag rather than an environment check, because
+# INVOCATION_ID and friends are inherited by every child of a unit -- a terminal
+# opened inside one would make a hand-started pwr-tray look like the service.
+ExecStart=%h/.local/bin/pwr-tray --svc-mode
+# `on-failure`, never `always`.  A logout does not stop this unit with a clean
+# exit: the session ends and everything in it is signalled (systemd stopping
+# graphical-session.target, or the session manager terminating its clients).
+# `Restart=always` answered that signal by starting the applet again five
+# seconds later, while the session was still waiting for its processes to
+# disappear -- so it never emptied, the display manager never got the VT, and
+# the logout stopped on a black screen.  `on-failure` still brings the tray
+# back from a crash (SIGSEGV, SIGKILL, a non-zero exit) and lets a stop signal
+# be final, which is also what makes `--svc-stop` stay stopped.  Measured in
+# luks-tray, which had the same bug.
+Restart=on-failure
+RestartSec=5
+# 2 = the applet could not be constructed (unknown desktop, missing resource, a
+# required command missing from PATH), 3 = another instance holds the
+# single-instance lock.  Retrying either fails the same way, so the unit is
+# marked failed instead of spinning.  The four signals are systemd's own
+# "clean stop" set, listed explicitly so the intent survives an edit to
+# `Restart=`.
+RestartPreventExitStatus=2 3 SIGTERM SIGHUP SIGINT SIGPIPE
+# The default stop timeout is 90s, which is how long a wedged Qt event loop may
+# hold a logout.  5s is ample to stop swayidle and the dbus-monitor children,
+# and the default KillMode=control-group SIGKILLs the cgroup -- swayidle
+# included -- after that.
+TimeoutStopSec=5
+SendSIGKILL=yes
+StandardOutput=append:%h/.config/pwr-tray/debug.log
+StandardError=inherit
+
+[Install]
+WantedBy=graphical-session.target

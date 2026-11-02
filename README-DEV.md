@@ -46,9 +46,11 @@ convenience.
 
 1. constructs `IniTool`, which creates `~/.config/pwr-tray/config.ini` and
    copies the resources if they are missing;
-2. registers the log path and calls `Utils.capture_console()` *before* the first
+2. registers the log path, calls `Utils.capture_console()` *before* the first
    `prt()`, because `prt()` may redirect fd 2 into `debug.log` and would
-   otherwise swallow the startup error that matters;
+   otherwise swallow the startup error that matters, and installs the Qt message
+   handler (`install_qt_messages()`), so Qt's own console output reaches the log
+   filtered and stamped like our lines instead of arriving as anonymous text;
 3. takes the `flock` through `acquire_lock_or_take_over()` and registers
    `atexit` handlers for the lock and for `PwrTray.goodbye`;
 4. builds `PwrTray`, where desktop detection and the resource and command checks
@@ -161,10 +163,13 @@ and row formats, `test_power_events.py` event classification, value capture and
 dirty-flag coalescing, `test_battery.py` the UPower payload and the sysfs
 fallback, `test_power_supply.py` the sysfs cross-check (synthetic
 `/sys/class/power_supply` trees: a stale mains flag, an absent battery, two
-batteries, no sysfs at all) and the menu line it produces, and the
-`test_service_*` modules
-the `--svc-*` verbs and the shipped units. How to run it, and the coverage floor
-that makes it a gate rather than a habit, are in [Test gate](#test-gate).
+batteries, no sysfs at all) and the menu line it produces, the
+`test_service_*` modules the `--svc-*` verbs and the shipped unit,
+`test_config_service_allowed.py` the `[ServiceAllowed]` reader and its
+comment-preserving editor, `test_session.py` the live-session re-derivation, and
+`test_desktop_gate.py` the per-desktop gate and the exit status it uses. How to
+run it, and the coverage floor that makes it a gate rather than a habit, are in
+[Test gate](#test-gate).
 
 Packaging is flit: `pyproject.toml` declares Python >= 3.11 and three runtime
 dependencies (`psutil`, `PyQt5`, `ruamel.yaml`), and the resources directory
@@ -225,17 +230,24 @@ Consequence for you as a developer: **never make a non-editable install into
 the environment `~/.local/bin/pwr-tray` points at.** In a checkout venv, use
 `python -m pip install -e .`; with pipx, use `pipx install --editable .`.
 
-### The units are validated, not field-tested
+### The unit is validated, not field-tested
 
-`tests/test_service_examples.py` validates the shipped units: that they parse,
-that the directives which matter are present, that every `--de` key exists in
-`commands.yaml`, and that `render()` substitutes only the two machine values and
-leaves the launcher alone. Because the units ride in the wheel and
-`--svc-install` writes them out from there, the file the tests validate and the
+There is one unit, and it is a constant: no desktop name, no display variable,
+nothing to substitute. `tests/test_service_examples.py` validates it -- that it
+parses, that the directives which matter are present, that `ExecStart=` is the
+launcher plus `--svc-mode` and nothing session-shaped, and that the restart
+policy is the one a logout can survive (`Restart=on-failure`, the stop signals
+listed, `TimeoutStopSec` bounded). Because the unit rides in the wheel and
+`--svc-install` writes it out from there, the file the tests validate and the
 file a user runs are the same bytes -- which is the most a test can say from
 here. Correctness against a live session manager, tray host and idle daemon is a
 manual, per-desktop step; it is not asserted anywhere and should not be claimed
-to be.
+to be. A logout, in particular, has to be measured by a person.
+
+The policy that used to be expressed by ten unit files is now
+`[ServiceAllowed]` in `config.ini`, and it is tested where it lives:
+`test_config_service_allowed.py` for the section, `test_desktop_gate.py` for the
+decision (a disallowed desktop exits 0 and leaves `inactive`, never `failed`).
 
 Two facts came out of the first field test and are now policy rather than
 folklore:
@@ -320,15 +332,29 @@ container as well as on a desktop and never touches your real `~/.config`.
 The stubs do not move the coverage number: the suite measures the same 76.3%
 with the real libraries and with the stubs.
 
+`tests/test_qt_messages.py` pins what the Qt message handler lets through:
+debug and information levels and the qt5ct/qt6ct palette dump are dropped, Qt's
+shutdown `QThreadStorage` notice is dropped, every other warning is kept once
+with the `[file:line]` of the C++ side Qt reports, and `prt_qt()` keeps that
+footer instead of the Python frame that would otherwise be named.
+
 Service integrations worth knowing, because they are policy rather than code:
 
 * `tests/test_service_commands.py` -- the `--svc-*` verbs: what each one
-  writes, in what order, what it refuses, and the missing-launcher cases.
-* `tests/test_service_examples.py` -- the shipped units: that they parse, that
-  `render()` leaves the launcher untouched, and that every `StandardOutput=`
-  file target resolves to a directory `--svc-install` can create.
+  writes, in what order, what it refuses, the missing-launcher cases, and the
+  `[ServiceAllowed]` flag each verb sets.
+* `tests/test_service_examples.py` -- the shipped unit: that it parses, that
+  `ExecStart=` stays free of session state, that the restart policy cannot
+  answer a logout with a respawn, and that every `StandardOutput=` file target
+  resolves to a directory `--svc-install` can create.
 * `tests/test_service_provenance.py` -- editable vs frozen installs, read from
   real virtualenv-shaped directories.
+* `tests/test_config_service_allowed.py` -- reading `[ServiceAllowed]` and
+  editing it without losing a comment or reordering the file.
+* `tests/test_session.py` -- the live socket/loginctl re-derivation that replaced
+  the pinned `Environment=` lines.
+* `tests/test_desktop_gate.py` -- `--svc-mode` runs obey the section, manual
+  runs never do, and a disallowed desktop exits 0.
 * `tests/test_single_instance.py` -- command-line recognition, the lock-first
   start-up order, and `./runner`'s `--replace`.
 

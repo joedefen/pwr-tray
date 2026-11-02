@@ -9,6 +9,7 @@ The last tests drive the real ``main()`` argparse wiring, so a flag that is
 renamed or made mutually exclusive is caught here rather than by a user.
 """
 
+import configparser
 import os
 import sys
 from pathlib import Path
@@ -16,10 +17,11 @@ from pathlib import Path
 import pytest
 
 from pwr_tray import service
+from pwr_tray.IniTool import parse_service_allowed
 from pwr_tray.Utils import SingleInstance
 
 DESKTOP = 'niri-wayland'
-#: What every shipped unit runs, verbatim: the launcher, never an install.
+#: What the shipped unit runs, verbatim: the launcher, never an install.
 LAUNCHER = '%h/.local/bin/pwr-tray'
 
 
@@ -105,19 +107,67 @@ def run_verb(verb, env, run, **kwargs):
     return service.dispatch(verb, DESKTOP, env=env, run=run, **kwargs)
 
 
+def config_of(env):
+    """The config.ini that holds [ServiceAllowed] for this profile.
+
+    ``$HOME/.config`` and not ``$XDG_CONFIG_HOME``: that is where ``IniTool``
+    (the reader the applet uses) looks, so a verb must write there too.
+    """
+    return Path(env['HOME']) / '.config' / 'pwr-tray' / 'config.ini'
+
+
 def test_install_writes_the_unit_reloads_and_enables(env, unit_path):
     run = FakeSystemctl()
     assert run_verb('install', env, run) == service.OK
 
     text = unit_path.read_text(encoding='utf-8')
-    assert f'ExecStart={LAUNCHER} --de {DESKTOP}' in text
-    assert 'Environment=WAYLAND_DISPLAY=wayland-0' in text
-    # DISPLAY is not pinned by a Wayland unit, so it must not be injected
-    assert 'Environment=DISPLAY=' not in text
+    assert f'ExecStart={LAUNCHER}' in text
+    # A constant: no desktop, no session snapshot, nothing substituted.
+    assert '--de' not in text
+    assert 'Environment=WAYLAND_DISPLAY=' not in text
     assert run.mutating() == [
         ('systemctl', '--user', 'daemon-reload'),
         ('systemctl', '--user', 'enable', service.UNIT_NAME),
     ]
+
+
+def test_install_allows_the_desktop_it_ran_in(env, unit_path):
+    """The one thing an install records is *this desktop* = True."""
+    run_verb('install', env, FakeSystemctl())
+
+    text = config_of(env).read_text(encoding='utf-8')
+    allowed = parse_service_allowed(text)
+    assert allowed[DESKTOP] is True
+    assert set(allowed) == set(service.known_desktops())   # seeded complete
+    assert sum(allowed.values()) == 1
+
+    # A brand-new file must still be a config.ini the applet can read: the
+    # defaults, with the section appended, not a file made only of the section.
+    parser = configparser.ConfigParser()
+    parser.read_string(text)
+    assert parser['Settings']['debug_mode'] == 'False'
+    assert parser['LoBattery']['power_down'] == 'True'
+
+
+def test_install_keeps_the_hand_written_config_around(env, unit_path):
+    """config.ini is meant to be edited by hand: no rewrite, no lost comment."""
+    config_of(env).parent.mkdir(parents=True)
+    config_of(env).write_text(
+        '[Settings]\n# mine\ndebug_mode = True\n', encoding='utf-8')
+
+    run_verb('install', env, FakeSystemctl())
+    text = config_of(env).read_text(encoding='utf-8')
+    assert '# mine' in text
+    assert 'debug_mode = True' in text
+    assert parse_service_allowed(text)[DESKTOP] is True
+
+
+def test_second_install_does_not_rewrite_the_config(env, unit_path):
+    run_verb('install', env, FakeSystemctl())
+    stamp = config_of(env).stat().st_mtime_ns
+
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    assert config_of(env).stat().st_mtime_ns == stamp
 
 
 def test_install_does_not_start_anything(env, unit_path):
@@ -538,19 +588,9 @@ def test_a_failing_systemctl_call_is_reported(env, unit_path):
     assert 'Job failed.' in str(excinfo.value)
 
 
-def test_unknown_desktop_lists_what_is_shipped():
-    with pytest.raises(service.ServiceError) as excinfo:
-        service.template_for('plan9-x11')
-    message = str(excinfo.value)
-    assert 'plan9-x11' in message
-    assert DESKTOP in message                # the alternatives are named
-
-
-
-
 def test_installed_executable_expands_the_home_specifier(env):
     """What the unit says and what the launcher is must compare equal."""
-    text = service.read_unit(service.template_for(DESKTOP))
+    text = service.shipped_unit_text()
     assert service.installed_executable(text, env) == str(launcher_of(env))
 
 
@@ -638,8 +678,8 @@ def test_show_file_prints_the_unit_without_systemd_or_a_launcher(env, unit_path)
     assert run_verb('show-file', env, FakeSystemctl(), echo=output.append,
                     systemd=False) == service.OK
     text = '\n'.join(output)
-    assert f'ExecStart={LAUNCHER} --de {DESKTOP}' in text
-    assert 'Environment=WAYLAND_DISPLAY=wayland-0' in text
+    assert f'ExecStart={LAUNCHER}' in text
+    assert '--de' not in text
     assert '[Install]' in text
     assert not unit_path.exists()
 
@@ -702,5 +742,59 @@ def test_cli_show_svc_file_writes_the_unit_to_stdout(monkeypatch, tmp_path, caps
         cli.main()
     assert excinfo.value.code == service.OK
     out = capsys.readouterr().out
-    assert f'ExecStart={LAUNCHER} --de {DESKTOP}' in out
+    assert f'ExecStart={LAUNCHER}' in out
     assert '[Install]' in out
+
+
+# --------------------------------------------------------------------------
+# the allowed-desktop set
+# --------------------------------------------------------------------------
+
+def test_every_verb_reports_the_allowed_desktops(env, unit_path):
+    output = []
+    run_verb('install', env, FakeSystemctl(), echo=output.append)
+    joined = '\n'.join(output)
+    assert f'desktops allowed: {DESKTOP}' in joined
+    assert f'this session: {DESKTOP} (allowed)' in joined
+
+
+def test_start_refuses_a_desktop_that_is_not_allowed(env, unit_path):
+    """Starting here would exit 0 at once, so say why instead."""
+    run_verb('install', env, FakeSystemctl(enabled=True))
+
+    run = FakeSystemctl(enabled=True)
+    with pytest.raises(service.ServiceError, match='not allowed') as excinfo:
+        service.dispatch('start', 'i3-x11', env=env, run=run,
+                         echo=lambda line: None, systemd=True)
+    assert '--svc-install' in str(excinfo.value)
+    assert run.mutating() == []
+
+
+def test_uninstall_leaves_the_unit_installed_for_another_desktop(env, unit_path):
+    """Removing the unit is the last-desktop event, not the meaning of the verb."""
+    run_verb('install', env, FakeSystemctl(enabled=True))
+    service.dispatch('install', 'i3-x11', env=env, run=FakeSystemctl(enabled=True),
+                     echo=lambda line: None, systemd=True)
+
+    output = []
+    run = FakeSystemctl(enabled=True, active=True)
+    assert run_verb('uninstall', env, run, echo=output.append) == service.OK
+
+    assert unit_path.is_file()
+    assert 'disable' not in run.verbs()
+    assert run.mutating() == [('systemctl', '--user', 'stop', service.UNIT_NAME)]
+    joined = '\n'.join(output)
+    assert 'stays installed and enabled for: i3-x11' in joined
+    assert parse_service_allowed(
+        config_of(env).read_text(encoding='utf-8'))[DESKTOP] is False
+
+
+def test_status_says_when_this_session_is_not_allowed(env, unit_path):
+    run_verb('install', env, FakeSystemctl(enabled=True))
+
+    output = []
+    service.dispatch('status', 'i3-x11', env=env, run=FakeSystemctl(enabled=True),
+                     echo=output.append)
+    joined = '\n'.join(output)
+    assert f'desktops allowed: {DESKTOP}' in joined
+    assert 'this session: i3-x11 (not allowed' in joined

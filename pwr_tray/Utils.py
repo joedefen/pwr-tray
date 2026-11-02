@@ -164,6 +164,9 @@ def prt(*args, **kwargs):
        discarded, so there are never more than two files.
      - `to_stdout=True` keeps stdout in use (a terminal, a pipe or a redirect),
        unless a systemd unit started us; there stdout belongs to the unit.
+     - `_origin=` replaces the `[file:line]` footer, for lines that know better
+       than a stack frame where they come from -- Qt's own messages, for which
+       the useful answer is the C++ file and line Qt reported.
      """
     def is_tty():
         try:
@@ -233,6 +236,10 @@ def prt(*args, **kwargs):
     if 'to_stdout' in kwargs:
         to_stdout = bool(kwargs['to_stdout'])
         del kwargs['to_stdout']
+    origin = None
+    if '_origin' in kwargs:
+        origin = kwargs['_origin']
+        del kwargs['_origin']
     check_stdout(to_stdout)
 
     dt = datetime.now().strftime('%m-%d^%H:%M:%S')
@@ -241,8 +248,19 @@ def prt(*args, **kwargs):
     kwargs['end'] = ' '
     kwargs['file'] = s
     print(*args, **kwargs)
-    string = f'{s.getvalue()} {where()}'
+    footer = where() if origin is None else origin
+    string = f'{s.getvalue()} {footer}'.rstrip()
     print(string, flush=True)
+
+
+def prt_qt(text, origin=''):
+    """ Print a message Qt itself produced, stamped and footed like our lines.
+
+    `origin` is the `[file:line]` Qt reported -- the C++ side, which is where the
+    reader has to look, not a line of this package.  main.qt_message_handler()
+    is the only caller: Qt's debug and information levels never get this far.
+    """
+    prt('qt:', text, _origin=origin)
 
 
 # Terminals that can be asked to run a command, with the flag each one uses.

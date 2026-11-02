@@ -115,13 +115,13 @@ Per-DE requirements:
 | `--replace` | Replace the `pwr-tray` that is already running: terminate it and start in its place. Without this flag a second start refuses and exits. |
 | `--list-des` | Print the known desktops and the commands each one requires, mark commands missing from `$PATH`, then exit. |
 | `-b`, `--battery` | Print the detected power state -- plugged or on battery, the charge, the battery's own `status`, and every `/sys/class/power_supply` device behind it -- then exit. This is the first thing to run when the menu's battery line looks wrong. |
-| `--svc` / `--svc-status` | Report the `systemd --user` unit: installed, enabled, running. Exits `0` running, `1` installed-but-stopped, `2` not installed. |
-| `--svc-install` | Write the unit matching this desktop to `~/.config/systemd/user/`, reload, and enable it (does not start it now). This is the only verb that writes or enables the unit. The unit runs `~/.local/bin/pwr-tray`, so the verb refuses if that launcher is missing. |
-| `--svc-start` | Start the installed unit now. Enables it if it was disabled, so it returns at your next login; never writes the unit. An already-running unit is left alone; use `--svc-restart` to load new code. Refuses if `~/.local/bin/pwr-tray` is missing. |
+| `--svc` / `--svc-status` | Report the `systemd --user` unit: installed, enabled, running, and which desktops `[ServiceAllowed]` permits. Exits `0` running, `1` installed-but-stopped (or not allowed in this session), `2` not installed. |
+| `--svc-install` | Record this desktop as allowed in `[ServiceAllowed]` and write the unit to `~/.config/systemd/user/` if it is missing, then reload and enable it (does not start it now). This is the only verb that writes or enables the unit. The unit runs `~/.local/bin/pwr-tray`, so the verb refuses if that launcher is missing. |
+| `--svc-start` | Start the installed unit now. Enables it if it was disabled, so it returns at your next login; never writes the unit. An already-running unit is left alone; use `--svc-restart` to load new code. Refuses if `~/.local/bin/pwr-tray` is missing or this desktop is not allowed. |
 | `--svc-restart` | `systemctl --user restart` the installed unit so the running applet is the one `~/.local/bin/pwr-tray` resolves to. Never installs, enables, or rewrites the unit; if the unit runs anything else, run `--svc-install` first. This is what applies `pipx upgrade` or an editable install; it says so when the launcher is a frozen copy, which no restart can update. |
 | `--svc-stop` | Stop the unit. It stays enabled, so it returns at your next login. |
-| `--svc-uninstall` | Stop, disable and delete the unit. `config.ini`, picks and logs are kept. |
-| `--show-svc-file` | Print the systemd unit that would be installed for this desktop (honours `--de NAME`), then exit. Use it as a starter for a hand-installed or customized unit. |
+| `--svc-uninstall` | Record this desktop as not allowed and stop the applet; delete and disable the unit only when no desktop is allowed any more. `config.ini`, picks and logs are kept. |
+| `--show-svc-file` | Print the systemd unit (a constant, the same in every desktop), then exit. Use it as a starter for a hand-installed or customized unit. |
 | `-y`, `--yes` | Never prompt for the `--svc-*` verbs (needed when stdin is not a terminal). |
 | `--force` | Replace or delete a unit file pwr-tray did not write; implies `--yes`. |
 | `-V`, `--version` | Print the package version and exit. |
@@ -236,6 +236,7 @@ Here are the current 'Settings' defaults with explanation.
 * `log_viewer` is the command prefix `pwr-tray` uses to start the log viewer inside a terminal window, e.g. `log_viewer = xterm -e` or `log_viewer = gnome-terminal --`. When empty it picks the first installed terminal it knows (x-terminal-emulator, gnome-terminal, konsole, kitty, alacritty, foot, xterm, xfce4-terminal, mate-terminal, lxterminal).
 * `debug.log` is the file the menu and `-f` follow, and it is capped at 2 MiB. When it grows past that, it is rotated: the current file becomes `debug.log.old`, any previous `debug.log.old` is discarded, and a fresh `debug.log` is started -- so there are never more than two log files. The applet writes this file even when a systemd unit redirected its stdout elsewhere, so the visible log never goes stale. This is also the only file `pwr-tray` rotates: `-o/--stdout` writes no log at all, and a unit pointed at some other file leaves that file for you to rotate.
 * Every run brackets itself in that log with `START-UP pwr-tray vX.Y.Z pid N` and `ENDED pwr-tray vX.Y.Z pid N`, so the version and the process id can be read off the log itself. A `START-UP` with no `ENDED` below it was killed (`SIGKILL`, a crash); an `ENDED` with no new `START-UP` is simply the end of a run.
+* Qt's own messages are filtered, not echoed. Qt writes to its process rather than through our logger, so a handler installed before the `QApplication` exists routes them: debug and information levels are dropped, the qt5ct/qt6ct theme's per-widget palette dump and Qt's `QThreadStorage ... destroyed` shutdown notice are dropped, and every other warning is kept -- once per distinct text -- stamped with the `[file:line]` of the C++ side Qt reports (`qt: ... [qpainter.cpp:42]`). A line in the log therefore says whether it is pwr-tray's or Qt's.
 * Edits to `config.ini` are picked up while `pwr-tray` is running; there is no need to restart it.
 * Your picks of mode, timeouts, etc. are saved to disk when changed, and restored on the next start.
 * Items may be absent depending on the mode and battery state.
@@ -259,39 +260,69 @@ The config uses a three-layer merge: **defaults** → **session_type** (x11 or w
 
 ## Running pwr-tray as a systemd Service
 
-The `--svc-*` verbs drive a `systemd --user` unit that runs `~/.local/bin/pwr-tray` (created by `pipx install`). They need a reachable `systemd --user` manager; without one they refuse, and starting pwr-tray is your DE/WM's job. Quick start:
+The `--svc-*` verbs drive **one** `systemd --user` unit that runs `~/.local/bin/pwr-tray` (created by `pipx install`). They need a reachable `systemd --user` manager; without one they refuse, and starting pwr-tray is your DE/WM's job.
+
+The unit is a constant: it names no desktop and pins no display variable, so it is the same file on every machine and in every session. **Which desktops may run it is `[ServiceAllowed]` in `config.ini`**, because no unit file can observe the session it is started in. Quick start, once in each desktop or window manager that should have a tray:
 
 ```
-pwr-tray --svc-install    # write the unit for this desktop and enable it
-pwr-tray --svc-start      # start it now (enables it if it was disabled)
+pwr-tray --svc-install    # allow this desktop, write/enable the unit if missing
+pwr-tray --svc-start      # show the tray now
 ```
 
-All the verbs:
+That is how a machine running i3 and niri gets a tray in both, and still leaves KDE -- which has a working power manager of its own -- alone:
+
+```ini
+[ServiceAllowed]
+# pwr-tray --svc-install sets the desktop you are logged into to True
+i3-x11 = True
+niri-wayland = True
+kde-wayland = False
+# ...every supported desktop is listed; False until you opt in
+```
+
+It is an ordinary `config.ini` section and `--svc-install` edits it **in place**, so your comments and your own sections survive. Edit it by hand whenever that is easier; only `--svc-install` (True) and `--svc-uninstall` (False) ever write it, and `pwr-tray -e` opens the file.
+
+All the verbs print `desktops allowed:` and whether the current session is one of them; `-y/--yes` answers any prompt and `--force` replaces or deletes a unit pwr-tray did not write (and implies `--yes`).
 
 | Verb | Effect |
 |------|--------|
-| `--svc`, `--svc-status` | Report installed/enabled/running. Exits `0` running, `1` installed but stopped or failed, `2` not installed. |
-| `--svc-install` | Write the unit matching this desktop to `~/.config/systemd/user/`, reload, and enable it (does not start it). The only verb that writes or enables the unit; refuses if `~/.local/bin/pwr-tray` is missing. |
-| `--svc-start` | Start the installed unit now. Enables it if it was disabled. Never writes the unit. |
-| `--svc-restart` | Restart the installed unit so the running applet is the code `~/.local/bin/pwr-tray` resolves to. Never installs or rewrites the unit. |
+| `--svc`, `--svc-status` | Report installed/enabled/running, the allowed desktops, and this session. Exits `0` running, `1` installed but stopped or not allowed here, `2` not installed. |
+| `--svc-install` | Record this desktop as allowed and write the unit if it is missing, then reload and enable it (does not start it). Refuses if `~/.local/bin/pwr-tray` is missing. |
+| `--svc-start` | Start the installed unit now; enables it if it was disabled. Refuses when this desktop is not allowed. |
+| `--svc-restart` | Restart it so the running applet is the code `~/.local/bin/pwr-tray` resolves to. Refuses when this desktop is not allowed. |
 | `--svc-stop` | Stop the unit. It stays enabled, so it returns at your next login. |
-| `--svc-uninstall` | Stop, disable and delete the unit. `config.ini`, picks and logs are kept. |
+| `--svc-uninstall` | Record this desktop as not allowed and stop the applet; disable and delete the unit only when no desktop is allowed any more. `config.ini`, picks and logs are kept. |
 
-`-y/--yes` answers any `--svc-*` prompt; `--force` replaces or deletes a unit pwr-tray did not write (and implies `--yes`).
+**What a disallowed desktop looks like.** The unit still starts at login; the applet re-derives the session, sees that `[ServiceAllowed]` says False for it, writes one line to `debug.log` and exits **0**. A clean exit is final for `Restart=on-failure`, so the unit ends `inactive` -- not `failed`, and not restarting -- in KDE or any other desktop you did not opt in.
+
+**Logout is never blocked.** The unit runs `Restart=on-failure` and names the stop signals in `RestartPreventExitStatus`, bounds the stop with `TimeoutStopSec=5`, opts out of any inherited `SESSION_MANAGER`, and the applet turns SIGTERM into a normal quit. `Restart=always` is what used to make a logout hang: the applet was signalled as the session ended and systemd started it again while the session was still draining.
+
+**Switching desktops.** Logging out and back in always works: the session manager stops `graphical-session.target` on the way out and starts it on the way in, and `WantedBy=graphical-session.target` does the rest. Switching to a *second* session that is still logged in does not -- for pwr-tray or for any other `graphical-session.target` unit such as `waybar` or `nm-applet` -- because the target belongs to the user manager and is already active, so no start job exists. Add one line to the desktop's own startup file and the tray always appears:
+
+```
+# i3, sway
+exec systemctl --user start pwr-tray.service
+# niri
+spawn-at-startup "systemctl" "--user" "start" "pwr-tray.service"
+# Hyprland
+exec-once = systemctl --user start pwr-tray.service
+```
+
+`systemctl --user start` on a running unit does nothing, so the line is safe in every case; `pwr-tray --svc-start` does the same from a terminal.
 
 ### Rolling your own unit
 
-`--svc-install` copies one of the shipped units. If you want to customize it (or install it yourself), dump the starter for your desktop and edit it:
+`--svc-install` copies the shipped unit. To start from it yourself:
 
 ```
-pwr-tray --show-svc-file [--de NAME] > pwr-tray.service
+pwr-tray --show-svc-file > pwr-tray.service
 ```
 
-Then install that file however you normally install a `systemd --user` unit (for example, place it in `~/.config/systemd/user/` and run `systemctl --user daemon-reload && systemctl --user enable --now pwr-tray.service`). The dumped file is already rendered for this machine's desktop and display, so it is the same text `--svc-install` would write.
+The dump is the same text `--svc-install` writes, in any desktop. Keep `--svc-mode` on `ExecStart=`: that flag is what tells the applet a unit started it, so only a unit run obeys `[ServiceAllowed]` (a desktop autostart or a terminal run is never gated). An explicit flag and not an environment check, because `INVOCATION_ID` and friends are inherited by every child of a unit -- a terminal opened inside one would make a hand-started pwr-tray look like the service.
 
-If you install by hand, create the folder the unit's `StandardOutput` names (`~/.config/pwr-tray` for the shipped units). systemd opens that file but never creates its directory, so a missing folder fails the start with `status=209/STDOUT` and no applet. `--svc-install` creates it for you.
+Then install that file however you normally install a `systemd --user` unit (for example, place it in `~/.config/systemd/user/` and run `systemctl --user daemon-reload && systemctl --user enable --now pwr-tray.service`). If you install by hand, create the folder the unit's `StandardOutput` names (`~/.config/pwr-tray` for the shipped unit). systemd opens that file but never creates its directory, so a missing folder fails the start with `status=209/STDOUT` and no applet. `--svc-install` creates it for you.
 
-Keep one supervisor per session: do not enable the unit and a DE/WM autostart for the same login. The shipped units pass `RestartPreventExitStatus=2 3`, so a duplicate start (exit 3) or a failed startup (exit 2) is reported as a failure rather than retried.
+Keep one supervisor per session: do not enable the unit *and* a DE/WM autostart for the same login. The unit passes `RestartPreventExitStatus=2 3`, so a duplicate start (exit 3) or a failed startup (exit 2) is reported rather than retried.
 
 ---
 

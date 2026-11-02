@@ -11,11 +11,14 @@
 #   icons, systemd units) live under `pwr_tray/resources/` and ride in the
 #   wheel.  `pwr-tray` is the console script (pwr_tray.main:main).
 #
-# The systemd units are constants
-# -------------------------------
-# Every shipped unit runs `%h/.local/bin/pwr-tray --de <desktop>` and never an
-# installation path, so `--svc-install` produces the same file for everyone and
-# no shell, venv or `which` result can change what the service runs.  The verbs
+# The systemd unit is a constant
+# ------------------------------
+# There is one shipped unit and it runs `%h/.local/bin/pwr-tray --svc-mode` and
+# never an installation path, so `--svc-install` produces the same bytes for
+# everyone and no shell, venv or `which` result can change what the service
+# runs.  It names no desktop and pins no display variable: *which* desktops may
+# run it is `[ServiceAllowed]` in config.ini, which the applet reads and applies
+# itself (pwr_tray/Session.py re-derives the live session first).  The verbs
 # that would start a unit refuse when that launcher is missing, dangling or not
 # executable; `--svc-status`, `--svc-stop` and `--svc-uninstall` do not.
 # `service.installation()` reads pip's `direct_url.json` next to the installed

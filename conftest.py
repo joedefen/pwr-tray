@@ -79,7 +79,14 @@ def _stub(module_name, **attrs):
 
 
 if not _available('PyQt5'):
-    _stub('PyQt5.QtCore', QTimer=_Stub)
+    # QtMsgType is a namespace of real values rather than a _Stub: the message
+    # handler compares levels by identity, and a fresh _Stub() per attribute
+    # access would make every message look like a warning.
+    _stub('PyQt5.QtCore', QTimer=_Stub,
+          QtMsgType=types.SimpleNamespace(
+              QtDebugMsg=0, QtInfoMsg=4, QtWarningMsg=1,
+              QtCriticalMsg=2, QtFatalMsg=3),
+          qInstallMessageHandler=_Stub())
     _stub('PyQt5.QtGui', QIcon=_Stub, QCursor=_Stub)
     _stub('PyQt5.QtWidgets', QApplication=_Stub, QSystemTrayIcon=_Stub,
           QMenu=_Stub, QAction=_Stub)

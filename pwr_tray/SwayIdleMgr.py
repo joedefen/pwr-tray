@@ -7,6 +7,7 @@ blank now, we kill the running swayidle and start one that does what we want.
 """
 # pylint: disable=invalid-name,consider-using-with
 # pylint: disable=broad-exception-caught,subprocess-run-check
+import atexit
 import os
 import signal
 import subprocess
@@ -36,6 +37,10 @@ class SwayIdleManager:
             after_resume=f""" after-resume '{unblanker}'""" if unblanker else "",
         )
         self.kill_other_swayidle()
+        # A stop, a logout and a quit all end the process; nothing else would
+        # reap our swayidle, and on a Wayland session an orphan keeps counting
+        # idle time against a session that is going away.
+        atexit.register(self.stop)
 
     @staticmethod
     def kill_other_swayidle():
@@ -111,10 +116,21 @@ class SwayIdleManager:
         return self.process
 
     def stop(self):
-        """ Stop the current swayidle (normally to replace it) """
-        self.process.terminate()
-        self.process.wait()
-        self.process = None
+        """ Stop the current swayidle (normally to replace it, or at exit).
+
+        Safe to call when nothing was ever started (the shutdown path does not
+        know), and bounded: a swayidle that ignores SIGTERM is killed rather
+        than holding the applet open past the unit's TimeoutStopSec.
+        """
+        process, self.process = self.process, None
+        if process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
     def checkup(self):
         """ Check whether swayidle is running, normally to restart it

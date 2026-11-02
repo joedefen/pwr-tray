@@ -20,12 +20,12 @@ import time
 import traceback
 from types import SimpleNamespace
 
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, QtMsgType, qInstallMessageHandler
 from PyQt5.QtGui import QCursor, QIcon
 from PyQt5.QtWidgets import QAction, QApplication, QMenu, QSystemTrayIcon  #, QMessageBox
 from ruamel.yaml import YAML
 
-from pwr_tray import Desktop, Inhibitors, Utils, __version__, service
+from pwr_tray import Desktop, Inhibitors, Session, Utils, __version__, service
 from pwr_tray.Actions import Actions
 from pwr_tray.Errors import MissingCommandsError, PwrTrayError
 from pwr_tray.IdleStateMachine import IdleStateMachine
@@ -50,6 +50,50 @@ from pwr_tray.Utils import PyKill, prt
 # bus yet is an event, not a wait: the item is registered again when one
 # appears, so start-up never blocks on the bar.
 TRAY_ATTACH_DELAY_MS = 500      # let a new host start serving calls
+
+# Qt messages that are chatter rather than news.  The qt5ct/qt6ct platform
+# themes print their whole palette table through qDebug() every time a widget
+# asks for one -- some forty lines between the messages a reader actually
+# wanted -- and Qt prints a "QThreadStorage ... destroyed" notice at exit that
+# describes its own teardown.  The markers are matched against the text, not the
+# level, because the palette dump arrives at warning level on some builds.
+QT_NOISE = (
+    'CTPlatformTheme::',    # qt5ct and qt6ct, whose class names differ by one digit
+    'QWindowsWindow::',     # the Windows platform plugin's own chatter
+    'QThreadStorage:',      # a thread outliving its thread-local storage (at exit)
+)
+_qt_seen = set()
+
+
+def qt_message_handler(mode, context, message):
+    """ Qt's own console output, filtered, deduplicated and stamped into the log.
+
+    Called by Qt through `install_qt_messages()`.  Debug and information
+    messages are dropped: they are the internals of Qt and of its plugins, and
+    nothing in this applet acts on them.  What is kept is a warning or an error
+    -- once per distinct text, with the `[file:line]` of the C++ side as the
+    footer, so "who said this?" is answerable at a glance instead of looking
+    like a pwr-tray bug.
+    """
+    if mode in (QtMsgType.QtDebugMsg, QtMsgType.QtInfoMsg):
+        return
+    text = ' '.join(str(message).split())
+    if not text or any(marker in text for marker in QT_NOISE):
+        return
+    if text in _qt_seen:
+        return              # Qt retries the same warning on every repaint
+    if len(_qt_seen) >= 64:
+        _qt_seen.clear()    # bounded: the tray runs for weeks, Qt's texts do not grow
+    _qt_seen.add(text)
+    file_name = os.path.basename(str(getattr(context, 'file', '') or ''))
+    line = getattr(context, 'line', 0) or 0
+    Utils.prt_qt(text, f'[{file_name}:{line}]' if file_name else '[qt]')
+
+
+def install_qt_messages():
+    """ Send Qt's console output through prt(); call before QApplication exists. """
+    qInstallMessageHandler(qt_message_handler)
+
 
 # How many percentage points the fabricated no-battery test state loses per
 # poll tick.  The point is to make the test look like a battery being drained:
@@ -1475,6 +1519,13 @@ def main():
     parser.add_argument('--force', action='store_true',
             help='replace or delete a unit file pwr-tray did not write'
                  ' (implies --yes)')
+    # Internal: the shipped unit starts pwr-tray with it.  It marks the one kind
+    # of run that obeys [ServiceAllowed].  A flag rather than an environment
+    # check, because INVOCATION_ID is inherited by every child of a unit -- a
+    # terminal opened inside one would make a hand-started pwr-tray look like
+    # the service.
+    parser.add_argument('--svc-mode', action='store_true', dest='svc_mode',
+            help=argparse.SUPPRESS)
     svc = parser.add_mutually_exclusive_group()
     svc.add_argument('--svc', '--svc-status', dest='svc', action='store_const',
             const='status',
@@ -1537,11 +1588,49 @@ def main():
     # Must happen before the first prt(): prt() may redirect fd 2 into
     # debug.log, which would hide the startup errors reported below.
     Utils.capture_console()
+    # Qt talks to its process through a message handler, not through print().
+    # Installing ours here -- before PwrTray() builds the QApplication, and with
+    # the log path already settled -- turns the platform theme's palette dump
+    # and Qt's own warnings into labelled, deduplicated log lines instead of a
+    # wall of text with no author.
+    install_qt_messages()
     # Paired with PwrTray.goodbye(): one line at each end of a run, both
     # carrying the version and the pid, so a debug.log copied out of the wild
     # answers "which build, which process?" without guesswork.
     prt(f'START-UP pwr-tray v{__version__} pid {os.getpid()}',
         to_stdout=opts.stdout)
+
+    # A unit cannot see the session it was started in: the variables it inherits
+    # describe whichever login started `systemd --user`, and Qt picks its
+    # platform plugin from them.  Point them at the server that is actually
+    # listening -- before Qt exists, and before detect_de() reads the desktop
+    # name that [ServiceAllowed] is keyed by.
+    for name, old, new in Session.repair_environment(
+            note=lambda message: prt(f'SESSION: {message}')):
+        prt(f'SESSION: {name}: {old!r} -> {new!r}')
+
+    # Started by the unit, [ServiceAllowed] decides whether this desktop runs
+    # the applet at all.  A manual run and a window manager's autostart are never
+    # gated: that section is about the service.  Exit 0 is the answer for
+    # "nothing to do here", which `Restart=on-failure` leaves final -- the unit
+    # ends `inactive` in that session, never `failed`, and never respawns into a
+    # session that is logging out.
+    if opts.svc_mode:
+        try:
+            session_desktop = Desktop.detect_de(
+                load_known_de_json()[0], opts.de,
+                log=lambda *args, **kwargs: None)['name']
+        except PwrTrayError as exc:
+            prt(f'ERROR: {exc}')
+            Utils.error_print(str(exc))
+            sys.exit(2)
+        allowed = service.allowed_desktops()
+        if not allowed.get(session_desktop, False):
+            names = ', '.join(name for name, on in allowed.items() if on) or 'nothing'
+            prt(f'not allowed in this session ({session_desktop});'
+                f' [ServiceAllowed] in {service.config_path()} enables: {names};'
+                ' exiting 0')
+            return
 
     # The lock is the guarantee that two applets (and two swayidle managers)
     # never coexist.  It is taken before anything destructive happens: a plain
@@ -1578,6 +1667,13 @@ def main():
         prt(f'ERROR: {exc}')      # keep a copy in debug.log
         Utils.error_print(str(exc))  # ...and put it where the user can see it
         sys.exit(2)
+    # A logout does not stop this unit with a clean exit: systemd stops
+    # graphical-session.target, which signals us.  Turning that into quit() lets
+    # atexit release the single-instance lock, write the ENDED line and stop
+    # swayidle, instead of the interpreter dying where it stands (and leaving a
+    # swayidle behind until the compositor exits).
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, lambda *_args: tray.app.quit())
     tray.app.exec_()
 
 if __name__ == "__main__":

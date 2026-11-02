@@ -1,13 +1,17 @@
-"""Validate the systemd --user units shipped in pwr_tray/resources/systemd/.
+"""Validate the one systemd --user unit shipped in pwr_tray/resources/systemd/.
 
-These units are no longer documentation: they live inside the package, so the
-wheel contains them, `pwr-tray --svc-install` copies one to
-``~/.config/systemd/user/``, and systemd is what actually runs them on a
-user's machine.  The checks here and in test_service_commands.py are the
-reason that promise is safe: every unit must parse, carry the directives
-systemd needs, name a desktop key that exists in ``commands.yaml``, describe
-one consistent session, and still hold all of that after render() substitutes
-this machine's executable and display into it.
+The unit is not documentation: it lives inside the package, so the wheel
+contains it, `pwr-tray --svc-install` copies it to
+``~/.config/systemd/user/``, and systemd is what actually runs it on a user's
+machine.  It is also a **constant** -- it names no desktop, pins no display
+variable and has nothing to substitute -- which is what lets one file serve
+every desktop on a machine while ``[ServiceAllowed]`` in ``config.ini`` decides
+which of them may run it.
+
+The checks here are the reason both promises are safe: the unit must parse,
+carry the directives systemd needs, stay free of the session snapshot that used
+to make it wrong after a desktop switch, and keep the one restart policy that
+lets a logout finish.
 """
 
 import re
@@ -26,6 +30,11 @@ MAIN = ROOT / 'pwr_tray' / 'main.py'
 # another instance holds the single-instance lock, 2 when the applet could
 # not be constructed at all.
 PERMANENT_EXIT_STATUSES = {'2', '3'}
+
+#: Signals a session end is delivered with.  systemd already treats them as a
+#: clean stop for `Restart=on-failure`; the unit names them so an edit to
+#: `Restart=` cannot turn a logout back into a respawn.
+STOP_SIGNALS = {'SIGTERM', 'SIGHUP', 'SIGINT', 'SIGPIPE'}
 
 
 def parse_text(text):
@@ -82,20 +91,9 @@ def desktop_keys():
     return keys
 
 
-def test_examples_are_present():
-    assert len(EXAMPLES) == 10
-    assert {path.name for path in EXAMPLES} == {
-        'pwr-tray-cinnamon.service',
-        'pwr-tray-hyprland.service',
-        'pwr-tray-i3.service',
-        'pwr-tray-kde-wayland.service',
-        'pwr-tray-kde-x11.service',
-        'pwr-tray-lxqt.service',
-        'pwr-tray-mate.service',
-        'pwr-tray-niri.service',
-        'pwr-tray-sway.service',
-        'pwr-tray-xfce.service',
-    }
+def test_exactly_one_unit_is_shipped():
+    """One file for every desktop: the policy lives in config.ini, not here."""
+    assert [path.name for path in EXAMPLES] == [service.UNIT_NAME]
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
@@ -103,23 +101,42 @@ def test_unit_has_required_directives(path):
     sections = parse_unit(path)
     assert {'Unit', 'Service', 'Install'} <= set(sections)
     assert values(sections, 'Unit', 'Description')
-    assert values(sections, 'Unit', 'ConditionEnvironment')
     assert values(sections, 'Unit', 'BindsTo')
     assert values(sections, 'Unit', 'After')
+    # A stale SESSION_MANAGER inherited from an earlier KDE login would make Qt
+    # open an ICE connection to a session that is not ours -- one more client
+    # ksmserver waits for at logout.
+    assert values(sections, 'Service', 'UnsetEnvironment') == ['SESSION_MANAGER']
 
     assert values(sections, 'Service', 'Type') == ['simple']
-    assert values(sections, 'Service', 'Restart') == ['always']
     assert values(sections, 'Service', 'ExecStart')
     assert values(sections, 'Install', 'WantedBy')
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
-def test_permanent_exit_statuses_are_not_restarted(path):
-    """A lock refusal (3) or a failed construction (2) must not respawn."""
+def test_restart_never_answers_a_logout(path):
+    """`Restart=always` is the logout bug: it respawns into a draining session.
+
+    Measured in luks-tray, which shipped exactly that line: the session never
+    emptied, the display manager never got the VT, and the logout stopped on a
+    black screen.  `on-failure` still recovers a crash.
+    """
     sections = parse_unit(path)
+    assert values(sections, 'Service', 'Restart') == ['on-failure']
     prevent = values(sections, 'Service', 'RestartPreventExitStatus')
     assert len(prevent) == 1
-    assert set(prevent[0].split()) >= PERMANENT_EXIT_STATUSES, prevent[0]
+    listed = set(prevent[0].split())
+    assert listed >= PERMANENT_EXIT_STATUSES, prevent[0]
+    assert listed >= STOP_SIGNALS, prevent[0]
+
+
+@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
+def test_the_stop_is_bounded(path):
+    """The default 90s is how long a wedged Qt loop may hold a logout."""
+    sections = parse_unit(path)
+    timeout = seconds(values(sections, 'Service', 'TimeoutStopSec')[0])
+    assert 0 < timeout <= 10, timeout
+    assert values(sections, 'Service', 'SendSIGKILL') == ['yes']
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
@@ -143,77 +160,47 @@ def test_prevented_codes_match_the_exits_the_applet_uses():
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
-def test_exec_start_names_a_known_desktop(path):
+def test_exec_start_is_the_launcher_and_nothing_session_shaped(path):
+    """No `--de`, no `--desktops`: a desktop name here is a snapshot.
+
+    `--svc-mode` is the opposite: a constant marker meaning "a unit started me",
+    which is what makes the applet obey ``[ServiceAllowed]``.  An environment
+    check cannot do that job -- ``INVOCATION_ID`` is inherited by every child of
+    a unit, so a terminal opened inside one makes a hand-started pwr-tray look
+    like the service.
+    """
     sections = parse_unit(path)
-    exec_start = values(sections, 'Service', 'ExecStart')
-    assert len(exec_start) == 1
-    command = exec_start[0]
-
-    assert 'pwr-tray' in command
-    match = re.search(r'--de[ =]([A-Za-z0-9-]+)', command)
-    assert match, command
-    desktop = match.group(1)
-    assert desktop in desktop_keys()
+    assert values(sections, 'Service', 'ExecStart') == [
+        '%h/.local/bin/pwr-tray --svc-mode']
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
-def test_environment_matches_condition_and_desktop(path):
+def test_no_session_snapshot_is_pinned(path):
+    """The unit may not remember *what session installed it*.
+
+    A unit's own `Environment=` outranks what the session exports, so a pinned
+    `XDG_SESSION_TYPE`, display or desktop name is a snapshot that survives the
+    login it described -- it made Qt load the platform plugin of a session that
+    had ended, and it would now also route the `[ServiceAllowed]` gate from the
+    wrong desktop.  `pwr_tray/Session.py` re-derives all of them instead.
+    """
     sections = parse_unit(path)
-    conditions = values(sections, 'Unit', 'ConditionEnvironment')
-    assert len(conditions) == 1
-    assert conditions[0].startswith('XDG_CURRENT_DESKTOP=')
-
-    environment = dict(
-        item.split('=', 1)
-        for item in values(sections, 'Service', 'Environment')
-        if '=' in item)
-    assert environment['XDG_CURRENT_DESKTOP'] == conditions[0].split('=', 1)[1]
-
-    exec_start = values(sections, 'Service', 'ExecStart')[0]
-    desktop = re.search(r'--de[ =]([A-Za-z0-9-]+)', exec_start).group(1)
-    assert desktop.endswith(f"-{environment['XDG_SESSION_TYPE']}")
-
-
-def test_every_shipped_unit_maps_to_a_known_desktop():
-    """--svc-install finds a unit by desktop name, so the mapping must be total."""
-    found = service.templates(ROOT / 'pwr_tray' / 'resources' / 'systemd')
-    assert len(found) == len(EXAMPLES) == 10, sorted(found)
-    assert set(found) <= desktop_keys(), sorted(set(found) - desktop_keys())
+    assert values(sections, 'Unit', 'ConditionEnvironment') == []
+    pinned = ' '.join(values(sections, 'Service', 'Environment'))
+    for name in ('XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE', 'WAYLAND_DISPLAY',
+                 'DISPLAY', 'XAUTHORITY'):
+        assert f'{name}=' not in pinned, (name, pinned)
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
-def test_render_never_records_an_installation(path):
-    """The unit is a constant: it runs the launcher, whoever installed it."""
+def test_the_unit_is_a_constant(path):
+    """Installing it never records an installation or a session."""
     text = path.read_text(encoding='utf-8')
-    rendered = service.render(text, {})
-    assert rendered == text
-    assert values(parse_text(rendered), 'Service', 'ExecStart') == [
-        f'%h/.local/bin/pwr-tray --de {service.desktop_of(text)}']
-
-
-@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
-def test_render_appends_the_live_display_override(path):
-    """The pinned default stays readable; the live value is what systemd uses."""
-    text = path.read_text(encoding='utf-8')
-    desktop = service.desktop_of(text)
-    key = 'WAYLAND_DISPLAY' if desktop.endswith('-wayland') else 'DISPLAY'
-    rendered = service.render(text, {key: 'live-9'})
-    environment = values(parse_text(rendered), 'Service', 'Environment')
-    pinned = [item for item in environment if item.startswith(f'{key}=')]
-    assert len(pinned) == 2, pinned          # shipped default + live override
-    assert pinned[-1] == f'{key}=live-9'     # last assignment wins in systemd
-
-
-@pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
-def test_render_keeps_the_restart_policy(path):
-    """The *installed* copy must fail fast on exit 2/3, exactly like the source."""
-    text = path.read_text(encoding='utf-8')
-    rendered = service.render(text, {})
-    sections = parse_text(rendered)
-    prevent = values(sections, 'Service', 'RestartPreventExitStatus')
-    assert len(prevent) == 1
-    assert set(prevent[0].split()) >= PERMANENT_EXIT_STATUSES, prevent[0]
-    assert values(sections, 'Unit', 'StartLimitBurst') == ['5']
+    assert service.shipped_unit_text() == text
+    assert '--de' not in text
+    assert service.installed_executable(text, {'HOME': '/home/user'}) == (
+        '/home/user/.local/bin/pwr-tray')
+    assert '%h/.config/pwr-tray' in text       # the log, not an install path
 
 
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
@@ -229,3 +216,16 @@ def test_the_log_directory_is_one_svc_install_can_create(path):
     assert folders, 'no absolute StandardOutput=/StandardError= file target'
     assert all(folder.is_absolute() for folder in folders), folders
     assert folders == [Path('/home/user/.config/pwr-tray')], folders
+
+
+def test_every_desktop_in_commands_yaml_can_be_allowed():
+    """`[ServiceAllowed]` is seeded from the same names detection produces."""
+    known = set(desktop_keys())
+    assert known == set(service.known_desktops()), sorted(known)
+    assert len(known) == 10, sorted(known)
+
+
+def test_every_desktop_name_is_a_valid_config_option():
+    """configparser lowercases option names; a key with `:` would not survive."""
+    for name in desktop_keys():
+        assert re.fullmatch(r'[a-z0-9][a-z0-9-]*', name), name

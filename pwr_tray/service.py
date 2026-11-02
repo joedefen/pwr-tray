@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
 """Install, inspect, refresh and remove the pwr-tray ``systemd --user`` unit.
 
-The unit files in ``pwr_tray/resources/systemd/`` are the single source of
-truth.  They ship inside the wheel (flit includes everything under the module
-directory), they are validated by ``tests/test_service_examples.py``, and
-``--svc-install`` copies the one matching the current desktop to
-``~/.config/systemd/user/pwr-tray.service`` and is the only verb that writes
-or enables it.  ``--svc-start`` and ``--svc-restart`` operate on a unit that
-is already installed.  ``--show-svc-file`` prints the same rendered text
-without touching the machine, so a customized unit can start from it.
+``pwr_tray/resources/systemd/pwr-tray.service`` is a **constant**: it runs
+``%h/.local/bin/pwr-tray``, names no desktop, pins no display variable and has
+nothing to substitute, so installing from any session on any machine produces
+the same bytes.  That is what makes ``--svc-status``'s "differs from the shipped
+unit" mean something across sessions, and it is why an installed copy can never
+carry a snapshot of the login that wrote it.
 
-The units never name an installation: they run ``%h/.local/bin/pwr-tray``, the
+*Which* desktops may run it is a policy no unit can hold, because a unit cannot
+observe the session it is started in: it lives in ``[ServiceAllowed]`` in
+``~/.config/pwr-tray/config.ini`` (see :func:`allowed_desktops`).  The applet
+re-derives the live session (``pwr_tray/Session.py``) and exits 0 in a desktop
+that is not allowed there, so the unit ends ``inactive`` in that session instead
+of failing or restarting.
+
+``--svc-install`` writes the unit if it is missing and records the desktop you
+ran it in as allowed; ``--svc-uninstall`` clears that record and deletes the unit
+once no desktop is allowed.  ``--svc-start`` and ``--svc-restart`` operate on the
+installed unit and refuse outside the allowed set.  ``--show-svc-file`` prints
+the same text without touching the machine.
+
+The unit never names an installation: it runs ``%h/.local/bin/pwr-tray``, the
 one path every install method on the machine agrees on, so installing from an
 activated virtualenv -- or from any other shell -- produces the same file.  A
 missing launcher is refused rather than installed or started, because such a
 unit cannot start; ``stop``, ``uninstall`` and ``status`` keep working without
-it, since that is when they are needed.  The only fact :func:`render` still
-substitutes is the session's display variable, which systemd cannot inherit.
+it, since that is when they are needed.
 
 Naming the launcher is not the same question as which code the launcher
 imports: a project virtualenv can hold a *frozen* copy of the package
@@ -26,14 +36,13 @@ restarting then reloads the snapshot forever.  :func:`installation` reads the
 editable install from a frozen one, so ``--svc-status`` and ``--svc-restart``
 can say why a restart changes nothing.
 
-The units append stdout/stderr to the applet's own log,
-``~/.config/pwr-tray/debug.log`` (``StandardError=inherit`` shares the file),
-so the tray menu and ``-f/--follow-log`` always show what the applet is
-actually writing.  systemd will not create that directory: it fails every
-process with ``EXIT_STDOUT`` (209) before ``ExecStart=`` is reached.
-:func:`missing_dirs` reads the paths back out of the unit so
-``--svc-install`` can create them rather than leaving the user with a unit
-that cannot start.
+The unit appends stdout/stderr to the applet's own log,
+``~/.config/pwr-tray/debug.log`` (``StandardError=inherit`` shares the file), so
+the tray menu and ``-f/--follow-log`` always show what the applet is actually
+writing.  systemd will not create that directory: it fails every process with
+``EXIT_STDOUT`` (209) before ``ExecStart=`` is reached.  :func:`missing_dirs`
+reads the paths back out of the unit so ``--svc-install`` can create them rather
+than leaving the user with a unit that cannot start.
 
 Nothing here shells out to systemctl on its own: the verbs are built as
 :class:`Step` lists by the ``plan_*()`` functions and performed by
@@ -49,19 +58,27 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ruamel.yaml import YAML
+
+from pwr_tray import Utils
 from pwr_tray.Errors import PwrTrayError
+from pwr_tray.IniTool import (
+    default_config_text,
+    parse_service_allowed,
+    set_flag_text,
+)
 from pwr_tray.Utils import SingleInstance
 
 UNIT_NAME = 'pwr-tray.service'
 COMMAND = 'systemctl'
 EXECUTABLE = 'pwr-tray'
 
-#: The one path the shipped units run.  ``pipx install`` and ``pipx install
+#: The one path the shipped unit runs.  ``pipx install`` and ``pipx install
 #: --editable .`` both write it, so the unit file never has to know which of
 #: them -- or which shell -- installed pwr-tray.
 LAUNCHER = Path('.local') / 'bin' / EXECUTABLE
 
-#: Directory holding the units shipped in the wheel.  Tests repoint this.
+#: Directory holding the unit shipped in the wheel.  Tests repoint this.
 SOURCE_DIR = Path(__file__).resolve().parent / 'resources' / 'systemd'
 
 # `--svc-status` exit codes: the one verb meant to be used from `if`.
@@ -72,10 +89,6 @@ STATUS_ABSENT = 2
 OK = 0
 FAILED = 1
 
-#: Session variables a unit pins to one value; install-time overrides them.
-SESSION_KEYS = ('WAYLAND_DISPLAY', 'DISPLAY')
-
-_DE_PATTERN = re.compile(r'--de[ =]([A-Za-z0-9-]+)')
 _EXEC_START_RE = re.compile(r'^ExecStart=(.*)$', re.MULTILINE)
 
 #: ``StandardOutput=append:/path`` and friends: systemd opens these itself.
@@ -162,15 +175,89 @@ def installed_unit(env=None):
     return unit_dir(env) / UNIT_NAME
 
 
+def config_path(env=None):
+    """Return ``config.ini``, which holds ``[ServiceAllowed]``.
+
+    Spelled the way ``IniTool`` spells it -- ``$HOME/.config``, not
+    ``$XDG_CONFIG_HOME`` -- on purpose: the applet reads the section through
+    IniTool, so a verb that wrote anywhere else would edit a file nobody reads.
+    (The *unit* does follow ``$XDG_CONFIG_HOME``, because systemd does.)
+    """
+    home = _env(env).get('HOME') or str(Path.home())
+    return Path(home) / '.config' / 'pwr-tray' / 'config.ini'
+
+
 def read_unit(path):
     """Read a unit file as text."""
     return Path(path).read_text(encoding='utf-8')
 
 
-def desktop_of(text):
-    """Return the compound desktop name a unit forces via ``--de``."""
-    match = _DE_PATTERN.search(text)
-    return match.group(1) if match else None
+def shipped_unit_text():
+    """Return the text of the one shipped unit."""
+    return read_unit(SOURCE_DIR / UNIT_NAME)
+
+
+def _commands_file(env):
+    """Return the YAML that defines the desktops, preferring the user's copy."""
+    user = config_path(env).parent / 'my-commands.yaml'
+    if user.is_file():
+        return user.read_text(encoding='utf-8')
+    return Utils.resource_text('commands.yaml')
+
+
+def known_desktops(env=None):
+    """Return every compound desktop name the configured YAML defines.
+
+    Used only to seed a brand-new ``[ServiceAllowed]`` with a complete list, so
+    the section can be read and edited without consulting another file.  A
+    missing or unparsable YAML is not fatal here: the caller still gets the one
+    desktop it is installing.
+    """
+    try:
+        loaded = YAML().load(_commands_file(env)) or {}
+        names = [str(name) for name in loaded.get('desktops', {})]
+    except Exception:                       # noqa: BLE001 - advisory list only
+        return []
+    return names
+
+
+def allowed_desktops(env=None):
+    """Return ``{desktop: bool}`` from ``[ServiceAllowed]``, in file order.
+
+    A missing file, section or key means False: nothing runs until somebody
+    says so.
+    """
+    try:
+        text = config_path(env).read_text(encoding='utf-8')
+    except OSError:
+        return {}
+    return parse_service_allowed(text)
+
+
+def desktop_allowed(desktop, env=None):
+    """True when `desktop` may run the service on this machine."""
+    return allowed_desktops(env).get(desktop, False)
+
+
+def plan_flag(desktop, value, env=None):
+    """Return a :class:`Step` recording `desktop` as allowed/disallowed.
+
+    The edit is textual and surgical (see :func:`IniTool.set_flag_text`):
+    ``config.ini`` is documented as hand-editable, so a verb that rewrites it
+    must not reorder it or lose a comment.  Nothing is planned when the file
+    already says what it should, which is what keeps a second ``--svc-install``
+    a no-op and keeps ``--svc-uninstall`` from creating a section just to write
+    ``False`` into it.
+    """
+    path = config_path(env)
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        text = default_config_text()
+    if parse_service_allowed(text).get(desktop, False) == value:
+        return None
+    updated = set_flag_text(text, desktop, value, keys=known_desktops(env))
+    return Step(f'record {desktop} = {value} in {path}', write=(path, updated))
 
 
 def installed_executable(text, env=None):
@@ -278,7 +365,7 @@ def _snapshot_note(info):
 
 
 def launcher_path(env=None):
-    """Return ``~/.local/bin/pwr-tray``: the path the shipped units run."""
+    """Return ``~/.local/bin/pwr-tray``: the path the shipped unit runs."""
     home = _env(env).get('HOME') or str(Path.home())
     return Path(home) / LAUNCHER
 
@@ -317,71 +404,7 @@ def launcher_installation(env=None):
     return installation(launcher_path(env))
 
 
-def templates(source=None):
-    """Map every shipped compound desktop name to its unit file."""
-    folder = SOURCE_DIR if source is None else Path(source)
-    found = {}
-    for path in sorted(folder.glob('pwr-tray-*.service')):
-        desktop = desktop_of(read_unit(path))
-        if desktop:
-            found[desktop] = path
-    return found
-
-
-def template_for(desktop, source=None):
-    """Return the shipped unit file for `desktop`, or explain what exists."""
-    available = templates(source)
-    try:
-        return available[desktop]
-    except KeyError:
-        shipped = ', '.join(sorted(available)) or 'none'
-        raise ServiceError(
-            f'no shipped systemd unit for desktop {desktop!r};'
-            f' shipped units cover: {shipped}') from None
-
-
-def render(text, env=None):
-    """Return `text` with this session's display variables substituted in.
-
-    The executable is not touched: every shipped unit names
-    ``%h/.local/bin/pwr-tray``, which is the same file for every installation
-    on a machine, so installing from any shell produces identical text.  The
-    single edit is a session variable the unit pins
-    (``Environment=WAYLAND_DISPLAY=wayland-1``), overridden from the live
-    environment by appending an ``Environment=`` line after ``ExecStart=``.
-    The last assignment wins in systemd, so the shipped line stays readable and
-    still documents the default.  Every other byte is preserved, which is what
-    lets the tests keep asserting the shipped text.
-    """
-    env = _env(env)
-    overrides = []
-    for key in SESSION_KEYS:
-        value = env.get(key)
-        pinned = re.search(rf'^Environment={key}=(.*)$', text, re.MULTILINE)
-        if not value or pinned is None:
-            continue    # nothing pinned to correct, so nothing to correct
-        if pinned.group(1).strip() == value:
-            continue    # the shipped default is already right
-        overrides.append(f'Environment={key}={value}')
-
-    result = []
-    placed = False
-    for line in text.splitlines():
-        result.append(line)
-        if line.startswith('ExecStart=') and not placed:
-            result.extend(overrides)
-            placed = True
-    if not placed:
-        raise ServiceError('the unit has no ExecStart= line')
-    return '\n'.join(result) + ('\n' if text.endswith('\n') else '')
-
-
-def rendered_unit(desktop, env=None, source=None):
-    """Return the unit text that would be installed for `desktop`."""
-    return render(read_unit(template_for(desktop, source)), env)
-
-
-def probe(rendered=None, env=None, run=run_command):
+def probe(env=None, run=run_command, shipped=None):
     """Return the current state of the installed unit."""
     path = installed_unit(env)
     installed = path.is_file()
@@ -393,9 +416,10 @@ def probe(rendered=None, env=None, run=run_command):
         # reset; `start` reports "attempted too often" until then.
         failed = run(systemctl('is-failed', '--quiet', UNIT_NAME))[0] == 0
     up_to_date = False
-    if installed and rendered is not None:
+    if installed:
+        wanted = shipped_unit_text() if shipped is None else shipped
         try:
-            up_to_date = path.read_text(encoding='utf-8') == rendered
+            up_to_date = path.read_text(encoding='utf-8') == wanted
         except OSError:
             up_to_date = False
     return Status(path=path, installed=installed, enabled=enabled,
@@ -445,15 +469,46 @@ def missing_dirs(text, env=None):
     return [folder for folder in output_dirs(text, env) if not folder.is_dir()]
 
 
-def plan_install(rendered, status, force=False, holder=None, env=None):
-    """Write the unit if needed, reload, and enable it (without starting).
+def _desktop_notes(desktop, allowed):
+    """The two lines every verb ends with, so the policy is always in view."""
+    names = [name for name, enabled in allowed.items() if enabled]
+    session = (f'  this session: {desktop} (allowed)' if allowed.get(desktop)
+               else f'  this session: {desktop} (not allowed; run'
+                    ' pwr-tray --svc-install here to allow it)')
+    return [f'  desktops allowed: {", ".join(names) if names else "(none)"}',
+            session]
 
-    An executable that is a frozen copy of a checkout pip can still see is
-    refused unless ``--force``: it is the one way to install a unit that looks
-    current and can never run the working tree.
+
+def _install_notes(plan, rendered, env):
+    """Say what the unit will run and what that launcher really imports."""
+    executable = installed_executable(rendered, env)
+    if not executable:
+        return
+    plan.notes.append(f'the unit will run {executable}')
+    info = installation(executable)
+    if info.snapshot:
+        plan.notes.append(_snapshot_note(info))
+    elif info.editable and info.source:
+        plan.notes.append(f'{executable} is an editable install of {info.source}')
+
+
+def plan_install(status, desktop, force=False, holder=None, env=None):
+    """Write the unit if needed, record `desktop` as allowed, enable it.
+
+    The unit is only rewritten when it is missing or differs from the shipped
+    copy, and ``config.ini`` is only touched when it does not already allow
+    this desktop, so a repeated ``--svc-install`` is a no-op.  Nothing is
+    started: ``--svc-start`` is the verb for that.
     """
     plan = Plan()
     target = status.path
+    allowed = allowed_desktops(env)
+    allowed[desktop] = True
+    flag = plan_flag(desktop, True, env)
+    if flag:
+        plan.steps.insert(0, flag)
+
+    rendered = shipped_unit_text()
     wrote = False
     if status.installed and status.up_to_date:
         plan.notes.append(f'{target} is already up to date')
@@ -469,15 +524,13 @@ def plan_install(rendered, status, force=False, holder=None, env=None):
         plan.steps.append(Step(f'write {target}', write=(target, rendered)))
         wrote = True
     executable = installed_executable(rendered, env)
-    if wrote and executable:
+    if wrote:
         # The unit always names the same launcher; say which file that is once
         # %h is expanded, and what it imports, because that decides what runs.
-        plan.notes.append(f'the unit will run {executable}')
+        _install_notes(plan, rendered, env)
     info = installation(executable) if executable else None
-    if info is not None and info.snapshot:
+    if not wrote and info is not None and info.snapshot:
         plan.notes.append(_snapshot_note(info))
-    elif info is not None and info.editable and info.source:
-        plan.notes.append(f'{executable} is an editable install of {info.source}')
     # systemd does not create the directories it is told to log into, it fails
     # the unit with EXIT_STDOUT (209), so install time is when they must exist.
     for folder in missing_dirs(rendered, env):
@@ -493,6 +546,11 @@ def plan_install(rendered, status, force=False, holder=None, env=None):
         plan.notes.append(
             f'pwr-tray is already running outside systemd (pid {holder}); it keeps'
             ' running, and the unit takes over at your next login')
+    if status.installed and status.enabled and not status.active:
+        plan.notes.append(
+            'the unit stays idle until it starts: run pwr-tray --svc-start to show'
+            ' the tray now, or wait for your next login')
+    plan.notes.extend(_desktop_notes(desktop, allowed))
     return plan
 
 
@@ -515,10 +573,19 @@ def _require_installed(status):
             f'{UNIT_NAME} is not installed; run pwr-tray --svc-install first')
 
 
+def _require_allowed(desktop, env):
+    """Refuse a start/restart that this session is not allowed to make."""
+    if not desktop_allowed(desktop, env):
+        raise ServiceError(
+            f'{desktop} is not allowed to run {UNIT_NAME}; it is not True in'
+            f' [ServiceAllowed] in {config_path(env)} -- run pwr-tray'
+            ' --svc-install here to allow it')
+
+
 def _refuse_moved_unit(status, env):
     """Refuse to start a unit that does not run the launcher.
 
-    The shipped units are constants: they name ``~/.local/bin/pwr-tray`` and
+    The shipped unit is a constant: it names ``~/.local/bin/pwr-tray`` and
     never an installation.  A unit naming anything else was either hand edited
     or installed by an older pwr-tray that baked in an absolute path -- usually
     a project virtualenv's, which is how a service silently keeps running a
@@ -544,15 +611,18 @@ def _note_stale_unit(plan, status, rendered):
             ' run pwr-tray --svc-install to update it')
 
 
-def plan_start(rendered, status, force=False, holder=None, env=None):
+def plan_start(rendered, status, force=False, holder=None, env=None, desktop=None):
     """Enable if needed and start an installed unit; never writes the unit.
 
-    Installing is a separate, explicit act (``--svc-install``).  ``start``
-    only operates on the unit that is already installed, so it cannot
-    silently commit the machine to systemd.  It does enable a disabled unit:
-    "start" means "run now and come back at your next login".
+    Installing is a separate, explicit act (``--svc-install``).  ``start`` only
+    operates on the unit that is already installed, so it cannot silently commit
+    the machine to systemd.  It does enable a disabled unit: "start" means "run
+    now and come back at your next login".  A desktop that is not allowed is
+    refused before systemctl is called, because the applet would exit 0
+    immediately and the command would look like it had worked.
     """
     _require_installed(status)
+    _require_allowed(desktop, env)
     _refuse_moved_unit(status, env)
     plan = Plan()
     if status.failed:
@@ -564,6 +634,7 @@ def plan_start(rendered, status, force=False, holder=None, env=None):
         plan.notes.append(
             f'{UNIT_NAME} was disabled; it is enabled so it returns at your'
             ' next login')
+    notes = _desktop_notes(desktop, allowed_desktops(env))
     if status.active:
         if status.up_to_date or rendered is None:
             plan.notes.append(f'{UNIT_NAME} is already running')
@@ -574,6 +645,7 @@ def plan_start(rendered, status, force=False, holder=None, env=None):
                 f'{UNIT_NAME} is already running; the installed unit differs'
                 ' from the shipped one, so run pwr-tray --svc-install to update'
                 ' it or pwr-tray --svc-restart to apply code changes')
+        plan.notes.extend(notes)
         return plan
     if holder:
         raise _running_outside_systemd(holder)
@@ -582,10 +654,11 @@ def plan_start(rendered, status, force=False, holder=None, env=None):
         f'start {UNIT_NAME}',
         argv=systemctl('start', UNIT_NAME),
         hint=_systemd_hint()))
+    plan.notes.extend(notes)
     return plan
 
 
-def plan_restart(rendered, status, force=False, holder=None, env=None):
+def plan_restart(rendered, status, force=False, holder=None, env=None, desktop=None):
     """Restart an installed unit so it runs the code its launcher names.
 
     An editable install changes the *code* without changing the unit file, so
@@ -599,6 +672,7 @@ def plan_restart(rendered, status, force=False, holder=None, env=None):
     make it run that checkout.
     """
     _require_installed(status)
+    _require_allowed(desktop, env)
     _refuse_moved_unit(status, env)
     plan = Plan()
     if status.failed:
@@ -622,39 +696,64 @@ def plan_restart(rendered, status, force=False, holder=None, env=None):
         plan.notes.append(
             f'{UNIT_NAME} restarts now, so it runs the code'
             f' {launcher_path(env)} resolves to')
+    plan.notes.extend(_desktop_notes(desktop, allowed_desktops(env)))
     return plan
 
 
-def plan_stop(status):
+def plan_stop(status, env=None, desktop=None):
     """Stop the unit; it stays enabled, so it returns at the next login."""
     plan = Plan()
     if not status.installed:
         raise ServiceError(f'{UNIT_NAME} is not installed, so there is nothing to stop')
     if not status.active:
         plan.notes.append(f'{UNIT_NAME} is not running')
-        return plan
-    plan.steps.append(Step(f'stop {UNIT_NAME}', argv=systemctl('stop', UNIT_NAME)))
-    plan.notes.append(f'{UNIT_NAME} stays enabled; it starts again at your next login')
+    else:
+        plan.steps.append(Step(f'stop {UNIT_NAME}', argv=systemctl('stop', UNIT_NAME)))
+        plan.notes.append(f'{UNIT_NAME} stays enabled; it starts again at your next login')
+    plan.notes.extend(_desktop_notes(desktop, allowed_desktops(env)))
     return plan
 
 
-def plan_uninstall(status, force=False):
-    """Stop, disable and delete the unit, leaving config and logs alone."""
+def plan_uninstall(status, force=False, env=None, desktop=None):
+    """Opt `desktop` out; stop, and delete the unit if nothing else is allowed.
+
+    Removing the unit is the last-desktop event, not the meaning of the verb:
+    while another desktop is still allowed the unit must stay installed and
+    enabled, or logging into that desktop would find nothing to start.  The
+    running applet is stopped either way, because this desktop has just become
+    one it may not run in.
+    """
     plan = Plan()
+    allowed = allowed_desktops(env)
+    allowed[desktop] = False
+    others = [name for name, enabled in allowed.items() if enabled]
+    flag = plan_flag(desktop, False, env)
+    if flag:
+        plan.steps.append(flag)
     if not status.installed:
-        plan.notes.append(f'{UNIT_NAME} is not installed; nothing to do')
+        plan.notes.append(f'{UNIT_NAME} is not installed')
+        if not flag:
+            plan.notes.append('nothing to do')
+        plan.notes.extend(_desktop_notes(desktop, allowed))
         return plan
-    if not (status.up_to_date or force):
+    removing = not others
+    if removing and not (status.up_to_date or force):
         raise ServiceError(
             f'{status.path} was edited after it was installed, so it is not'
             ' pwr-tray\'s to delete; remove it yourself, or pass --force')
     if status.active:
         plan.steps.append(Step(f'stop {UNIT_NAME}', argv=systemctl('stop', UNIT_NAME)))
-    if status.enabled:
-        plan.steps.append(Step(f'disable {UNIT_NAME}', argv=systemctl('disable', UNIT_NAME)))
-    plan.steps.append(Step(f'remove {status.path}', remove=status.path))
-    plan.steps.append(Step('reload the unit files', argv=systemctl('daemon-reload')))
-    plan.notes.append('config.ini, picks and logs are left in place')
+    if others:
+        plan.notes.append(
+            f'{UNIT_NAME} stays installed and enabled for: {", ".join(others)}')
+    else:
+        if status.enabled:
+            plan.steps.append(Step(f'disable {UNIT_NAME}',
+                                   argv=systemctl('disable', UNIT_NAME)))
+        plan.steps.append(Step(f'remove {status.path}', remove=status.path))
+        plan.steps.append(Step('reload the unit files', argv=systemctl('daemon-reload')))
+        plan.notes.append('config.ini, picks and logs are left in place')
+    plan.notes.extend(_desktop_notes(desktop, allowed))
     return plan
 
 
@@ -664,7 +763,11 @@ def execute(plan, run=run_command):
         if step.write:
             path, content = step.write[0], step.write[1]
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding='utf-8')
+            # Write beside the target and rename: a full disk must not leave a
+            # truncated config.ini or unit behind.
+            temporary = path.with_name(f'.{path.name}.new')
+            temporary.write_text(content, encoding='utf-8')
+            os.replace(temporary, path)
         elif step.mkdir:
             step.mkdir.mkdir(parents=True, exist_ok=True)
         elif step.remove:
@@ -731,23 +834,23 @@ def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
         # or starting anything; `stop`, `uninstall` and `status` must still
         # work exactly when things are broken.
         require_launcher(env)
-        rendered = rendered_unit(desktop, env)
+        rendered = shipped_unit_text()
     else:
-        # stop/uninstall must work on an installed unit even when this
-        # desktop's unit is unknown, so rendering is advisory.
-        rendered = _rendered_if_possible(desktop, env)
+        rendered = shipped_unit_text()
 
-    status = probe(rendered=rendered, env=env, run=run)
+    status = probe(env=env, run=run, shipped=rendered)
     if verb == 'install':
-        plan = plan_install(rendered, status, force=force, holder=holder, env=env)
+        plan = plan_install(status, desktop, force=force, holder=holder, env=env)
     elif verb == 'start':
-        plan = plan_start(rendered, status, force=force, holder=holder, env=env)
+        plan = plan_start(rendered, status, force=force, holder=holder, env=env,
+                          desktop=desktop)
     elif verb == 'restart':
-        plan = plan_restart(rendered, status, force=force, holder=holder, env=env)
+        plan = plan_restart(rendered, status, force=force, holder=holder, env=env,
+                            desktop=desktop)
     elif verb == 'stop':
-        plan = plan_stop(status)
+        plan = plan_stop(status, env=env, desktop=desktop)
     elif verb == 'uninstall':
-        plan = plan_uninstall(status, force=force)
+        plan = plan_uninstall(status, force=force, env=env, desktop=desktop)
     else:
         raise ServiceError(f'unknown service verb {verb!r}')
 
@@ -762,14 +865,6 @@ def dispatch(verb, desktop, env=None, force=False, yes=False, echo=print,
         return OK
     execute(plan, run=run)
     return OK
-
-
-def _rendered_if_possible(desktop, env):
-    """Best-effort render, for verbs that must work on a broken install."""
-    try:
-        return rendered_unit(desktop, env)
-    except ServiceError:
-        return None
 
 
 def _show(plan, echo):
@@ -787,10 +882,10 @@ def _show_file(desktop, env, echo):
     """Print the unit ``--svc-install`` would write, then return OK.
 
     This is a *starter*: edit it, then install it by hand (for example under
-    ``~/.config/systemd/user/``).  It is rendered for this machine's desktop
-    and display, so it is the same text an automatic install would produce.
+    ``~/.config/systemd/user/``).  It is a constant, so it is exactly the text
+    an automatic install would produce -- in any desktop, on any machine.
     """
-    for line in rendered_unit(desktop, env).splitlines():
+    for line in shipped_unit_text().splitlines():
         echo(line)
     return OK
 
@@ -798,14 +893,17 @@ def _show_file(desktop, env, echo):
 def _report(desktop, env, echo, run):
     """Print the state of the unit and return the documented status code."""
     path = installed_unit(env)
+    allowed = allowed_desktops(env)
     if not path.is_file():
-        echo(f'{UNIT_NAME}: not installed ({desktop} unit available:'
-             f' {template_for(desktop).name})')
+        echo(f'{UNIT_NAME}: not installed')
         echo('  install it with: pwr-tray --svc-install')
+        for line in _desktop_notes(desktop, allowed):
+            echo(line)
         return STATUS_ABSENT
 
-    rendered = _rendered_if_possible(desktop, env)
-    status = probe(rendered=rendered, env=env, run=run)
+    rendered = shipped_unit_text()
+    status = probe(env=env, run=run, shipped=rendered)
+    allowed[desktop] = allowed.get(desktop, False)
     if status.active:
         state = 'active'
     elif status.failed:
@@ -815,6 +913,8 @@ def _report(desktop, env, echo, run):
     flags = 'enabled' if status.enabled else 'disabled'
     echo(f'{UNIT_NAME}: {state} ({flags})')
     echo(f'  unit: {path}')
+    for line in _desktop_notes(desktop, allowed):
+        echo(line)
     launcher = launcher_path(env)
     installed_exe = installed_executable(read_unit(path), env)
     if installed_exe:
@@ -838,12 +938,10 @@ def _report(desktop, env, echo, run):
         if found and Path(found) != launcher:
             echo(f'  note: the pwr-tray on $PATH is {found}; a shell runs that,'
                  ' the unit runs the launcher above')
-    if not status.installed:
-        return STATUS_ABSENT
     if status.failed:
         echo(f'  note: the last start failed; see: journalctl --user -xeu {UNIT_NAME}')
         echo('  note: pwr-tray --svc-start clears the failed state and tries again')
-    if rendered is not None and not status.up_to_date:
+    if not status.up_to_date:
         echo('  note: the file differs from the shipped unit'
              ' (pwr-tray --svc-install would replace it)')
     return STATUS_ACTIVE if status.active else STATUS_INACTIVE

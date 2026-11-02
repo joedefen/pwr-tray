@@ -9,9 +9,12 @@ TBD
 
 import configparser
 import copy
+import io
 import json
 import os
+import re
 from types import SimpleNamespace
+from typing import ClassVar
 
 from pwr_tray.Utils import LOG_OLD_SUFFIX, prt
 
@@ -46,33 +49,154 @@ def to_array(val_str):
     return rvs
 
 
+#: The config.ini section that decides which desktops may run the service.
+#: It is deliberately NOT one of `get_selectors()`: it holds no applet
+#: parameters, so `_parse_config()` never looks at it.
+SERVICE_SECTION = 'ServiceAllowed'
+
+#: Values `configparser.getboolean()` accepts as true, spelled out: the section
+#: is meant to be edited by hand, so `yes`/`on`/`1` are answers too.  Anything
+#: else -- including `false`, `no`, `off`, `0` and a typo -- means "not allowed".
+_TRUE = frozenset({'true', 'yes', 'on', '1'})
+
+#: Written once, when the section is created, so the file explains itself.
+SERVICE_HEADER = (
+    '[ServiceAllowed]',
+    '# Which desktops may run pwr-tray as a systemd --user service.',
+    '#   pwr-tray --svc-install    sets the desktop you are logged into to True',
+    '#   pwr-tray --svc-uninstall  sets it back to False',
+    '# Edit these by hand to allow or forbid others.  False means the service',
+    '# starts and exits immediately: it is not a failure and it is not retried.',
+)
+
+_SECTION_RE = re.compile(r'^\s*\[(?P<name>[^\]]+)\]\s*(?:[#;].*)?$')
+#: One `key = value` line in the section, with an optional trailing comment.
+_ENTRY_RE = re.compile(
+    r'^\s*(?P<key>[^=:#;\s][^=:]*?)\s*[=:]\s*(?P<value>[^#;]*?)\s*(?P<tail>[#;].*)?$')
+
+
+def _as_bool(value):
+    """Read one hand-written flag; anything unrecognised is False."""
+    return (value or '').strip().lower() in _TRUE
+
+
+def _section_bounds(lines, name):
+    """Return `(header index, end index)` of `[name]`, or None when absent."""
+    header = None
+    for index, line in enumerate(lines):
+        match = _SECTION_RE.match(line)
+        if not match:
+            continue
+        if header is None:
+            if match.group('name').strip().lower() == name.lower():
+                header = index
+        else:
+            return header, index
+    return (header, len(lines)) if header is not None else None
+
+
+def parse_service_allowed(text):
+    """Return `{desktop: bool}` from `[ServiceAllowed]`, in file order.
+
+    A missing section, a missing key, a comment or an unparsable value all mean
+    False: nothing is allowed until somebody says so.
+    """
+    allowed = {}
+    lines = (text or '').splitlines()
+    bounds = _section_bounds(lines, SERVICE_SECTION)
+    if bounds is None:
+        return allowed
+    start, end = bounds
+    for line in lines[start + 1:end]:
+        entry = _ENTRY_RE.match(line)
+        if entry:
+            allowed[entry.group('key').strip().lower()] = _as_bool(entry.group('value'))
+    return allowed
+
+
+def set_flag_text(text, key, value, keys=()):
+    """Return `text` with `key` set to `value` in `[ServiceAllowed]`.
+
+    `configparser.write()` would rewrite the whole file and drop every comment,
+    and this file is meant to be edited by hand, so the edit is surgical: the
+    value token is replaced in place (an inline comment survives), a missing key
+    is appended inside the section, and a missing section is created with the
+    header that explains it.  `keys` supplies the other rows the new section
+    gets, all False, so the list is complete the first time it appears.
+    """
+    word = 'True' if value else 'False'
+    lines = (text or '').splitlines()
+    bounds = _section_bounds(lines, SERVICE_SECTION)
+
+    if bounds is None:
+        if lines and lines[-1].strip():
+            lines.append('')
+        lines.extend(SERVICE_HEADER)
+        for name in (keys or (key,)):
+            lines.append(f'{name} = {word if name == key else "False"}')
+        if key not in (keys or (key,)):
+            lines.append(f'{key} = {word}')
+        return '\n'.join(lines) + '\n'
+
+    start, end = bounds
+    pattern = re.compile(
+        rf'^(?P<head>\s*{re.escape(key)}\s*[=:]\s*)(?P<value>[^#;]*?)(?P<tail>\s*(?:[#;].*)?)$',
+        re.IGNORECASE)
+    for index in range(start + 1, end):
+        match = pattern.match(lines[index])
+        if match:
+            lines[index] = f'{match.group("head")}{word}{match.group("tail")}'
+            return '\n'.join(lines) + '\n'
+
+    # The key is new: keep it inside the section, after its last content line,
+    # so a hand-written group of rows stays together.
+    insert_at = end
+    while insert_at - 1 > start and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    lines.insert(insert_at, f'{key} = {word}')
+    return '\n'.join(lines) + '\n'
+
+
+def default_config_text():
+    """The text a brand-new config.ini starts from (the built-in defaults)."""
+    parser = configparser.ConfigParser()
+    parser.read_dict(IniTool.defaults)
+    buffer = io.StringIO()
+    parser.write(buffer)
+    return buffer.getvalue()
+
+
 class IniTool:
     """ Configued Params for this class"""
-    def __init__(self, paths_only=False):
-        self.defaults = {
-            'Settings': {
-                'debug_mode': False,
-                'power_down': False,
-                'turn_off_monitors': False,
-                'lock_min_list': '[15, 30]',
-                'sleep_min_list': '[5, 30]',
-                'lo_battery_pct': 10,
-                'gui_editor': 'geany',
-                # Command prefix used to show debug.log in a terminal window,
-                # e.g. 'xterm -e' or 'gnome-terminal --'; empty auto-detects.
-                'log_viewer': '',
+    #: Class level so `default_config_text()` can render a brand-new file
+    #: without building an instance (and without touching $HOME to do it).
+    defaults: ClassVar[dict] = {
+        'Settings': {
+            'debug_mode': False,
+            'power_down': False,
+            'turn_off_monitors': False,
+            'lock_min_list': '[15, 30]',
+            'sleep_min_list': '[5, 30]',
+            'lo_battery_pct': 10,
+            'gui_editor': 'geany',
+            # Command prefix used to show debug.log in a terminal window,
+            # e.g. 'xterm -e' or 'gnome-terminal --'; empty auto-detects.
+            'log_viewer': '',
 
-            }, 'HiBattery': { #was OnBattery
-                'power_down': False,
-                'lock_min_list': '[10, 20]',
-                'sleep_min_list': '[1, 10]',
+        }, 'HiBattery': { #was OnBattery
+            'power_down': False,
+            'lock_min_list': '[10, 20]',
+            'sleep_min_list': '[1, 10]',
 
-            }, 'LoBattery': {
-                'power_down': True,
-                'lock_min_list': '[1]',
-                'sleep_min_list': '[1]',
-            }
+        }, 'LoBattery': {
+            'power_down': True,
+            'lock_min_list': '[1]',
+            'sleep_min_list': '[1]',
         }
+    }
+
+    def __init__(self, paths_only=False):
+        self.defaults = copy.deepcopy(self.__class__.defaults)
         self.folder = os.path.expanduser("~/.config/pwr-tray")
         self.ini_path =  os.path.join(self.folder, "config.ini")
         self.log_path =  os.path.join(self.folder, "debug.log")
