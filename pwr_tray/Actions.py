@@ -35,6 +35,18 @@ LOGOFF_TIMEOUT = 15
 SYSTEMCTL_TIMEOUT = 5
 
 
+def _hide_tray_icon(applet):
+    """Take the item off the bar, if this run ever created one.
+
+    On Wayland the item does not exist until a host appears (see
+    ``main.defer_tray_item()``), so a quit or restart during the first seconds
+    of a login -- before the bar is up -- has nothing to hide.
+    """
+    tray_icon = getattr(applet, 'tray_icon', None)
+    if tray_icon is not None:
+        tray_icon.hide()
+
+
 class Actions:
     """Run the applet's user-facing actions against one applet instance."""
 
@@ -72,7 +84,7 @@ class Actions:
         prt('+', 'quitting applet...')
         applet = self.applet
         if applet:
-            applet.tray_icon.hide()
+            _hide_tray_icon(applet)
         # Under the unit, exiting is not enough: a unit configured with
         # Restart=always would bring the applet straight back.  Ask systemd
         # to stop the unit, from outside its cgroup, and let the event loop
@@ -108,7 +120,7 @@ class Actions:
         prt('+', 'restarting applet...')
         applet = self.applet
         if applet:
-            applet.tray_icon.hide()
+            _hide_tray_icon(applet)
             # os._exit() below skips atexit, which is where the monitors are
             # usually reaped; without this each restart orphans dbus-monitor.
             events = getattr(applet, 'events', None)

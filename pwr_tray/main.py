@@ -42,13 +42,20 @@ from pwr_tray.IniTool import IniTool
 from pwr_tray.PowerEvents import PowerEvents
 from pwr_tray.PowerSupply import describe, read_power
 from pwr_tray.SwayIdleMgr import SwayIdleManager
-from pwr_tray.TrayWatch import STATUS_NOTIFIER_WATCHER, TrayWatch
+from pwr_tray.TrayWatch import (
+    STATUS_NOTIFIER_ITEMS,
+    STATUS_NOTIFIER_WATCHER,
+    STATUS_NOTIFIER_WATCHER_PATH,
+    TrayWatch,
+)
 from pwr_tray.Utils import PyKill, prt
 
 # Every tray host -- plasmashell, xfce4-panel, waybar, swaybar+snixembed, ... --
 # claims STATUS_NOTIFIER_WATCHER (see TrayWatch.py).  A host that is not on the
-# bus yet is an event, not a wait: the item is registered again when one
-# appears, so start-up never blocks on the bar.
+# bus yet is an event, not a wait: the item is created when one appears, so
+# start-up never blocks on the bar.  On Wayland it must not be created any
+# earlier either -- see defer_tray_item() for the measured Qt behaviour that
+# makes the *first* show the one that counts.
 TRAY_ATTACH_DELAY_MS = 500      # let a new host start serving calls
 
 # Qt messages that are chatter rather than news.  The qt5ct/qt6ct platform
@@ -213,13 +220,12 @@ class PwrTray:
         # Not a tray icon: the wallpaper the default locker command uses.
         self.ensure_resources(ini_tool.folder, ['lockpaper.png'])
 
-        # The tray item is shown immediately; a host that is not on the bus
-        # yet is picked up by the watch below instead of being waited for.
-        # ``menu`` and ``current_icon_num`` exist first, so re-registering the
-        # item later can restore both.
+        # ``menu`` and ``current_icon_num`` exist first, so the item -- created
+        # now or when a host appears -- can be given the same state either way.
         self.menu = None
         self.menu_items = []
         self.current_icon_num = -1  # triggers immediate icon update
+        self.tray_icon = None       # created when a host can receive it
 
         # The watch is started before the item is shown: a watcher that
         # appears between the two still produces the event we need.
@@ -229,11 +235,21 @@ class PwrTray:
                                     on_lost=self._on_tray_host_lost)
         if not self.tray_watch.start() and tray_present is not None:
             prt('WARN: cannot watch for a tray host that starts later')
-        self._install_tray_icon()
+        # On Wayland an item must not be shown before a host exists: Qt's
+        # platform plugin answers "does this session have a tray?" once, at the
+        # first show, and never revises it -- so an item shown while the bar is
+        # still starting is invisible for the life of the process, and so is
+        # every item shown after it.  A systemd unit is started before the bar,
+        # which is exactly that case; see defer_tray_item().
+        self._tray_deferred = defer_tray_item(tray_present)
+        if not self._tray_deferred:
+            self._install_tray_icon()
         if tray_present is True:
             prt('tray host detected.')
+        elif self._tray_deferred:
+            prt('no tray host yet; the item is created when one appears.')
         elif tray_present is False:
-            prt('no tray host yet; the icon registers when one appears.')
+            prt('no status notifier host; showing the item anyway (X11/XEmbed).')
         else:
             prt('tray host status unknown (no QtDBus / no session bus).')
 
@@ -579,8 +595,13 @@ class PwrTray:
         # prt(f'{num=} {self.running_idle_s=} {moon_when=}')
 
         if num != self.current_icon_num:
-            self.tray_icon.setIcon(self.icons[num])
+            # The state is remembered even when there is no item to paint it
+            # on yet (a Wayland session whose host has not appeared): the item
+            # created later starts with the icon that is current *then*.
             self.current_icon_num = num
+            tray_icon = getattr(self, 'tray_icon', None)
+            if tray_icon is not None:
+                tray_icon.setIcon(self.icons[num])
             return True # changed
         return False # unchanged
 
@@ -1236,7 +1257,9 @@ class PwrTray:
         self._rendered_arm = self._armed_key()
 
         if first_menu:
-            self.tray_icon.setContextMenu(self.menu)
+            tray_icon = getattr(self, 'tray_icon', None)
+            if tray_icon is not None:
+                tray_icon.setContextMenu(self.menu)
             # The rows name *who* is blocking, and that can change while the
             # blocked-operation set does not, so refresh them when the menu is
             # opened -- a ListInhibitors call, only when someone is looking.
@@ -1244,7 +1267,10 @@ class PwrTray:
             # Closing ends the promise: the next open re-reads the deadline.
             self.menu.aboutToHide.connect(self._on_menu_about_hide)
 
-        if not self.tray_icon.isVisible():
+        # No item yet means "waiting for a host" (see defer_tray_item()), not
+        # "the host took it away": only an item that was shown can be lost.
+        tray_icon = getattr(self, 'tray_icon', None)
+        if tray_icon is not None and not tray_icon.isVisible():
             prt('self.tray_icon.isVisible() is False ... restarting app')
             time.sleep(0.5)
             self.restart_self(None)
@@ -1316,7 +1342,7 @@ class PwrTray:
         self.tray_icon.setVisible(True)
 
     def _on_tray_host_appeared(self):
-        """A host appeared (or restarted): register the item with it again."""
+        """A host appeared (or restarted): create the item, or register it again."""
         self._tray_seen = True
         # A watcher claims its bus name just before it starts serving calls,
         # so give it a moment instead of racing its own start-up.
@@ -1327,14 +1353,42 @@ class PwrTray:
         self._tray_seen = False
 
     def _reattach_tray(self):
-        """Re-create the item at last, if a host is really there now."""
+        """Create the item at last, if a host is really there now.
+
+        Creating the item is not the same as registering it, and Qt does not
+        say which happened: the item is shown, it looks alive, and no host ever
+        hears about it.  The host's own list is therefore asked, and the one
+        case Qt cannot repair in this process -- an item that was already shown
+        before any host existed -- is repaired by replacing the process, which
+        is the only thing that makes the platform plugin look again.
+        """
         if tray_watcher_present() is not True:
             # The host left again between its announcement and this call; the
             # next appearance schedules another attempt.
             self._tray_seen = False
             return
         self._install_tray_icon()
-        prt('tray icon registered with the host that is now running')
+        registered = tray_item_registered()
+        if registered is True:
+            prt('tray icon registered with the host that is now running')
+            return
+        if registered is None:
+            prt('tray item created for the host that is now running'
+                ' (registration not verified)')
+            return
+        # The host is there and nothing of ours is on its list: this process
+        # asked Qt for a tray before a host existed, so every item it shows is
+        # inert.  A fresh process asks with a host present and registers
+        # normally.  Once per process, so a host that can never be satisfied
+        # cannot turn this into a restart loop.
+        if getattr(self, '_tray_restart_done', False):
+            prt('WARN: the host still does not list this item;'
+                ' the tray icon stays invisible')
+            return
+        self._tray_restart_done = True
+        prt('tray item is not on the host; restarting so Qt takes the host it'
+            ' can see now')
+        self.restart_self(None)
 
     def _ensure_tray_attached(self):
         """Retry a missed host announcement from the periodic resync."""
@@ -1613,6 +1667,89 @@ def tray_watcher_present():
     except Exception as exc:                    # noqa: BLE001
         prt(f'WARN: tray detection failed: {exc}')
         return None
+
+
+def tray_item_registered():
+    """True/False/None: does the host list a tray item belonging to us?
+
+    Creating a ``QSystemTrayIcon`` and asking it to be visible says nothing
+    about whether a host ever heard of it: Qt shows the item, reports no error,
+    and a process that asked while no host existed gets an item nobody can see
+    (see ``defer_tray_item()``).  Reading the host's own
+    ``RegisteredStatusNotifierItems`` is the only honest answer.
+
+    Qt registers under an item-owned name, ``org.kde.StatusNotifierItem-<pid>-<n>``,
+    so this process is matched by pid; a host that registered a plain bus name
+    (``:1.42``) is matched against this connection's own unique name.  ``None``
+    means the question could not be asked (no QtDBus, no session bus, a bus
+    error) -- which is not the same as "not registered", so no caller may act
+    on it as if it were.
+    """
+    try:
+        # pylint: disable=import-outside-toplevel
+        from PyQt5.QtDBus import QDBus, QDBusConnection, QDBusMessage
+    except ImportError:
+        return None
+    try:
+        bus = QDBusConnection.sessionBus()
+        if not bus.isConnected():
+            return None
+        request = QDBusMessage.createMethodCall(
+            STATUS_NOTIFIER_WATCHER, STATUS_NOTIFIER_WATCHER_PATH,
+            'org.freedesktop.DBus.Properties', 'Get')
+        request << STATUS_NOTIFIER_WATCHER << STATUS_NOTIFIER_ITEMS
+        # Bounded, for the same reason as the presence check above: a wedged
+        # host must not stall a menu rebuild or the periodic resync.
+        reply = bus.call(request, QDBus.Block, 2000)
+        if reply.type() != QDBusMessage.ReplyMessage or not reply.arguments():
+            return None
+        listed = reply.arguments()[0]
+        if hasattr(listed, 'variant'):      # QDBusVariant, on builds that keep it
+            listed = listed.variant()
+        if isinstance(listed, str):
+            listed = [listed]
+        own = f'{bus.baseService() or ""}/'
+        pid = f'-{os.getpid()}-'
+        return any(own in str(item) or pid in str(item) for item in listed)
+    # QDBusError has no import-safe base class, so this one has to be broad.
+    except Exception as exc:                    # noqa: BLE001
+        prt(f'WARN: cannot read the host tray list: {exc}')
+        return None
+
+
+def wayland_session():
+    """True when this process talks to a Wayland compositor.
+
+    ``XDG_SESSION_TYPE`` is the answer whenever it names a server this login is
+    really on -- ``Session.repair_environment()`` has already rewritten a stale
+    value from an earlier login by the time this runs.  Without it, the live
+    socket decides, which is the same test the session repair uses.
+    """
+    kind = (os.environ.get('XDG_SESSION_TYPE') or '').strip().lower()
+    if kind in ('wayland', 'x11'):
+        return kind == 'wayland'
+    return bool(Session.live_wayland())
+
+
+def defer_tray_item(tray_present, wayland=None):
+    """True when the first tray item must wait for a host to appear.
+
+    Qt's Wayland platform plugin answers "does this session have a tray?" once,
+    when the first item is shown, and never revisits it: an item shown before
+    the bar exists stays invisible for the life of the process, and so does
+    every item shown after it (measured on Qt 5.15 -- the same process
+    registers normally when the bar was already up, and never does when it was
+    started first).  A systemd unit is started before the bar, so waiting for
+    the host is what makes the icon appear at login at all.
+
+    X11 is different and keeps the old behaviour: an XEmbed tray needs no
+    watcher, so an item shown at once is exactly right there.  ``None`` -- the
+    question could not be asked -- also shows the item: there is nothing to
+    wait for when nobody can say whether a host exists.
+    """
+    if tray_present is not False:
+        return False
+    return wayland_session() if wayland is None else bool(wayland)
 
 
 def load_known_de_json():
@@ -1905,10 +2042,11 @@ def main():
             ini_tool.params_by_selector[selector].debug_mode = True # one-time override
 
 
-    # Nothing waits for the tray here: PwrTray asks once where this session
-    # stands, and TrayWatch registers the item whenever a host appears, so a
-    # bar that starts late (or restarts) no longer needs a 'sleep' before
-    # pwr-tray, nor a restart after it.
+    # Nothing *blocks* on the tray here, but nothing shows an item too early
+    # either: PwrTray asks once where this session stands, waits for a host on
+    # Wayland (defer_tray_item()), and TrayWatch creates/registers the item
+    # whenever a host appears, so a bar that starts late (or restarts) needs
+    # neither a 'sleep' before pwr-tray nor a restart after it.
     try:
         tray = PwrTray(ini_tool=ini_tool, quick=opts.quick, force_de=opts.de,
                        svc_mode=opts.svc_mode)

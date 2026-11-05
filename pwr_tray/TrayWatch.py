@@ -15,6 +15,21 @@ the old ``wait_for_tray()`` only moved the failure window.  The watcher's own
 bus name is the event instead: every time the name is registered, the applet is
 asked to register its item again.
 
+What that event can and cannot repair is narrower than it looks, and it is
+worth writing down because the difference is invisible in a log.  Measured on
+Qt 5.15's Wayland platform plugin (the PyQt5 build this applet ships against):
+
+* an item shown while a host exists registers immediately, and re-creating the
+  item after the bar *restarts* registers again -- the watch's job;
+* an item shown while no host exists is inert, and so is every item shown later
+  in that same process, even with a host present by then.  The plugin decides
+  once, at the first show, and never revisits it, so re-creating the item after
+  a host appears reports success while nothing is on the bus.
+
+That is why ``main.py`` does not show an item at all until a host is there
+(``defer_tray_item()``) and why re-registration is verified against the host's
+``RegisteredStatusNotifierItems`` instead of being assumed (``tray_item_registered()``).
+
 The trigger is ``QDBusServiceWatcher``, not a hand-made connection to
 ``NameOwnerChanged``: it is the supported API for exactly this question, and it
 reports a name registered by *another* process.  (The visible variants do not
@@ -31,6 +46,12 @@ through XEmbed and needs none of this.
 import contextlib
 
 STATUS_NOTIFIER_WATCHER = 'org.kde.StatusNotifierWatcher'
+
+#: The watcher's object path and the property that lists the items it knows.
+#: Read back after registering: Qt reports no error for an item it never put on
+#: the bus, so the host's own list is the only evidence that one exists.
+STATUS_NOTIFIER_WATCHER_PATH = '/StatusNotifierWatcher'
+STATUS_NOTIFIER_ITEMS = 'RegisteredStatusNotifierItems'
 
 
 class TrayWatch:
