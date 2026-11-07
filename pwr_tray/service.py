@@ -205,6 +205,29 @@ def _commands_file(env):
     return Utils.resource_text('commands.yaml')
 
 
+def _desktop_names_from_text(text):
+    """Return the keys directly under ``desktops:`` in YAML text.
+
+    A dependency-free fallback for when ``ruamel.yaml`` is not installed (the
+    test suite stubs it): the file has a fixed two-space shape and the names
+    are all this caller needs, so the same answer is available without a YAML
+    parser instead of silently returning an empty list.
+    """
+    names = []
+    in_desktops = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        if line[0].isspace():
+            if in_desktops:
+                match = re.match(r'^  ([A-Za-z0-9][A-Za-z0-9-]*):', line)
+                if match:
+                    names.append(match.group(1))
+            continue
+        in_desktops = line.rstrip() == 'desktops:'
+    return names
+
+
 def known_desktops(env=None):
     """Return every compound desktop name the configured YAML defines.
 
@@ -214,11 +237,15 @@ def known_desktops(env=None):
     desktop it is installing.
     """
     try:
-        loaded = YAML().load(_commands_file(env)) or {}
-        names = [str(name) for name in loaded.get('desktops', {})]
+        text = _commands_file(env)
     except Exception:                       # noqa: BLE001 - advisory list only
         return []
-    return names
+    try:
+        loaded = YAML().load(text) or {}
+        names = [str(name) for name in loaded.get('desktops', {})]
+    except Exception:                       # noqa: BLE001 - advisory list only
+        names = []
+    return names or _desktop_names_from_text(text)
 
 
 def allowed_desktops(env=None):

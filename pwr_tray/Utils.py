@@ -7,7 +7,6 @@ Utility functions
 # pylint: disable=too-few-public-methods
 
 import contextlib
-import importlib.resources as pkg_resources
 import inspect
 import os
 import re
@@ -18,6 +17,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from importlib import resources
 from io import StringIO
 
 # from pathlib import Path
@@ -64,17 +64,17 @@ def rotate_log(path=None, max_bytes=None):
         return False
 
 def copy_to_folder(resource_name, dest):
-    """ Get the path of a resource """
-    with pkg_resources.path('pwr_tray.resources', resource_name) as file_path:
+    """ Copy a packaged resource into `dest` and return its source path """
+    source = resources.files('pwr_tray.resources').joinpath(resource_name)
+    with resources.as_file(source) as file_path:
         shutil.copy(file_path, os.path.join(dest, resource_name))
     return file_path
 
 
 def resource_text(resource_name):
     """ Return the text of a packaged resource (e.g. 'commands.yaml'). """
-    with pkg_resources.path('pwr_tray.resources', resource_name) as file_path, \
-            open(file_path, encoding='utf-8') as handle:
-        return handle.read()
+    return resources.files('pwr_tray.resources').joinpath(
+        resource_name).read_text(encoding='utf-8')
 
 
 _console_fd = None
