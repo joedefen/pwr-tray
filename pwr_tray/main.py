@@ -58,6 +58,13 @@ from pwr_tray.Utils import PyKill, prt
 # makes the *first* show the one that counts.
 TRAY_ATTACH_DELAY_MS = 500      # let a new host start serving calls
 
+#: The name Qt puts on the tray item.  Waybar's StatusNotifier host rejects an
+#: item whose ``Id`` is empty ("Invalid Status Notifier Item") and reserves a
+#: blank slot for it.  Qt answers ``Id`` from ``applicationName`` and ``Title``
+#: from ``applicationDisplayName``, and ``QApplication([])`` -- an empty argv --
+#: leaves both empty.  The applet therefore names itself explicitly.
+APP_NAME = 'pwr-tray'
+
 # Qt messages that are chatter rather than news.  The qt5ct/qt6ct platform
 # themes print their whole palette table through qDebug() every time a widget
 # asks for one -- some forty lines between the messages a reader actually
@@ -100,6 +107,19 @@ def qt_message_handler(mode, context, message):
 def install_qt_messages():
     """ Send Qt's console output through prt(); call before QApplication exists. """
     qInstallMessageHandler(qt_message_handler)
+
+
+def name_application(app, name=APP_NAME):
+    """Give the tray item an Id and a title; call right after QApplication.
+
+    Qt's StatusNotifierItem exposes ``Id`` from ``applicationName`` and
+    ``Title`` from ``applicationDisplayName``.  ``QApplication([])`` starts
+    with both empty, and Waybar 0.12 refuses such an item as invalid: it is
+    registered and occupies a slot in the bar, but has no icon to draw.
+    """
+    app.setApplicationName(name)
+    app.setApplicationDisplayName(name)
+    app.setDesktopFileName(name)
 
 
 # How many percentage points the fabricated no-battery test state loses per
@@ -173,6 +193,10 @@ class PwrTray:
         # the unit's cgroup.
         self.svc_mode = svc_mode
         self.app = QApplication([])
+        # The item's Id/Title come from the application name, which an empty
+        # argv leaves unset; a bar that requires an Id then shows a blank slot
+        # (see name_application()).
+        name_application(self.app)
         self.app.setQuitOnLastWindowClosed(False)
         # A logout has to be able to *ask* the applet to leave.  Without this an
         # X11 session manager waits for a client that never answers; see

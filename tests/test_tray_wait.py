@@ -473,6 +473,43 @@ def test_the_watcher_name_is_the_one_qt_hosts_claim():
     assert STATUS_NOTIFIER_WATCHER == 'org.kde.StatusNotifierWatcher'
 
 
+# -- the item's identity ------------------------------------------------------
+
+class FakeApp:
+    """Records the identity calls name_application() makes."""
+
+    def __init__(self):
+        self.names = {}
+
+    def setApplicationName(self, value):
+        self.names['applicationName'] = value
+
+    def setApplicationDisplayName(self, value):
+        self.names['applicationDisplayName'] = value
+
+    def setDesktopFileName(self, value):
+        self.names['desktopFileName'] = value
+
+
+def test_the_item_is_named_so_waybar_accepts_it():
+    """Waybar 0.12 rejects an item whose Id is empty and draws a blank slot.
+
+    Qt's StatusNotifierItem answers Id from applicationName and Title from
+    applicationDisplayName; QApplication([]) leaves both empty.  Measured
+    against waybar 0.12: the un-named item logs "Invalid Status Notifier
+    Item" and reserves the slot with no image, while the named one renders.
+    """
+    app = FakeApp()
+
+    main_module.name_application(app)
+
+    assert app.names == {
+        'applicationName': 'pwr-tray',
+        'applicationDisplayName': 'pwr-tray',
+        'desktopFileName': 'pwr-tray',
+    }
+
+
 # -- tray_item_registered(): is the item really on the host's list? -----------
 
 class FakeMessage:
