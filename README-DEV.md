@@ -186,6 +186,8 @@ installed console script -- so packaging is asserted, not assumed.
 |---|---|---|
 | version | `pwr_tray/__init__.py:__version__` (flit reads it) | add `version =` to `pyproject.toml`; `tests/test_metadata.py` fails |
 | console script | `pwr-tray = pwr_tray.main:main` in `pyproject.toml` | write a second entry point |
+| `bless` | emitted from `~/Projects/blessd/bless` by that repository's `build.py` | edit it here; re-emit from `blessd` instead |
+| release policy | `~/Projects/blessd/docs/release-strategy.md` | duplicate it here |
 | DE commands | `pwr_tray/resources/commands.yaml` | edit the copy in `~/.config/pwr-tray/` as if it were source |
 | systemd units | `pwr_tray/resources/systemd/pwr-tray-*.service` | hand-edit `~/.config/systemd/user/pwr-tray.service` and call it a fix |
 
@@ -460,33 +462,42 @@ the token.  Names of the sections do not matter; `TWINE_USERNAME` defaults to
 `__token__`.  If neither source has a credential, bless refuses before twine
 starts and shows both ways of providing one.
 
-### Reusing `bless` in another project
+### The gate is vendored, not copied by hand
 
-`bless` holds no copy of this project's identity: it reads `[project] name`,
-the package holding `__version__` (that name with `-` and `.` turned into `_`),
-the console script (the first entry of `[project.scripts]`) and `[tool.bless]`
-from `pyproject.toml` at start-up.  Copy the file to another project's root and
-it works there, provided the project:
+`bless` is emitted verbatim from `~/Projects/blessd/bless` by that repository's
+`build.py`, so this project's copy and the shared gate are the same bytes and
+there is nothing to merge.  The copy is what this project releases with, which
+is why it is never edited here: a change goes into `blessd` and is re-emitted.
+`bless` still holds no copy of this project's identity -- it reads
+`[project] name`, the package holding `__version__`, the console script and
+`[tool.bless]` from `pyproject.toml` at start-up.
 
-* keeps a flat layout -- the package directory at the root, since the script
-  takes its root from its own path;
-* declares `__version__ = "X.Y.Z"` in `<package>/__init__.py`, which the build
-  backend reads (flit does), and never needs writing anywhere else;
-* builds with `python -m build`, and has a dev extra with ruff, pytest,
-  pytest-cov, build, twine>=7 and packaging>=26 -- `gates()` runs exactly
-  ruff, compileall and `pytest --cov=<package>`.  twine is not a duplicate of
-  flit: `flit publish` rebuilds and uploads what it just built, while `bless`
-  uploads the two files it inspected, to the index the answer targets, after
-  `twine check --strict` has passed on them;
-* ships an inspector at `tests/inspect_dist.py` (or names one with
-  `[tool.bless] inspect = "path"`), because bless refuses to upload what it has
-  not inspected; `inspect = ""` opts out knowingly;
-* if it declares a console script, has it print the version for `--version`;
-* keeps the `main`/`dev` pair and tags `vX.Y.Z`.  The gate runs before the
-  prompt, so it refuses a detached HEAD and an already-existing tag; a
-  rehearsal is therefore always preceded by the checks the real release needs.
+This tree carries the build with sha256
+`3ef60e9e806ca58a3d900dd6622bb8be0052210da1ef26f9918bf0a1deb1e3b2`, reproduced
+with:
 
-The rules are stated at the top of the script itself, so they travel with it.
+```
+python3 ~/Projects/blessd/build.py --into . --force
+sha256sum bless                     # equals build.py --sha
+```
+
+(`--force` is correct only when replacing a copy -- that is what adoption
+means.)  The gate's own policy and its tests live in `blessd` once; this
+project keeps only the tests of its identity and of `tests/inspect_dist.py`.
+What this tree supplies for the gate is already declared here:
+
+* an inspector at `tests/inspect_dist.py`, which the release and CI both run;
+* a `dev` extra holding ruff, pytest, pytest-cov, build, twine>=7 and
+  packaging>=26 (`gates()` runs exactly ruff, compileall and
+  `pytest --cov=pwr_tray`);
+* the `pwr-tray` console script, which prints the version for `--version`;
+* the default `main`/`dev` branch model (`[tool.bless] branches` is unset), so
+  `publish` aligns the development branch with the trunk before tagging;
+* a single version location, `pwr_tray/__init__.py:__version__`, which flit
+  reads and `read_version()` reads without importing the package.
+
+The rules the gate enforces are stated at the top of the script itself, so
+they travel with the emitted copy.
 
 ### Why not a release workflow
 

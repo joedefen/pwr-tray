@@ -1,28 +1,29 @@
-"""Tests for the release gate: `./bless` and the shared distribution inspector.
+"""The half of the release gate that belongs to *this* project.
 
-No network, no builds, no uploads.  What is exercised here is the part that
-must not be wrong when the command is run for real: the duplicate check (on
-every run, before anything is built), the prompt that decides what happens to a
-tree that passed (exact answers only, and nothing typed can publish), the pure
-branch decision, and the inspector's ability to reject a wheel that lies about
-itself.
+`bless` itself is tested once, in the repository that emits it
+([`../../blessd/tests/test_bless.py`](../../blessd/tests/test_bless.py)): the
+branch plan, the refusals, the prompt, the index check and the emitter are the
+same wherever the gate is vendored.  What is not the same is the identity it
+derives from this tree -- read at start-up, never written into the tool -- and
+the inspector it runs before an upload, [`inspect_dist.py`](inspect_dist.py),
+which asserts this project's metadata.  Those two are pinned here.
 """
 
 import importlib.machinery
 import importlib.util
-import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+PACKAGE = 'pwr_tray'
 
 
 def load_module(name, path):
-    """Load a script that has no `.py` suffix (`bless`) or is not installed."""
     loader = importlib.machinery.SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(name, loader)
     module = importlib.util.module_from_spec(spec)
@@ -32,789 +33,46 @@ def load_module(name, path):
 
 
 bless = load_module('bless_gate', ROOT / 'bless')
-inspect_dist = load_module('inspect_dist_under_test', ROOT / 'tests' / 'inspect_dist.py')
+inspect_dist = load_module('inspect_dist', ROOT / 'tests' / 'inspect_dist.py')
 
-PROJECT = inspect_dist.project()
-VERSION = inspect_dist.expected_version()
+PROJECT = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))['project']
+VERSION = next(line.split('"')[1] for line in
+               (ROOT / PACKAGE / '__init__.py').read_text(encoding='utf-8').splitlines()
+               if line.startswith('__version__'))
 
 
-def pypi_document(*versions, summary='A GTK tray applet for power management'):
-    return {
-        'info': {
-            'summary': summary,
-            'requires_python': '>=3.8',
-            'requires_dist': ['pydbus>=0.6.0'],
-            'keywords': 'power, energy',
-        },
-        'releases': {version: [] for version in versions},
-    }
-
-
-# --- the duplicate check ----------------------------------------------------
-
-def test_a_published_version_is_refused_with_the_whole_release_list():
-    with pytest.raises(bless.BlessError) as caught:
-        bless.check_index('1.0.12', pypi_document('0.1', '1.0.10', '1.0.12'))
-
-    message = str(caught.value)
-    assert 'already on PyPI' in message
-    # The user asked for the releases in the error, not just the collision.
-    for published in ('0.1', '1.0.10', '1.0.12'):
-        assert published in message
-
-
-def test_an_unpublished_version_is_accepted_and_versions_sort_numerically():
-    published = bless.check_index('2.0.0', pypi_document('1.0.9', '1.0.10', '0.9'))
-
-    assert published == ['0.9', '1.0.9', '1.0.10']
-
-
-def test_the_index_check_runs_before_any_build_or_upload(monkeypatch, capsys):
-    """Both modes pay the duplicate check, and they pay it first."""
-    calls = []
-    monkeypatch.setattr(bless, 'preflight',
-                        lambda version: {'branch': 'dev', 'sha': 'deadbee'})
-    monkeypatch.setattr(bless, 'check_index',
-                        lambda version: (_ for _ in ()).throw(
-                            bless.BlessError('already published')))
-    for name in ('gates', 'build', 'inspect_dist', 'check', 'smoke',
-                 'branch_stage', 'tag', 'upload', 'verify_index', 'publish_git'):
-        monkeypatch.setattr(bless, name, lambda *a, _n=name, **k: calls.append(_n))
-
-    assert bless.main([]) == 1
-    assert calls == []
-    assert 'already published' in capsys.readouterr().err
-
-
-def test_a_missing_index_is_a_refusal_and_not_a_blind_upload(monkeypatch):
-    monkeypatch.setattr(bless, 'fetch_index',
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            bless.BlessError('offline')))
-
-    with pytest.raises(bless.BlessError):
-        bless.check_index('2.0.0')
-
-
-# --- the gate, and the question it ends with --------------------------------
-
-def stub_stages(monkeypatch, calls, plan=None):
-    """Replace every stage `main()` drives, recording the ones that ran."""
-    monkeypatch.setattr(bless, 'preflight',
-                        lambda version: {'branch': 'dev', 'sha': 'deadbee'})
-    monkeypatch.setattr(bless, 'check_index', lambda *a, **k: ['1.0.12'])
-    monkeypatch.setattr(bless, 'gates', lambda: calls.append('gates'))
-    monkeypatch.setattr(bless, 'build', lambda version: (
-        ROOT / 'build' / 'pwr_tray-2.0.0-py3-none-any.whl',
-        ROOT / 'build' / 'pwr_tray-2.0.0.tar.gz'))
-    monkeypatch.setattr(bless, 'build_for_test', lambda v: (
-        ROOT / 'build' / f'pwr_tray-{v}-py3-none-any.whl',
-        ROOT / 'build' / f'pwr_tray-{v}.tar.gz'))
-    monkeypatch.setattr(
-        bless, 'fetch_index',
-        lambda target=bless.PYPI: pypi_document(f'{VERSION}.99.3'))
-    monkeypatch.setattr(bless, 'inspect_dist',
-                        lambda w, s, v=None: calls.append(('inspect', v)))
-    monkeypatch.setattr(bless, 'check', lambda w, s: calls.append('check'))
-    monkeypatch.setattr(bless, 'smoke', lambda w, v: calls.append(('smoke', v)))
-    monkeypatch.setattr(bless, 'branch_stage',
-                        lambda branch: plan or {'align': 'main'})
-    monkeypatch.setattr(bless, 'align_branches', lambda p, b: calls.append('align'))
-    monkeypatch.setattr(bless, 'tag', lambda v: calls.append('tag'))
-    monkeypatch.setattr(bless, 'upload',
-                        lambda w, s, v, target=bless.PYPI:
-                        calls.append(('upload', v, target)))
-    monkeypatch.setattr(bless, 'verify_index',
-                        lambda v, w, target=bless.PYPI, **kw:
-                        calls.append(('verify', v, target)))
-    monkeypatch.setattr(bless, 'publish_git',
-                        lambda v, b, o: calls.append('push'))
-
-
-def answer(monkeypatch, *replies):
-    """Feed the prompt one answer per question, recording each prompt shown."""
-    pending = iter(replies)
-    prompts = []
-
-    def fake_input(prompt=''):
-        prompts.append(prompt)
-        try:
-            return next(pending)
-        except StopIteration:
-            raise EOFError from None
-
-    monkeypatch.setattr('builtins.input', fake_input)
-    return prompts
-
-
-def sent_anything(calls):
-    """The stages that leave the machine, whatever they were called with."""
-    return {name for name in ('upload', 'verify')
-            if name in calls or name in {c[0] for c in calls if isinstance(c, tuple)}}
-
-
-def moved_git(calls):
-    return {name for name in ('align', 'tag', 'push') if name in calls}
-
-
-def test_the_gate_runs_in_full_before_the_question_is_asked(monkeypatch, capsys):
-    calls = []
-    stub_stages(monkeypatch, calls)
-    prompts = answer(monkeypatch)          # nothing typed, so end of input
-
-    assert bless.main([]) == 0
-    assert 'gates' in calls and ('smoke', VERSION) in calls
-    assert not sent_anything(calls) and not moved_git(calls)
-
-    output = capsys.readouterr().out
-    assert 'Every gate passed' in output
-    assert 'nothing was tagged, uploaded or pushed' in output
-    # The question came after the gate, and it is the only one asked.
-    assert prompts == [bless.MODE_PROMPT]
-
-
-def test_the_prompt_is_the_three_words_the_owner_asked_for():
-    assert bless.MODE_PROMPT == '\n\n\n====> Enter test or publish or quit: '
-
-
-def test_publish_at_the_prompt_reaches_the_irreversible_stages_in_order(monkeypatch):
-    calls = []
-    stub_stages(monkeypatch, calls)
-    answer(monkeypatch, 'publish')
-
-    assert bless.main([]) == 0
-    order = ['align', 'tag', ('upload', VERSION, bless.PYPI),
-             ('verify', VERSION, bless.PYPI), 'push']
-    positions = [calls.index(step) for step in order]
-    assert positions == sorted(positions)
-
-
-def test_a_stray_answer_is_asked_again_instead_of_deciding(monkeypatch, capsys):
-    calls = []
-    stub_stages(monkeypatch, calls)
-    prompts = answer(monkeypatch, 'pUblish', 'pub', 'quit')
-
-    assert bless.main([]) == 0
-    assert len(prompts) == 3
-    assert not sent_anything(calls)
-
-    output = capsys.readouterr().out
-    assert "'pUblish' is not test, publish or quit" in output
-    assert "'pub' is not test, publish or quit" in output
-
-
-@pytest.mark.parametrize('ending', [KeyboardInterrupt, EOFError])
-def test_ctrl_c_and_the_end_of_input_stop_with_nothing_sent(
-        monkeypatch, capsys, ending):
-    calls = []
-    stub_stages(monkeypatch, calls)
-    monkeypatch.setattr('builtins.input',
-                        lambda prompt='': (_ for _ in ()).throw(ending()))
-
-    assert bless.main([]) == 0
-    assert not sent_anything(calls) and not moved_git(calls)
-    assert 'nothing was tagged, uploaded or pushed' in capsys.readouterr().out
-
-
-def test_bless_takes_no_arguments_and_says_where_the_choice_is(monkeypatch, capsys):
-    monkeypatch.setattr(bless, 'preflight', lambda *a, **k: pytest.fail('reached'))
-
-    assert bless.main(['publish']) == 1
-    assert 'takes no arguments' in capsys.readouterr().err
-
-
-def test_upload_refuses_without_a_token_before_starting_twine(monkeypatch):
-    monkeypatch.delenv('TWINE_PASSWORD', raising=False)
-    monkeypatch.setattr(bless, '_pypirc_credentials', lambda *a, **k: None)
-    monkeypatch.setattr(bless, 'run',
-                        lambda *a, **k: pytest.fail('twine must not start'))
-
-    with pytest.raises(bless.BlessError) as caught:
-        bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', VERSION)
-    assert 'TWINE_PASSWORD' in str(caught.value)
-    # The refusal says where a credential may come from, in both ways.
-    assert '~/.pypirc' in str(caught.value)
-
-
-# --- the TestPyPI rehearsal -------------------------------------------------
-
-def test_the_test_version_starts_at_99_0():
-    document = pypi_document('1.0.12')
-
-    assert bless.next_test_version('1.0.12', document) == '1.0.12.99.0'
-    assert bless.next_test_version(VERSION, {'releases': {}}) == f'{VERSION}.99.0'
-
-
-def test_the_test_version_is_one_past_the_highest_suffix():
-    """`{N}` is one greater than any other `{N}` the index already has."""
-    document = pypi_document('2.0.0.99.0', '2.0.0.99.4', '2.0.0.99.1', '2.0.0')
-
-    assert bless.next_test_version('2.0.0', document) == '2.0.0.99.5'
-
-
-def test_the_test_counter_belongs_to_its_own_base_version():
-    document = pypi_document('2.0.0.99.9', '1.0.12.99.7', '2.0.0.99.2')
-
-    # Numerically, not as strings: 9 is past 2, so the next suffix is 10.
-    assert bless.next_test_version('2.0.0', document) == '2.0.0.99.10'
-    assert bless.next_test_version('1.0.12', document) == '1.0.12.99.8'
-    # A base the index has never seen starts over rather than inheriting 11.
-    assert bless.next_test_version('3.0.0', document) == '3.0.0.99.0'
-
-
-def test_a_404_is_an_empty_index_because_the_project_may_be_new(monkeypatch):
-    import urllib.error
-    import urllib.request
-
-    def missing(*args, **kwargs):
-        raise urllib.error.HTTPError(bless.TESTPYPI_URL, 404, 'Not Found', {}, None)
-
-    monkeypatch.setattr(urllib.request, 'urlopen', missing)
-    assert bless.fetch_index(bless.TESTPYPI) == {'releases': {}}
-
-
-def test_a_broken_index_is_still_a_refusal(monkeypatch):
-    import urllib.error
-    import urllib.request
-
-    def unavailable(*args, **kwargs):
-        raise urllib.error.HTTPError(bless.PYPI_URL, 503, 'Unavailable', {}, None)
-
-    monkeypatch.setattr(urllib.request, 'urlopen', unavailable)
-    with pytest.raises(bless.BlessError, match='duplicate check'):
-        bless.fetch_index(bless.PYPI)
-
-
-def test_each_target_gets_its_own_url_and_token(monkeypatch):
-    monkeypatch.setenv('TWINE_PASSWORD', 'pypi-token')
-    monkeypatch.setenv(bless.TESTPYPI['token'], 'testpypi-token')
-    seen = []
-
-    def fake_run(command, **kwargs):
-        seen.append((command, kwargs.get('env') or {}))
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(bless, 'run', fake_run)
-    bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', VERSION, bless.PYPI)
-    bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', f'{VERSION}.99.0', bless.TESTPYPI)
-
-    real, rehearsal = seen
-    assert '--repository-url' not in real[0]
-    assert bless.TESTPYPI_UPLOAD in rehearsal[0]
-    assert real[1]['TWINE_USERNAME'] == rehearsal[1]['TWINE_USERNAME'] == '__token__'
-
-
-def test_the_rehearsal_needs_its_own_testpypi_token(monkeypatch):
-    monkeypatch.delenv(bless.TESTPYPI['token'], raising=False)
-    monkeypatch.setattr(bless, '_pypirc_credentials', lambda *a, **k: None)
-    monkeypatch.setattr(bless, 'run',
-                        lambda *a, **k: pytest.fail('twine must not start'))
-
-    with pytest.raises(bless.BlessError) as caught:
-        bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', f'{VERSION}.99.0',
-                     bless.TESTPYPI)
-    assert bless.TESTPYPI['token'] in str(caught.value)
-
-
-PYPIRC = """\
-[distutils]
-index-servers =
-    pypi
-    testpypi
-
-[pypi]
-repository = https://upload.pypi.org/legacy/
-username = __token__
-password = pypi-real
-
-[testpypi]
-repository = https://test.pypi.org/legacy/
-username = __token__
-password = pypi-rehearsal
-"""
-
-
-def test_a_pypirc_section_is_found_by_its_repository_url(tmp_path):
-    path = tmp_path / '.pypirc'
-    path.write_text(PYPIRC, encoding='utf-8')
-
-    # The section has a name, but the URL is what decides: this is why the file
-    # a user already keeps for twine works without renaming anything.
-    assert bless._pypirc_credentials(bless.PYPI, path) == ('__token__', 'pypi-real')
-    assert bless._pypirc_credentials(bless.TESTPYPI, path) == (
-        '__token__', 'pypi-rehearsal')
-
-
-def test_a_pypirc_for_another_index_is_not_a_credential(tmp_path):
-    path = tmp_path / '.pypirc'
-    path.write_text(PYPIRC.replace('https://test.pypi.org/legacy/',
-                                   'https://example.invalid/legacy/'),
-                    encoding='utf-8')
-
-    assert bless._pypirc_credentials(bless.TESTPYPI, path) is None
-    assert bless._pypirc_credentials(bless.TESTPYPI, tmp_path / 'absent') is None
-
-
-def test_the_rehearsal_never_spends_the_pypi_token(monkeypatch):
-    """Both can be configured at once; only one of them may reach TestPyPI."""
-    monkeypatch.setenv('TWINE_PASSWORD', 'pypi-token-from-the-shell')
-    monkeypatch.delenv(bless.TESTPYPI['token'], raising=False)
-    monkeypatch.setattr(bless, '_pypirc_credentials',
-                        lambda *a, **k: ('__token__', 'pypi-rehearsal'))
-    seen = []
-
-    def fake_run(command, **kwargs):
-        seen.append((command, kwargs.get('env') or {}))
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(bless, 'run', fake_run)
-    bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', f'{VERSION}.99.0',
-                 bless.TESTPYPI)
-
-    command, environment = seen[0]
-    assert bless.TESTPYPI_UPLOAD in command
-    assert environment['TWINE_PASSWORD'] == 'pypi-rehearsal'
-    assert environment['TWINE_USERNAME'] == '__token__'
-
-
-def test_the_environment_token_wins_over_the_file(monkeypatch):
-    monkeypatch.setenv(bless.TESTPYPI['token'], 'from-the-shell')
-    monkeypatch.setattr(bless, '_pypirc_credentials',
-                        lambda *a, **k: ('__token__', 'from-the-file'))
-    seen = []
-
-    def fake_run(command, **kwargs):
-        seen.append(kwargs.get('env') or {})
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(bless, 'run', fake_run)
-    bless.upload(ROOT / 'x.whl', ROOT / 'x.tar.gz', VERSION, bless.TESTPYPI)
-
-    assert seen[0]['TWINE_PASSWORD'] == 'from-the-shell'
-
-
-def test_the_throwaway_version_is_written_into_a_copy(tmp_path):
-    package = tmp_path / 'pwr_tray'
-    package.mkdir()
-    (package / '__init__.py').write_text('__version__ = "2.0.0"\n')
-    original = (ROOT / 'pwr_tray' / '__init__.py').read_text()
-
-    bless._set_version(tmp_path, f'{VERSION}.99.0')
-
-    rewritten = (package / '__init__.py').read_text()
-    assert rewritten == f"__version__ = '{VERSION}.99.0'\n"
-    # The tree keeps the version it is holding; only the copy is spent.
-    assert (ROOT / 'pwr_tray' / '__init__.py').read_text() == original
-
-
-def test_a_copy_without_a_version_line_is_refused(tmp_path):
-    (tmp_path / 'pwr_tray').mkdir()
-    (tmp_path / 'pwr_tray' / '__init__.py').write_text('"""no version"""\n')
-
-    with pytest.raises(bless.BlessError, match='__version__'):
-        bless._set_version(tmp_path, f'{VERSION}.99.0')
-
-
-def test_test_mode_uploads_a_dotted_version_to_testpypi_only(monkeypatch, capsys):
-    calls = []
-    stub_stages(monkeypatch, calls)
-    answer(monkeypatch, 'test')
-
-    assert bless.main([]) == 0
-
-    candidate = f'{VERSION}.99.4'
-    assert ('inspect', candidate) in calls
-    assert ('smoke', candidate) in calls
-    assert ('upload', candidate, bless.TESTPYPI) in calls
-    assert ('verify', candidate, bless.TESTPYPI) in calls
-    # The rehearsal leaves git alone: no tag, no branch, no push.
-    assert not moved_git(calls)
-    assert 'pip cache purge' in capsys.readouterr().out
-
-
-def test_the_rehearsal_does_not_repeat_the_gate_it_just_passed(monkeypatch):
-    """The gate ran before the prompt, so `test` adds only the throwaway build."""
-    calls = []
-    stub_stages(monkeypatch, calls)
-    answer(monkeypatch, 'test')
-
-    assert bless.main([]) == 0
-    assert calls.count('gates') == 1
-
-
-def test_the_install_hint_purges_the_cache_and_falls_back_to_pypi(capsys):
-    candidate = f'{VERSION}.99.0'
-
-    bless.install_hint(candidate)
-
-    out = capsys.readouterr().out
-    assert 'pip cache purge' in out
-    assert '--index-url https://test.pypi.org/simple/' in out
-    assert '--extra-index-url https://pypi.org/simple/' in out
-    assert f'{bless.NAME}=={candidate}' in out
-    assert 'not on PyPI' in out
-
-
-# --- reuse: the identity is read from pyproject.toml, not written in here ----
-
-def make_project(root, name, *, module=None):
-    """A throwaway tree shaped the way `identity()` expects to find one."""
-    root.mkdir(parents=True, exist_ok=True)
-    package = module or name.replace('-', '_').replace('.', '_')
-    (root / package).mkdir()
-    (root / package / '__init__.py').write_text('__version__ = "1.2.3"\n')
-    table = ['[project]', f'name = "{name}"', 'dynamic = ["version"]']
-    if module:
-        table += ['', '[tool.bless]', f'module = "{module}"']
-    (root / 'pyproject.toml').write_text('\n'.join(table) + '\n')
-    return root
-
-
-def test_the_identity_is_read_from_the_project_table(tmp_path):
-    told = bless.identity(make_project(tmp_path / 'plain', 'some-proj'))
-
-    assert told['name'] == 'some-proj'
-    # `-` becomes `_`: the name is written once, the package derived from it.
-    assert told['module'] == 'some_proj'
-    assert told['console'] is None
-    assert told['inspector'] == 'tests/inspect_dist.py'
-    assert told['smoke_args'] == [] and told['smoke_expect'] is None
-
-
-def test_the_tool_table_overrides_the_derivation(tmp_path):
-    root = make_project(tmp_path / 'odd', 'some-proj', module='odd_name')
-
-    assert bless.identity(root)['module'] == 'odd_name'
-
-
-def test_a_missing_package_is_refused_with_both_remedies(tmp_path):
-    (tmp_path / 'pyproject.toml').write_text('[project]\nname = "nope"\n')
-
-    with pytest.raises(bless.BlessError) as caught:
-        bless.identity(tmp_path)
-    message = str(caught.value)
-    assert 'nope/__init__.py' in message
-    assert '[tool.bless]' in message and 'module = "the_package"' in message
-
-
-def test_a_tree_without_a_pyproject_is_refused(tmp_path):
-    with pytest.raises(bless.BlessError, match=r'pyproject\.toml'):
-        bless.identity(tmp_path)
-
-
-def test_a_project_without_a_name_is_refused(tmp_path):
-    (tmp_path / 'pyproject.toml').write_text('[tool.other]\nx = 1\n')
-
-    with pytest.raises(bless.BlessError, match=r'\[project\] name'):
-        bless.identity(tmp_path)
-
-
-def test_a_package_without_a_version_line_is_refused(tmp_path):
-    (tmp_path / 'pyproject.toml').write_text('[project]\nname = "quiet"\n')
-    (tmp_path / 'quiet').mkdir()
-    (tmp_path / 'quiet' / '__init__.py').write_text('"""no version here"""\n')
-
-    with pytest.raises(bless.BlessError, match='__version__'):
-        bless.identity(tmp_path)
-
-
-def test_the_version_is_read_without_importing_the_package(tmp_path):
-    root = make_project(tmp_path / 'read', 'readable')
-
-    assert bless.read_version(root, 'readable') == '1.2.3'
+# --- the identity the vendored gate derives from this tree -----------------
 
 
 def test_this_tree_derives_its_own_identity():
     name = PROJECT['name']
-    index = f'https://pypi.org/pypi/{name}/json'
-    rehearsal = f'https://test.pypi.org/pypi/{name}/json'
 
     assert bless.PROJECT['name'] == name
-    assert bless.PROJECT['module'] == name.replace('-', '_')
+    assert bless.PROJECT['module'] == PACKAGE
+    assert bless.PROJECT['console'] == 'pwr-tray'
     assert bless.PROJECT['console'] in list(PROJECT['scripts'])
-    assert index == bless.PYPI_URL
-    assert rehearsal == bless.TESTPYPI_URL
+    assert bless.PROJECT['inspector'] == 'tests/inspect_dist.py'
+    # No [tool.bless] branches in pyproject.toml, so the gate's default model
+    # applies: the trunk and the development branch.
+    assert bless.PROJECT['branches'] == ('main', 'dev')
+    assert f'https://pypi.org/pypi/{name}/json' == bless.PYPI_URL
+    assert f'https://test.pypi.org/pypi/{name}/json' == bless.TESTPYPI_URL
     assert bless.read_version() == VERSION
 
 
-def test_the_refusal_names_the_project_and_where_the_version_lives():
-    with pytest.raises(bless.BlessError) as caught:
-        bless.check_index(VERSION, pypi_document(VERSION))
-    message = str(caught.value)
-    assert f'{bless.NAME} {VERSION}' in message
-    assert f'{bless.MODULE}/__init__.py' in message
+def test_the_version_the_gate_tags_is_the_package_version():
+    import pwr_tray
 
+    assert bless.read_version() == pwr_tray.__version__ == VERSION
 
-def test_the_gate_compiles_and_covers_the_derived_package(monkeypatch):
-    commands = []
 
-    def fake_run(command, **kwargs):
-        commands.append([str(part) for part in command])
-        return subprocess.CompletedProcess(command, 0)
+# --- the shared inspector --------------------------------------------------
 
-    monkeypatch.setattr(bless, 'run', fake_run)
-    bless.gates()
 
-    compiling = next(argv for argv in commands if 'compileall' in argv)
-    assert bless.MODULE in compiling
-    testing = next(argv for argv in commands if 'pytest' in argv)
-    assert f'--cov={bless.MODULE}' in testing
+def test_the_inspector_reads_this_trees_own_identity():
+    assert inspect_dist.project()['name'] == PROJECT['name']
+    assert inspect_dist.expected_version() == VERSION
 
-
-def test_the_smoke_run_starts_the_declared_console_script(monkeypatch):
-    calls = []
-
-    def fake_run(command, **kwargs):
-        argv = [str(part) for part in command]
-        calls.append(argv)
-        if argv[-1] == '--version':
-            printed = f'{VERSION}\n'
-        elif argv[-1] == bless.PROJECT['smoke_args'][0]:
-            printed = f'{bless.PROJECT["smoke_expect"]}\n'
-        else:
-            printed = ''
-        return subprocess.CompletedProcess(argv, 0, stdout=printed, stderr='')
-
-    monkeypatch.setattr(bless, 'run', fake_run)
-    bless.smoke(ROOT / 'build' / 'x.whl', VERSION)
-
-    wanted = bless.PROJECT['smoke_args'][0]
-    reported = next(argv for argv in calls if argv[-1] == '--version')
-    extra = next(argv for argv in calls if argv[-1] == wanted)
-
-    assert reported[0].endswith(bless.PROJECT['console'])
-    assert extra[1] == wanted
-
-
-def test_the_docstring_states_what_reuse_requires():
-    doc = bless.__doc__
-    assert 'How to reuse' in doc
-    for requirement in ('[project] name', '`-` and `.`', '[tool.bless] module',
-                        '[project.scripts]', 'tests/inspect_dist.py',
-                        '__version__', 'pytest --cov=<package>'):
-        assert requirement in doc, requirement
-
-
-# --- the branch model -------------------------------------------------------
-
-def make_is_ancestor(edges):
-    """`edges` maps a commit to its parent, enough to express the table."""
-    def is_ancestor(older, newer):
-        seen = set()
-        cursor = newer
-        while cursor and cursor not in seen:
-            if cursor == older:
-                return True
-            seen.add(cursor)
-            cursor = edges.get(cursor)
-        return False
-    return is_ancestor
-
-
-def tips(main, dev, origin_main=None, origin_dev=None):
-    return {'main': main, 'dev': dev,
-            'origin/main': origin_main or main,
-            'origin/dev': origin_dev or dev}
-
-
-def test_branch_plan_fast_forwards_main_when_dev_is_ahead():
-    plan = bless.branch_plan('dev', tips('a', 'b'), make_is_ancestor({'b': 'a'}))
-    assert plan == {'align': 'main'}
-
-
-def test_branch_plan_fast_forwards_dev_when_main_is_ahead():
-    plan = bless.branch_plan('main', tips('b', 'a'), make_is_ancestor({'b': 'a'}))
-    assert plan == {'align': 'dev'}
-
-
-def test_branch_plan_does_nothing_when_the_branches_match():
-    plan = bless.branch_plan('main', tips('a', 'a'), make_is_ancestor({}))
-    assert plan == {'align': None}
-
-
-def test_branch_plan_refuses_diverged_branches():
-    plan = bless.branch_plan('main', tips('x', 'y'),
-                             make_is_ancestor({'x': 'base', 'y': 'base'}))
-    assert 'diverged' in plan['refusal']
-
-
-def test_branch_plan_refuses_a_third_branch_and_a_detached_head():
-    assert 'main or dev' in bless.branch_plan(
-        'feature', tips('a', 'a'), make_is_ancestor({}))['refusal']
-    assert 'detached' in bless.branch_plan(
-        None, tips('a', 'a'), make_is_ancestor({}))['refusal']
-
-
-def test_branch_plan_refuses_a_push_that_would_not_fast_forward():
-    plan = bless.branch_plan(
-        'main', tips('b', 'b', origin_main='elsewhere'),
-        make_is_ancestor({'b': 'a'}))
-    assert 'fast-forward' in plan['refusal']
-
-
-def test_the_tool_floors_are_the_ones_pyproject_installs():
-    dev = PROJECT['optional-dependencies']['dev']
-    for tool, floor in bless.TOOL_FLOORS.items():
-        wanted = '.'.join(str(part) for part in floor)
-        assert any(requirement.startswith(f'{tool}>={wanted.split(".")[0]}')
-                   for requirement in dev), (tool, dev)
-
-
-def test_an_old_validator_is_refused_by_preflight(monkeypatch):
-    monkeypatch.setattr(bless, 'installed_version', lambda name: '6.1.0')
-    with pytest.raises(bless.BlessError, match='older'):
-        bless._tool_floor('twine', (7, 0, 0))
-
-
-def test_a_missing_tool_says_why_and_names_both_install_commands(monkeypatch):
-    """flit can build, so the refusal has to say what twine is still doing."""
-
-    def missing(name):
-        raise bless.PackageNotFoundError(name)
-
-    monkeypatch.setattr(bless, 'installed_version', missing)
-    with pytest.raises(bless.BlessError) as caught:
-        bless._tool_floor('twine', (7, 0, 0))
-
-    message = str(caught.value)
-    assert 'twine check --strict' in message
-    assert 'pip install -e ".[dev]"' in message
-    assert 'flit install --extras dev' in message
-
-
-def test_the_post_upload_verification_compares_what_the_index_reports(monkeypatch, tmp_path):
-    import hashlib
-
-    wheel = tmp_path / 'w.whl'
-    wheel.write_bytes(b'wheel-bytes')
-    digest = hashlib.sha256(b'wheel-bytes').hexdigest()
-    good = {
-        'info': {
-            'summary': PROJECT['description'],
-            'requires_python': PROJECT['requires-python'],
-            # The index also lists the dev extra; it must not be demanded of users.
-            'requires_dist': [*PROJECT['dependencies'],
-                              'pytest>=7; extra == "dev"'],
-            'keywords': ', '.join(PROJECT['keywords']),
-        },
-        'releases': {VERSION: [
-            {'packagetype': 'bdist_wheel', 'digests': {'sha256': digest}}]},
-    }
-    assert bless._metadata_mismatches(VERSION, wheel, good) == []
-
-    bad = {
-        'info': {
-            'summary': 'A GTK tray applet for power management',
-            'requires_python': '>=3.8',
-            'requires_dist': ['pydbus>=0.6.0'],
-            'keywords': 'power',
-        },
-        'releases': {VERSION: [
-            {'packagetype': 'bdist_wheel', 'digests': {'sha256': 'nope'}}]},
-    }
-    joined = '; '.join(bless._metadata_mismatches(VERSION, wheel, bad))
-    for field in ('SHA256', 'summary', 'requires_python', 'Requires-Dist', 'keywords'):
-        assert field in joined, field
-
-
-# --- a slow index is lag, never a failed upload ------------------------------
-
-def matching_document(version, wheel):
-    """What the index serves once it has caught up with `wheel`."""
-    import hashlib
-
-    digest = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
-    return {
-        'info': {
-            'version': version,
-            'summary': PROJECT['description'],
-            'requires_python': PROJECT['requires-python'],
-            'requires_dist': [*PROJECT['dependencies'],
-                              'pytest>=7; extra == "dev"'],
-            'keywords': ', '.join(PROJECT['keywords']),
-        },
-        'releases': {version: [
-            {'packagetype': 'bdist_wheel', 'digests': {'sha256': digest}}]},
-    }
-
-
-def test_verification_waits_out_a_slow_index_instead_of_blaming_the_upload(
-        monkeypatch, tmp_path, capsys):
-    """A 404 right after an accepted upload is the CDN, not the release."""
-    wheel = tmp_path / 'w.whl'
-    wheel.write_bytes(b'wheel-bytes')
-    answers = [(None, ''), (None, ''), (matching_document(VERSION, wheel), '')]
-    monkeypatch.setattr(bless, '_read_json', lambda *a, **k: answers.pop(0))
-    monkeypatch.setattr(bless.time, 'sleep', lambda seconds: None)
-
-    bless.verify_index(VERSION, wheel, bless.TESTPYPI, advice='do not resend')
-
-    output = capsys.readouterr().out
-    assert 'matching metadata' in output
-    # "reading it as empty" is the pre-flight's phrase, not the verifier's.
-    assert 'reading it as empty' not in output
-    assert answers == []
-
-
-def test_verification_keeps_waiting_while_the_info_block_still_lags(
-        monkeypatch, tmp_path):
-    """The info block describes the latest release, not necessarily this one."""
-    wheel = tmp_path / 'w.whl'
-    wheel.write_bytes(b'wheel-bytes')
-    stale = matching_document(VERSION, wheel)
-    stale['info']['version'] = '1.0.12'
-    answers = [(stale, ''), (matching_document(VERSION, wheel), '')]
-    monkeypatch.setattr(bless, '_read_json', lambda *a, **k: answers.pop(0))
-    monkeypatch.setattr(bless.time, 'sleep', lambda seconds: None)
-
-    bless.verify_index(VERSION, wheel, bless.TESTPYPI)
-
-    assert answers == []
-
-
-def test_a_lagging_index_never_calls_an_accepted_upload_a_failure(
-        monkeypatch, tmp_path):
-    wheel = tmp_path / 'w.whl'
-    wheel.write_bytes(b'wheel-bytes')
-    monkeypatch.setattr(bless, '_read_json', lambda *a, **k: (None, ''))
-    monkeypatch.setattr(bless.time, 'sleep', lambda seconds: None)
-
-    with pytest.raises(bless.BlessError) as caught:
-        bless.verify_index(VERSION, wheel, bless.TESTPYPI,
-                           advice='run ./bless test for the next .99.N')
-
-    message = str(caught.value)
-    assert '404' in message
-    assert f'{bless.TESTPYPI["page"]}{VERSION}/' in message
-    assert 'cannot be withdrawn' in message
-    assert 'do not send this version again' in message
-    assert 'run ./bless test for the next .99.N' in message
-
-
-def test_the_post_upload_read_never_reuses_the_cached_answer(monkeypatch, tmp_path):
-    wheel = tmp_path / 'w.whl'
-    wheel.write_bytes(b'wheel-bytes')
-    seen = []
-
-    def fake_read(url, **options):
-        seen.append(options)
-        return None, ''
-
-    monkeypatch.setattr(bless, '_read_json', fake_read)
-    monkeypatch.setattr(bless.time, 'sleep', lambda seconds: None)
-
-    with pytest.raises(bless.BlessError):
-        bless.verify_index(VERSION, wheel, bless.TESTPYPI)
-
-    assert seen and all(options.get('bust') for options in seen)
-
-
-def test_the_verification_budget_covers_a_quarter_hour_of_lag():
-    """Both indexes have been taking minutes to list a new release."""
-    assert bless.VERIFY_BUDGET >= 15 * 60
-    assert len(bless.VERIFY_SCHEDULE) >= 10
-
-
-# --- the shared inspector ---------------------------------------------------
 
 def make_wheel(path, *, summary=None, version=None, dependencies=None,
                include_tests=False, resources=True):
@@ -824,7 +82,7 @@ def make_wheel(path, *, summary=None, version=None, dependencies=None,
         f'Version: {version or VERSION}',
         f'Summary: {summary or PROJECT["description"]}',
         f'Requires-Python: {PROJECT["requires-python"]}',
-        *[f'Requires-Dist: {dep}' for dep in
+        *[f'Requires-Dist: {dependency}' for dependency in
           (dependencies if dependencies is not None else PROJECT['dependencies'])],
         f'Keywords: {", ".join(PROJECT.get("keywords", []))}',
         '',
@@ -834,26 +92,27 @@ def make_wheel(path, *, summary=None, version=None, dependencies=None,
     if resources:
         names += list(inspect_dist.REQUIRED_RESOURCES)
         names += [f'pwr_tray/resources/systemd/{unit.name}'
-                  for unit in (ROOT / 'pwr_tray' / 'resources' / 'systemd').glob('*.service')]
+                  for unit in (ROOT / PACKAGE / 'resources' / 'systemd').glob('*.service')]
     if include_tests:
         names.append('tests/test_metadata.py')
     with zipfile.ZipFile(path, 'w') as archive:
-        archive.writestr('pwr_tray-2.0.0.dist-info/METADATA', '\n'.join(metadata))
+        archive.writestr(f'pwr_tray-{version or VERSION}.dist-info/METADATA',
+                         '\n'.join(metadata))
         for name in names:
             archive.writestr(name, '')
     return path
 
 
 def make_sdist(path, *, include_tests=True):
-    names = ['pwr_tray-2.0.0/pyproject.toml',
-             'pwr_tray-2.0.0/conftest.py',
-             'pwr_tray-2.0.0/pwr_tray/resources/commands.yaml']
+    base = f'{PACKAGE}-{VERSION}'
+    names = [f'{base}/pyproject.toml',
+             f'{base}/conftest.py',
+             f'{base}/{PACKAGE}/resources/commands.yaml']
     if include_tests:
-        names.append('pwr_tray-2.0.0/tests/test_metadata.py')
+        names.append(f'{base}/tests/test_metadata.py')
     with tarfile.open(path, 'w:gz') as archive:
         for name in names:
-            info = tarfile.TarInfo(name)
-            archive.addfile(info)
+            archive.addfile(tarfile.TarInfo(name))
     return path
 
 
